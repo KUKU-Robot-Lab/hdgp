@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """text2reward CLI — grasp_fj_t2r 트랙(단일 팔 · DG-5F full-joint 손 · 인벨롭 파지). Isaac 불요.
 
-  render : 과제 문장(+선택: 이전 코드·피드백·메모) → reward_gen/<track>/iter_NN/prompt.md
-  ingest : response.md 의 마지막 ```python 블록 → compute_reward.py + validation.json
+  render  : 과제 문장(+선택: 이전 코드·피드백·메모) → reward_gen/<track>/iter_NN/prompt.md
+  ingest  : response.md 의 마지막 ```python 블록 → compute_reward.py + validation.json
+  reflect : 학습 TFEvents → iter_NN/feedback.md(지표 표) + iter_(NN+1)/prompt.md(이전 코드 + 표)
 
-디렉터리 규약:  reward_gen/<track>/iter_NN/{prompt.md, response.md, compute_reward.py, validation.json, meta.json}
+디렉터리 규약:  reward_gen/<track>/iter_NN/{prompt.md, response.md, compute_reward.py, validation.json, meta.json,
+                feedback.md, launch.json, status.json}
 
     python3 scripts/reward_gen/t2r_fj.py render --track grasp_fj_envelope \
         --task-file scripts/reward_gen/tasks/grasp_fj_envelope.txt
-    python3 scripts/reward_gen/t2r_fj.py ingest --iter reward_gen/grasp_fj_envelope/iter_00
+    ../IsaacLab/isaaclab.sh -p scripts/reward_gen/t2r_fj.py ingest --iter reward_gen/grasp_fj_envelope/iter_00
+    python3 scripts/reward_gen/t2r_fj.py reflect --iter reward_gen/grasp_fj_envelope/iter_00 --events <tfevents>
 
 ★붓기 트랙 CLI(`t2r.py`)와 코드를 공유하지 않는다 — 컨텍스트가 다르고 그쪽은 다른 세션의 루프가 쓴다.
 ★생성기: prompt.md 경로만 받은 새 에이전트가 response.md 를 쓴다(이 세션의 설계 의견을 섞지 않는다).
+★루프 판정·기동은 `t2r_fj_round.py`, 틱 절차는 `LOOP_PROMPT_fj.md`.
 """
 
 from __future__ import annotations
@@ -25,12 +29,34 @@ from pathlib import Path
 
 _HDGP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_HDGP / "source" / "openarm"))
+sys.path.insert(0, str(_HDGP / "scripts" / "tools"))
 
 from openarm.agnostic.tasks.grasp_fj_t2r.t2r import prompts as P      # noqa: E402
 from openarm.agnostic.tasks.grasp_fj_t2r.t2r import validator as V    # noqa: E402
 
 DEFAULT_ROOT = _HDGP / "reward_gen"
 _FENCE = re.compile(r"```python\s*\n(.*?)\n```", re.S)
+#: 피드백 표에 넣을 태그. reward/* = 생성 코드 항, contact/* = 보상 전용 센서 진단(머리말이 뜻을 설명한다).
+#:   env extras 는 rl_games 가 `<tag>/iter` 로 쓴다. ★B 의 설계 계측(task/grasp_q* 등)은 넣지 않는다 — 생성기에 사람 설계를 흘리지 않게.
+FEEDBACK_TAG_PREFIXES = ("reward/", "contact/")
+FEEDBACK_TAGS_EXACT = ("ctrl/prev_ep_successes_mean", "task/successes_mean", "task/lifted_frac", "task/tol",
+                       "task/tilt_deg", "done/fell", "done/tipped", "done/out_xy", "done/hand_floor",
+                       "done/abnormal", "done/max_goals", "episode_lengths/step", "rewards/step")
+
+
+def collect_feedback_series(data: dict[str, list[tuple[int, float]]]) -> dict[str, list[float]]:
+    """`load_tfevents` 결과 → 피드백 태그만 {tag: 값열}. 순수 함수."""
+    series: dict[str, list[float]] = {}
+    for raw, pts in data.items():
+        if raw.endswith("/iter"):
+            tag = raw[:-5]
+            wanted = tag.startswith(FEEDBACK_TAG_PREFIXES) or tag in FEEDBACK_TAGS_EXACT
+        else:
+            tag = raw
+            wanted = tag in FEEDBACK_TAGS_EXACT
+        if wanted:
+            series.setdefault(tag, []).extend(v for _, v in pts)
+    return series
 
 
 def _next_iter(root: Path, track: str) -> int:
@@ -91,6 +117,37 @@ def cmd_ingest(a) -> int:
     return 0 if rep.ok else 1
 
 
+def cmd_reflect(a) -> int:
+    from parse_tfevents import load_tfevents   # scripts/tools
+
+    d = Path(a.iter)
+    code = (d / "compute_reward.py").read_text(encoding="utf-8")
+    series: dict[str, list[float]] = {}
+    for ev in a.events:
+        for tag, vals in collect_feedback_series(load_tfevents(ev)).items():
+            series.setdefault(tag, []).extend(vals)
+    if not any(t.startswith("reward/") for t in series):
+        raise SystemExit("[t2r_fj] reward/* 태그가 없다 — events 경로 확인")
+    fb = P.render_feedback_table(series, n_points=a.points)
+    (d / "feedback.md").write_text(fb, encoding="utf-8")
+    meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+    n_next = a.next_iter if a.next_iter is not None else int(meta["iter"]) + 1
+    nd = a.root / meta["track"] / f"iter_{n_next:02d}"
+    if (nd / "prompt.md").exists() and not a.force:
+        raise SystemExit(f"[t2r_fj] {nd / 'prompt.md'} 가 이미 있다 — 덮으려면 --force")
+    nd.mkdir(parents=True, exist_ok=True)
+    notes = Path(a.notes).read_text(encoding="utf-8") if a.notes else None
+    spec = P.PromptSpec(task=meta["task"], previous_code=code, feedback=fb, user_notes=notes)
+    (nd / "prompt.md").write_text(P.render_prompt(spec), encoding="utf-8")
+    (nd / "meta.json").write_text(json.dumps({
+        "track": meta["track"], "iter": n_next, "task": meta["task"], "created": datetime.now().isoformat(),
+        "context": meta.get("context"), "prev_iter": str(d), "events": a.events, "notes": a.notes},
+        indent=1, ensure_ascii=False), encoding="utf-8")
+    print(f"[t2r_fj] feedback → {d / 'feedback.md'}  ({len(series)} tags)")
+    print(f"[t2r_fj] next prompt → {nd / 'prompt.md'}")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", type=Path, default=DEFAULT_ROOT)
@@ -108,6 +165,14 @@ def main(argv=None) -> int:
     i.add_argument("--iter", required=True)
     i.add_argument("--response", default=None)
     i.set_defaults(fn=cmd_ingest)
+    f = sub.add_parser("reflect")
+    f.add_argument("--iter", required=True)
+    f.add_argument("--events", nargs="+", required=True)
+    f.add_argument("--points", type=int, default=10)
+    f.add_argument("--next-iter", type=int, default=None)
+    f.add_argument("--notes", default=None, help="관찰 사실 파일(설계 의견 금지)")
+    f.add_argument("--force", action="store_true")
+    f.set_defaults(fn=cmd_reflect)
     a = ap.parse_args(argv)
     return a.fn(a)
 

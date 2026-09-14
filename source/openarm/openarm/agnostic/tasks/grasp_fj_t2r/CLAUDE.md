@@ -46,3 +46,11 @@ ssh server "cd ~/rl_ws/hdgp && TASK=open-short_r_grasp_fj_t2r-lstm-sapg RUN=fj_t
 ## 판정 지표
 `contact/fingers_touching`(0~5) · `contact/finger_<손가락>` · `contact/palm_touching` · `task/grasp_q_at_success`(B 계측 유지) ·
 `ctrl/prev_ep_successes_mean` · `ctrl/drop_sticky_frac` · `task/tilt_deg` · `reward/<생성 항>`. 지표만으로 종료하지 않는다 — 영상 확인(붓기 트랙 09.13 교훈).
+★성공 **순간** 접촉(이벤트 EMA, −1 = 아직 성공 없음): `contact/{fingers,links,palm}_touching_at_success` · `contact/finger_<손가락>_at_success`.
+
+## t2r 루프 (09.14 사용자: "루프 틱을 검사하면서 보상함수 설계가 제대로 되고 있는지 피드백 구조")
+- 틱 절차 `scripts/reward_gen/LOOP_PROMPT_fj.md` · 상태 `reward_gen/grasp_fj_envelope/LOOP_STATE.json` · cron(세션 한정).
+- `scripts/reward_gen/t2r_fj_round.py status|advance|launch` — 판정 수치는 `ROUND_POLICY` 한 곳(라운드 1000 epoch/4h ·
+  유지 성공 ≥2.0 · 종료 후보 성공 ≥4.0 + 성공 순간 손가락 ≥4 · 손바닥 ≥0.5 → 2틱 연속이면 **영상 게이트**).
+- `t2r_fj.py reflect` — 피드백 표 = `reward/*`·`contact/*`·과제 지표. B 설계 계측(`task/grasp_q*`)은 생성기에 안 준다.
+- 붓기 루프(`LOOP_PROMPT.md`·`t2r_round.py`·`reward_gen/pour_bi`·GPU1)와 파일·GPU·cron 을 공유하지 않는다.

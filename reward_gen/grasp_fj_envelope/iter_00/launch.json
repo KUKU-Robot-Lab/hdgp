@@ -1,0 +1,10 @@
+{
+ "label": "fj_t2r_i00",
+ "num_envs": 12288,
+ "started": 1789344839,
+ "commit": "e3f28985d658983033b1ada1fc6a517af78265cb",
+ "gpu": 0,
+ "pid": 2993763,
+ "console": "/home/oem/rl_ws/our_source/fj_t2r_runs/fj_t2r_i00.out",
+ "killed": []
+}

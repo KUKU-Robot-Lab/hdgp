@@ -35,6 +35,9 @@ class GraspFJT2REnv(GraspFJEnv):
         super().__init__(cfg, render_mode, **kw)
         self._t2r_prev_actions = torch.zeros(self.num_envs, int(self.cfg.action_space), device=self.device)
         self._t2r_ctx = None
+        # 성공 순간 접촉 이벤트 EMA — [손가락 수 · 마디 수 · 손바닥] 과 손가락별. 음수 = 아직 성공 없음(센티널).
+        self._t2r_succ_ema = torch.full((3,), -1.0, device=self.device)
+        self._t2r_finger_succ_ema = torch.full((len(self._finger_names),), -1.0, device=self.device)
         _n = sum(len(v) for v in self._t2r_link_sensors.values())
         print(f"[grasp_fj_t2r] 보상 = {self._reward_src} · 보상 전용 컵 접촉 센서 {_n}+1(손바닥) · "
               f"필터 {self._t2r_filter} · 관측 불변", flush=True)
@@ -168,6 +171,17 @@ class GraspFJT2REnv(GraspFJEnv):
         ex["contact/link_force_mean"] = ctx.link_cup_force.mean()
         for k, finger in enumerate(self._finger_names):
             ex[f"contact/finger_{finger}"] = touching[:, k].amax(dim=1).mean()
+        # ★성공 **순간**의 접촉(09.14 t2r 루프) — "성공이 인벨롭이었나"는 스텝 평균으로 못 가른다(접근 중 env 가 뭉갠다).
+        #   루프 판정(`t2r_fj_round.py`)과 생성기 피드백 표가 읽는다. B `_log_grasp_quality` 와 같은 이벤트 EMA.
+        succ = self._success_now.to(touching.dtype)
+        per_env = torch.stack([touching.amax(dim=2).sum(dim=1), touching.sum(dim=(1, 2)),
+                               (ctx.palm_cup_force > _TOUCH_LOG_N).to(touching.dtype)], dim=1)   # (N,3)
+        self._t2r_succ_ema = self._event_ema(self._t2r_succ_ema, per_env, succ)
+        self._t2r_finger_succ_ema = self._event_ema(self._t2r_finger_succ_ema, touching.amax(dim=2), succ)
+        for k, name in enumerate(("fingers_touching", "links_touching", "palm_touching")):
+            ex[f"contact/{name}_at_success"] = self._t2r_succ_ema[k]
+        for k, finger in enumerate(self._finger_names):
+            ex[f"contact/finger_{finger}_at_success"] = self._t2r_finger_succ_ema[k]
 
     def _reset_idx(self, env_ids) -> None:
         super()._reset_idx(env_ids)

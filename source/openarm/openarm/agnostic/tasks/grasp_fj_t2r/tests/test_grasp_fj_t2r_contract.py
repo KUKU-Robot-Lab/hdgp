@@ -78,6 +78,13 @@ def test_context_tensors_are_copies_not_live_env_buffers():
     assert "v.clone() if isinstance(v, torch.Tensor) else v" in _fn_block(_ENV, "_build_context")
 
 
+def test_contact_at_success_is_logged_for_the_loop_judge():
+    # ★09.14 t2r 루프: "성공이 인벨롭이었나"는 스텝 평균으로 못 가른다(접근 중 env 가 뭉갠다) — 성공 순간 이벤트 EMA.
+    blk = _fn_block(_ENV, "_log_fabric_metrics")
+    for tok in ("self._success_now", "self._event_ema(", "_at_success"):
+        assert tok in blk, tok
+
+
 def test_reward_code_path_defaults_empty_and_leaf_is_the_short_tl_hand():
     assert 'reward_code_path: str = ""' in _CFG
     assert "(GraspFJTesolloRightShortEnvCfg)" in _CFG

@@ -139,6 +139,43 @@ the weights.
 """
 
 
+#: 피드백 표 머리말 — 지표의 **뜻만** 적는다(측정 정의 = env 코드 사실). 설계 처방은 넣지 않는다.
+#:   contact/* 정의: `grasp_fj_t2r_env._log_fabric_metrics`(0.1 N 초과를 닿음으로 센다) · done/* 는 스텝별 env 비율.
+FEEDBACK_HEADER = """\
+We trained an RL policy (PPO) with the reward function below and tracked the individual reward \
+components and some task metrics at {n_points} evenly spaced points during training, plus the \
+min / mean / max encountered. Tags `reward/<name>` are your components (per-step mean over \
+environments; `reward/total` is their sum as returned). The task metrics mean:
+- contact/fingers_touching: number of fingers (0-5) with at least one measured link touching the cup \
+(force > 0.1 N), averaged over environments and steps; contact/links_touching: number of measured links \
+touching (0-15); contact/palm_touching: fraction of environments whose palm touches the cup; \
+contact/finger_<name>: fraction of environments where that finger touches; contact/link_force_mean: mean \
+link-cup force [N].
+- contact/<metric>_at_success: the same quantity averaged only over the steps where a success was counted \
+(a moving average over recent successes; -1 until the first success).
+- ctrl/prev_ep_successes_mean: successes (0-5) reached in each environment's most recently finished episode, \
+averaged over environments; task/successes_mean: successes so far in the running episodes; task/lifted_frac: \
+fraction of environments whose cup has been lifted; task/tol: current success tolerance [m]; task/tilt_deg: \
+cup tilt [deg].
+- done/<reason>: fraction of environments ending an episode on a step for that reason (fell, tipped, out_xy, \
+hand_floor, abnormal, max_goals); episode_lengths/step: mean episode length [steps]; rewards/step: mean return.
+"""
+
+FEEDBACK_TAIL = """\
+Please carefully analyse the policy feedback and provide a new, improved reward function. \
+Some helpful tips:
+(1) If a task metric (e.g. successes) stays near zero, the reward is not giving enough signal for that \
+stage; rewrite it or scale it up.
+(2) If a component's value is nearly constant over training, the policy is not optimising it — change its \
+scale, its temperature/sharpness (e.g. the k in exp(-k·d)), or drop it.
+(3) If a component's magnitude is much larger than the others, it may be dominating; rescale so the stages \
+the policy has not yet reached are still worth pursuing.
+(4) Look for exploits: a component that keeps rising while the task metrics it should support do not move \
+is being earned some other way — gate or reshape it so it only pays in the states where it is meaningful.
+Then write the improved function following the same output rules as before.
+"""
+
+
 @dataclass(frozen=True)
 class PromptSpec:
     task: str
@@ -163,6 +200,21 @@ def render_prompt(spec: PromptSpec) -> str:
         parts.append("The previous reward function was:\n```python\n" + spec.previous_code.rstrip() + "\n```")
     if spec.feedback:
         parts.append(spec.feedback)
+        parts.append(FEEDBACK_TAIL)
     if spec.user_notes:
         parts.append("Observations from watching the trained policy:\n" + spec.user_notes.rstrip())
     return "\n\n".join(p.rstrip() for p in parts) + "\n"
+
+
+def render_feedback_table(series: dict[str, list[float]], n_points: int = 10) -> str:
+    """{태그: 값열} → Eureka 형 표. 각 태그를 n_points 로 균등 표본 + min/mean/max (붓기 트랙과 같은 형식)."""
+    lines = [FEEDBACK_HEADER.format(n_points=n_points)]
+    for tag in sorted(series):
+        vals = [v for v in series[tag] if v == v]   # NaN 제거
+        if not vals:
+            continue
+        step = max(len(vals) // n_points, 1)
+        sampled = vals[::step][:n_points]
+        lines.append(f"{tag}: [{', '.join(f'{v:.3g}' for v in sampled)}]  "
+                     f"min {min(vals):.3g} · mean {sum(vals) / len(vals):.3g} · max {max(vals):.3g}")
+    return "\n".join(lines) + "\n"
