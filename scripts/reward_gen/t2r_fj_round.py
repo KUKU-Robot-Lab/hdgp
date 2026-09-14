@@ -2,7 +2,8 @@
 """grasp_fj t2r 자동 루프 — 라운드 판정 · 다음 iter 프롬프트 · 서버 기동 (붓기 `t2r_round.py` 와 코드 공유 없음).
 
   status  : 서버 콘솔·프로세스(RUN_LABEL 대조)·TFEvents → verdict → iter_NN/status.json
-  advance : 현재 iter 의 events 로 `t2r_fj.py reflect` → iter_NN/feedback.md + iter_(NN+1)/prompt.md
+  video   : 최신 체크포인트 스냅샷 → 서버 GPU0 play 영상(학습 tol) → 로컬 our_source/fj_t2r_videos + 프레임 시트
+  advance : 사용자 승인한 관찰·개선 피드백(+참고 지표)으로 `t2r_fj.py reflect` → history.jsonl + iter_(NN+1)/prompt.md
   launch  : 검증 PASS·push 확인 → 서버 git 동기화·HEAD 대조 → (선택) 이전 런을 **PID 로만** 종료 → run_fj.sh →
             새 PID 를 RUN_LABEL·CUDA 로 확인 → iter_NN/launch.json
 
@@ -190,6 +191,70 @@ def launch_command(label: str, rel_iter: str, num_envs: int, seed: int) -> str:
             f"nohup bash ./run_fj.sh > {SERVER_CONSOLE}/{label}.out 2>&1 < /dev/null &")
 
 
+PLAY_TASK = "open-short_r_grasp_fj_t2r-play-lstm-sapg"
+VIDEO_CAM = ("1.10,-0.80,0.78", "0.36,-0.16,0.44")      # fj_i2·i00 영상과 같은 시점
+SERVER_VIDEOS = "/home/oem/rl_ws/our_source/fj_t2r_videos"
+LOCAL_VIDEOS = _HDGP.parent / "our_source" / "fj_t2r_videos"
+
+
+def video_command(run_dir: str, label: str, tol_eval: float, ts: str, num_envs: int = 12, view_env: int = 11,
+                  length: int = 700) -> str:
+    """서버에서 최신 체크포인트를 스냅샷해 play 영상을 찍는 한 줄(동기).
+
+    ★옛 `run_fj_video_srv.sh` 는 task 가 `open-sens_r_grasp_fj` 로 박혀 있어 못 쓴다 — t2r play id 로 직접 부른다.
+    ★학습 중에 덮어써지는 파일을 직접 읽지 않게 스냅샷을 뜬다. `env.tol_eval` 은 play 복원에서 살아남는다.
+    """
+    if num_envs % SAPG_BLOCKS:
+        raise ValueError(f"num_envs {num_envs} 가 SAPG {SAPG_BLOCKS}블록으로 안 나뉜다")
+    out = f"{SERVER_VIDEOS}/{label}_{ts}.mp4"
+    return ("source ~/miniforge3/etc/profile.d/conda.sh && conda activate proj-hdgp-py311 && "
+            "source /home/oem/isaacsim/5.1.0/setup_conda_env.sh 2>/dev/null; "
+            f"cd {SERVER_HDGP} && export PYTHONPATH={SERVER_HDGP}/vendor/rl_games_sapg:{SERVER_HDGP}/source/openarm:"
+            f"$PYTHONPATH CUDA_VISIBLE_DEVICES={GPU}; "
+            f"SRC=$(ls -t {run_dir}/last/*.pth {run_dir}/nn/{TASK}.pth 2>/dev/null | head -1); "
+            f"SNAP={run_dir}/nn/snap_{ts}.pth; cp \"$SRC\" \"$SNAP\" && echo \"SNAP $SNAP <- $SRC\" && "
+            f"timeout 1500 python scripts/reinforcement_learning/rl_games/play.py --task {PLAY_TASK} "
+            f"--checkpoint \"$SNAP\" --num_envs {num_envs} --headless --view_env_index {view_env} --video "
+            f"--video_length {length} --cam_eye {VIDEO_CAM[0]} --cam_lookat {VIDEO_CAM[1]} env.tol_eval={tol_eval} "
+            f"> {SERVER_CONSOLE}/video_{label}_{ts}.out 2>&1; echo \"PLAY EXIT $?\"; "
+            f"V=$(find {run_dir} -name '*.mp4' -newer \"$SNAP\" 2>/dev/null | head -1); mkdir -p {SERVER_VIDEOS}; "
+            f"[ -n \"$V\" ] && cp \"$V\" {out} && echo \"VIDEO {out}\"")
+
+
+def extract_frames(video: Path, out_dir: Path) -> list[Path]:
+    """영상 → 4×3 시트 1장 + 정지 프레임 5장(OpenCV). 로컬 ffmpeg 가 없어 cv2 로 뽑는다."""
+    import cv2
+    import numpy as np
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cap = cv2.VideoCapture(str(video))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 60.0
+    frames = []
+    while True:
+        ok, fr = cap.read()
+        if not ok:
+            break
+        frames.append(fr)
+    if not frames:
+        raise SystemExit(f"[round_fj] 영상에서 프레임을 못 읽었다: {video}")
+    h, w = frames[0].shape[:2]
+    idx = [int(k * (len(frames) - 1) / 11) for k in range(12)]
+    thumbs = []
+    for i in idx:
+        t = cv2.resize(frames[i], (480, int(480 * h / w)))
+        cv2.putText(t, f"f{i} ({i / fps:.1f}s)", (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        thumbs.append(t)
+    sheet = out_dir / "sheet.png"
+    cv2.imwrite(str(sheet), np.vstack([np.hstack(thumbs[r * 4:(r + 1) * 4]) for r in range(3)]))
+    paths = [sheet]
+    for q in (0.15, 0.3, 0.45, 0.6, 0.8):
+        i = int(len(frames) * q)
+        p = out_dir / f"f{i:04d}.png"
+        cv2.imwrite(str(p), frames[i])
+        paths.append(p)
+    return paths
+
+
 # ---------------------------------------------------------------------------- 서버 I/O
 def run_dir_for(label: str) -> str:
     out = _ssh(f"ls -dt {SERVER_LOGDIR}/{label} {SERVER_LOGDIR}/{label}-* 2>/dev/null | head -1").strip()
@@ -237,15 +302,37 @@ def cmd_status(a) -> int:
 
 
 def cmd_advance(a) -> int:
-    mirror = sync(a.label)
-    files = sorted(glob.glob(str(mirror / "summaries" / "events.out.tfevents.*")))
-    if not files:
-        raise SystemExit("[round_fj] events 없음")
+    """사용자 승인한 관찰·개선 피드백으로 다음 iter 프롬프트(원본 t2r interactive). 지표 표는 참고로 붙인다."""
     cmd = [sys.executable, str(_HDGP / "scripts" / "reward_gen" / "t2r_fj.py"), "reflect",
-           "--iter", a.iter, "--events", files[-1]]
-    if a.notes:
-        cmd += ["--notes", a.notes]
+           "--iter", a.iter, "--description", a.description, "--feedback", a.feedback]
+    if not a.no_metrics:
+        mirror = sync(a.label)
+        files = sorted(glob.glob(str(mirror / "summaries" / "events.out.tfevents.*")))
+        if not files:
+            raise SystemExit("[round_fj] events 없음 — --no-metrics 로 지표 표 없이 진행할 수 있다")
+        cmd += ["--events", files[-1]]
     return subprocess.call(cmd)
+
+
+def cmd_video(a) -> int:
+    it = Path(a.iter)
+    tol = a.tol
+    if tol is None and (it / "status.json").exists():
+        tol = json.loads((it / "status.json").read_text()).get("tol")
+    if tol is None:
+        raise SystemExit("[round_fj] 재생 tol 을 모른다 — status 를 먼저 돌리거나 --tol 로 준다")
+    ts = time.strftime("%m%d_%H%M")
+    out = _ssh(video_command(run_dir_for(a.label), a.label, float(tol), ts), timeout=1800)
+    print(out.strip()[-600:])
+    remote = next((ln.split(" ", 1)[1].strip() for ln in out.splitlines() if ln.startswith("VIDEO ")), None)
+    if not remote:
+        raise SystemExit(f"[round_fj] 영상이 안 만들어졌다 — 서버 {SERVER_CONSOLE}/video_{a.label}_{ts}.out 확인")
+    LOCAL_VIDEOS.mkdir(parents=True, exist_ok=True)
+    local = LOCAL_VIDEOS / Path(remote).name
+    subprocess.run(["rsync", "-aq", f"{SERVER}:{remote}", str(local)], check=True, timeout=300)
+    paths = extract_frames(local, LOCAL_VIDEOS / f"frames_{local.stem}")
+    print(json.dumps({"video": str(local), "frames": [str(p) for p in paths], "tol_eval": tol}, ensure_ascii=False))
+    return 0
 
 
 def cmd_launch(a) -> int:
@@ -319,8 +406,15 @@ def main(argv=None) -> int:
     v = sub.add_parser("advance")
     v.add_argument("--label", required=True)
     v.add_argument("--iter", required=True)
-    v.add_argument("--notes", default=None)
+    v.add_argument("--description", required=True, help="영상 관찰(사용자 승인본)")
+    v.add_argument("--feedback", required=True, help="개선 피드백(사용자 승인본)")
+    v.add_argument("--no-metrics", action="store_true", help="참고 지표 표를 붙이지 않는다(원본 t2r 그대로)")
     v.set_defaults(fn=cmd_advance)
+    vd = sub.add_parser("video")
+    vd.add_argument("--label", required=True)
+    vd.add_argument("--iter", required=True)
+    vd.add_argument("--tol", type=float, default=None, help="재생 tol(기본: status.json 의 학습 tol)")
+    vd.set_defaults(fn=cmd_video)
     la = sub.add_parser("launch")
     la.add_argument("--label", required=True)
     la.add_argument("--iter", required=True)

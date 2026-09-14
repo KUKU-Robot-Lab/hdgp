@@ -142,7 +142,7 @@ the weights.
 #: 피드백 표 머리말 — 지표의 **뜻만** 적는다(측정 정의 = env 코드 사실). 설계 처방은 넣지 않는다.
 #:   contact/* 정의: `grasp_fj_t2r_env._log_fabric_metrics`(0.1 N 초과를 닿음으로 센다) · done/* 는 스텝별 env 비율.
 FEEDBACK_HEADER = """\
-We trained an RL policy (PPO) with the reward function below and tracked the individual reward \
+For reference, we trained an RL policy (PPO) with the most recent reward function above and tracked the individual reward \
 components and some task metrics at {n_points} evenly spaced points during training, plus the \
 min / mean / max encountered. Tags `reward/<name>` are your components (per-step mean over \
 environments; `reward/total` is their sum as returned). The task metrics mean:
@@ -176,12 +176,32 @@ Then write the improved function following the same output rules as before.
 """
 
 
+#: ★원본 text2reward interactive 문구 그대로 — `skill_gen/text2reward/code_generation/interactive/classlike_prompt/
+#:   feedback_prompt.py` 의 예시 형식과 `basic/generation.py` 의 suffix. 관찰(description)·개선 피드백(feedback)은
+#:   학습한 로봇을 영상으로 보고 쓴다(09.14 사용자 결정: Claude 가 영상·지표로 초안 → 사용자 승인).
+T2R_FEEDBACK_TEMPLATE = """\
+Generated code shown as below:
+```python
+{code}
+```
+
+Feed this reward code into the environment, and use the RL algorithm to train the policy. After training, \
+I can see from the robot that:
+{description}
+
+To make the code more accurate and train better robot, the feedback for improvement is:
+{feedback}"""
+T2R_SUFFIX = "Re-imagine which steps is missed or wrong.\nShow me the improved code as below:"
+
+
 @dataclass(frozen=True)
 class PromptSpec:
     task: str
     previous_code: str | None = None
-    feedback: str | None = None       # 렌더된 학습 지표 표(이후 라운드)
+    feedback: str | None = None       # 렌더된 학습 지표 표(Eureka 형 — render --feedback 전용)
     user_notes: str | None = None     # 사용자 관찰(선택)
+    history: tuple = ()               # ★t2r interactive: ({"code","description","feedback"}, …) 라운드 순서
+    metrics: str | None = None        # 이력 뒤에 붙는 참고 지표 표(선택)
 
 
 def render_prompt(spec: PromptSpec) -> str:
@@ -196,6 +216,14 @@ def render_prompt(spec: PromptSpec) -> str:
         ADDITIONAL_KNOWLEDGE,
         OUTPUT_RULES.format(task=spec.task, entry=ENTRY_NAME),
     ]
+    # ★원본 text2reward interactive: 지난 (코드 · 로봇 관찰 · 개선 피드백) 전 이력 → "Re-imagine …" 로 새 코드.
+    for h in spec.history:
+        parts.append(T2R_FEEDBACK_TEMPLATE.format(code=h["code"].rstrip(), description=h["description"].rstrip(),
+                                                  feedback=h["feedback"].rstrip()))
+    if spec.metrics:
+        parts.append(spec.metrics)
+    if spec.history:
+        parts.append(T2R_SUFFIX)
     if spec.previous_code:
         parts.append("The previous reward function was:\n```python\n" + spec.previous_code.rstrip() + "\n```")
     if spec.feedback:

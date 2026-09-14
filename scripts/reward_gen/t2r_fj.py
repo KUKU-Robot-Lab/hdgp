@@ -3,7 +3,8 @@
 
   render  : 과제 문장(+선택: 이전 코드·피드백·메모) → reward_gen/<track>/iter_NN/prompt.md
   ingest  : response.md 의 마지막 ```python 블록 → compute_reward.py + validation.json
-  reflect : 학습 TFEvents → iter_NN/feedback.md(지표 표) + iter_(NN+1)/prompt.md(이전 코드 + 표)
+  reflect : 원본 t2r interactive — (코드 · 영상으로 본 로봇 관찰 · 개선 피드백) 을 history.jsonl 에 더하고
+            전 이력(+선택: 참고 지표 표)으로 iter_(NN+1)/prompt.md
 
 디렉터리 규약:  reward_gen/<track>/iter_NN/{prompt.md, response.md, compute_reward.py, validation.json, meta.json,
                 feedback.md, launch.json, status.json}
@@ -11,7 +12,8 @@
     python3 scripts/reward_gen/t2r_fj.py render --track grasp_fj_envelope \
         --task-file scripts/reward_gen/tasks/grasp_fj_envelope.txt
     ../IsaacLab/isaaclab.sh -p scripts/reward_gen/t2r_fj.py ingest --iter reward_gen/grasp_fj_envelope/iter_00
-    python3 scripts/reward_gen/t2r_fj.py reflect --iter reward_gen/grasp_fj_envelope/iter_00 --events <tfevents>
+    python3 scripts/reward_gen/t2r_fj.py reflect --iter reward_gen/grasp_fj_envelope/iter_00 \
+        --description iter_00/observation.md --feedback iter_00/improvement.md [--events <tfevents>]
 
 ★붓기 트랙 CLI(`t2r.py`)와 코드를 공유하지 않는다 — 컨텍스트가 다르고 그쪽은 다른 세션의 루프가 쓴다.
 ★생성기: prompt.md 경로만 받은 새 에이전트가 response.md 를 쓴다(이 세션의 설계 의견을 섞지 않는다).
@@ -117,33 +119,59 @@ def cmd_ingest(a) -> int:
     return 0 if rep.ok else 1
 
 
-def cmd_reflect(a) -> int:
-    from parse_tfevents import load_tfevents   # scripts/tools
+def load_history(root: Path, track: str) -> list[dict]:
+    p = root / track / "history.jsonl"
+    if not p.exists():
+        return []
+    return [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
+
+def cmd_reflect(a) -> int:
+    """원본 text2reward interactive: 이번 (코드 · 로봇 관찰 · 개선 피드백) 을 이력에 더하고 전 이력으로 다음 프롬프트.
+
+    ★관찰·피드백은 학습한 로봇을 영상으로 보고 쓴 **사용자 승인본**이다(09.14). 지표 표는 `--events` 가 있을 때 참고로만 붙는다.
+    """
     d = Path(a.iter)
-    code = (d / "compute_reward.py").read_text(encoding="utf-8")
-    series: dict[str, list[float]] = {}
-    for ev in a.events:
-        for tag, vals in collect_feedback_series(load_tfevents(ev)).items():
-            series.setdefault(tag, []).extend(vals)
-    if not any(t.startswith("reward/") for t in series):
-        raise SystemExit("[t2r_fj] reward/* 태그가 없다 — events 경로 확인")
-    fb = P.render_feedback_table(series, n_points=a.points)
-    (d / "feedback.md").write_text(fb, encoding="utf-8")
     meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
-    n_next = a.next_iter if a.next_iter is not None else int(meta["iter"]) + 1
-    nd = a.root / meta["track"] / f"iter_{n_next:02d}"
+    track, n_cur = meta["track"], int(meta["iter"])
+    entry = {"iter": n_cur, "code": (d / "compute_reward.py").read_text(encoding="utf-8"),
+             "description": Path(a.description).read_text(encoding="utf-8").strip(),
+             "feedback": Path(a.feedback).read_text(encoding="utf-8").strip(),
+             "created": datetime.now().isoformat()}
+    if not entry["description"] or not entry["feedback"]:
+        raise SystemExit("[t2r_fj] 관찰·개선 피드백이 비었다 — 영상을 보고 쓴 사용자 승인본이 필요하다")
+    history = sorted([h for h in load_history(a.root, track) if int(h["iter"]) != n_cur] + [entry],
+                     key=lambda h: int(h["iter"]))
+    metrics, n_tags = None, 0
+    if a.events:
+        from parse_tfevents import load_tfevents   # scripts/tools
+
+        series: dict[str, list[float]] = {}
+        for ev in a.events:
+            for tag, vals in collect_feedback_series(load_tfevents(ev)).items():
+                series.setdefault(tag, []).extend(vals)
+        if not any(t.startswith("reward/") for t in series):
+            raise SystemExit("[t2r_fj] reward/* 태그가 없다 — events 경로 확인")
+        metrics, n_tags = P.render_feedback_table(series, n_points=a.points), len(series)
+    n_next = a.next_iter if a.next_iter is not None else n_cur + 1
+    nd = a.root / track / f"iter_{n_next:02d}"
     if (nd / "prompt.md").exists() and not a.force:
         raise SystemExit(f"[t2r_fj] {nd / 'prompt.md'} 가 이미 있다 — 덮으려면 --force")
+    (a.root / track / "history.jsonl").write_text(
+        "".join(json.dumps(h, ensure_ascii=False) + "\n" for h in history), encoding="utf-8")
+    (d / "feedback.md").write_text(
+        "## I can see from the robot that\n" + entry["description"] + "\n\n## Feedback for improvement\n"
+        + entry["feedback"] + "\n" + ("\n" + metrics if metrics else ""), encoding="utf-8")
     nd.mkdir(parents=True, exist_ok=True)
-    notes = Path(a.notes).read_text(encoding="utf-8") if a.notes else None
-    spec = P.PromptSpec(task=meta["task"], previous_code=code, feedback=fb, user_notes=notes)
+    spec = P.PromptSpec(task=meta["task"], history=tuple(history), metrics=metrics)
     (nd / "prompt.md").write_text(P.render_prompt(spec), encoding="utf-8")
     (nd / "meta.json").write_text(json.dumps({
-        "track": meta["track"], "iter": n_next, "task": meta["task"], "created": datetime.now().isoformat(),
-        "context": meta.get("context"), "prev_iter": str(d), "events": a.events, "notes": a.notes},
+        "track": track, "iter": n_next, "task": meta["task"], "created": datetime.now().isoformat(),
+        "context": meta.get("context"), "prev_iter": str(d), "history_iters": [int(h["iter"]) for h in history],
+        "description": a.description, "feedback": a.feedback, "events": a.events},
         indent=1, ensure_ascii=False), encoding="utf-8")
-    print(f"[t2r_fj] feedback → {d / 'feedback.md'}  ({len(series)} tags)")
+    print(f"[t2r_fj] history → {a.root / track / 'history.jsonl'}  ({len(history)} rounds)")
+    print(f"[t2r_fj] feedback → {d / 'feedback.md'}  (metrics {n_tags} tags)")
     print(f"[t2r_fj] next prompt → {nd / 'prompt.md'}")
     return 0
 
@@ -167,10 +195,11 @@ def main(argv=None) -> int:
     i.set_defaults(fn=cmd_ingest)
     f = sub.add_parser("reflect")
     f.add_argument("--iter", required=True)
-    f.add_argument("--events", nargs="+", required=True)
+    f.add_argument("--description", required=True, help="영상에서 본 로봇 동작(사용자 승인본)")
+    f.add_argument("--feedback", required=True, help="개선 피드백(사용자 승인본)")
+    f.add_argument("--events", nargs="+", default=None, help="(선택) 참고 지표 표를 붙인다")
     f.add_argument("--points", type=int, default=10)
     f.add_argument("--next-iter", type=int, default=None)
-    f.add_argument("--notes", default=None, help="관찰 사실 파일(설계 의견 금지)")
     f.add_argument("--force", action="store_true")
     f.set_defaults(fn=cmd_reflect)
     a = ap.parse_args(argv)

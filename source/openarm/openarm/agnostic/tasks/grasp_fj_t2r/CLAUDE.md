@@ -54,5 +54,9 @@ ssh server "cd ~/rl_ws/hdgp && TASK=open-short_r_grasp_fj_t2r-lstm-sapg RUN=fj_t
   유지 = 성공 ≥2.0 **또는 최근 200 epoch 안에 공차가 조여짐** · 종료 후보 성공 ≥4.0 + tol ≤0.03 + 성공 순간 손가락 ≥4 · 손바닥 ≥0.5
   → 2틱 연속이면 **영상 게이트**). ★공차 커리큘럼(3000 프레임≈188 epoch 마다 성공 ≥2.0 이면 ×0.9)이 성공 수를 게이트 2.0 쪽으로
   끌어내린다(i00: 3.46→2.71) — 성공만으로 판정하면 개선 중인 런을 죽인다(09.14 틱에서 발견·수정).
-- `t2r_fj.py reflect` — 피드백 표 = `reward/*`·`contact/*`·과제 지표. B 설계 계측(`task/grasp_q*`)은 생성기에 안 준다.
+- ★피드백 = **원본 text2reward interactive**(09.14 사용자: "T2R 방식이 제대로 적용된게 맞는지?" → 결정 "Claude 초안 → 사용자 승인"):
+  라운드 끝에 `t2r_fj_round.py video` 로 영상 → Claude 가 `iter_NN/observation.md`("I can see from the robot that") ·
+  `improvement.md`("feedback for improvement") 초안 → **사용자 승인** → `advance` → `t2r_fj.py reflect` 가 `history.jsonl` 의
+  전 이력(코드·관찰·피드백)을 원본 템플릿으로 넣고 "Re-imagine which steps is missed or wrong". 지표 표(`reward/*`·`contact/*`·과제)는
+  참고로만 붙고 B 설계 계측(`task/grasp_q*`)은 안 준다. ★처음 만든 루프는 이 사람 관찰 단계를 지표 임계값으로 바꿔 놓았었다(Eureka 식).
 - 붓기 루프(`LOOP_PROMPT.md`·`t2r_round.py`·`reward_gen/pour_bi`·GPU1)와 파일·GPU·cron 을 공유하지 않는다.
