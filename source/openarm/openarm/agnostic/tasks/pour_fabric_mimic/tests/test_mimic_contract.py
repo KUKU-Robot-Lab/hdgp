@@ -170,6 +170,17 @@ def test_asset_actually_carries_mimic_multipliers_both_hands():
             assert pairs[f"{s}_hj_{f}_2"] == pytest.approx(1.1169)
 
 
+def test_contact_filters_point_at_rigid_body_prim():
+    """shaker 강체는 baseLink 하위 — 필터가 루트를 가리키면 힘이 조용히 0(관측 #0230)."""
+    assert "cfg.source_contact_filter = (SOURCE_CUP_BODY,)" in _CFG
+    assert "prim_path=_cfg.SOURCE_CUP_BODY, filter_prim_paths_expr=[_cfg.RECEIVER_CUP_BODY]" in _ENV
+    assert "find_matching_prim_paths(expr)" in _ENV
+    from pxr import Usd
+    stage = Usd.Stage.Open(str(_HDGP / "assets" / "cup" / "shaker_closed_rl.usd"))
+    rb = [p.GetName() for p in stage.Traverse() if "PhysicsRigidBodyAPI" in p.GetAppliedSchemas()]
+    assert rb == ["baseLink"], rb
+
+
 # 원본 계약 중 그대로 유지돼야 하는 것(보상 없음 · 성공은 env · a=0 = 앵커)
 def test_inherited_contracts_hold():
     assert "load_reward_fn" in _ENV and "RewardContext(" in _ENV

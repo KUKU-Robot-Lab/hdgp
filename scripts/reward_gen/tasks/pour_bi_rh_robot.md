@@ -16,7 +16,9 @@ by a geometric-fabrics controller toward this target
   actions[12:18] = receiver palm 6-DoF target offset
   actions[18:24] = receiver hand closure commands
 The hand controller stops a finger automatically once one of its links touches its own cup \
-(contact freeze), so a closing command produces a wrap-around power grasp; opening is always \
-allowed. Fingers can only close when the palm is near its cup. The hand opening between the thumb \
-and the four fingers is about 10 cm when open and the cups are about 7 cm in diameter, so the cup \
-must be placed well inside the hand before closing.
+(contact freeze); opening is always allowed. Fingers can only close when the palm is near its cup. \
+The "cups" are slim shaker bodies about 6 cm in diameter and 11 cm tall, and the hand is small: a \
+FINGERTIP (precision) grasp — thumb tip on one side, the tips of some fingers on the other — is the \
+expected way to hold the cup; a full wrap-around power grasp is NOT required and usually not \
+possible. The cups are light, so a finger brushing the cup easily knocks it over: approach slowly \
+and touch it only with the fingertips.

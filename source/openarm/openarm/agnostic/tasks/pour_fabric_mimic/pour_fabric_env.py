@@ -154,7 +154,13 @@ class PourFabricMimicEnv(DirectRLEnv):
         self._prev_in_src = torch.ones(N, device=dev)
         self._prev_spill = torch.zeros(N, device=dev)
         self._flags_fresh = torch.ones(N, dtype=torch.bool, device=dev)
-        self._bead_offs = torch.tensor(bead_offsets_in_cup(k), device=dev)
+        # xy 검증 배치 유지 · z 는 바닥 기준 재적층(shaker 0.65: 원본 z 는 림 위로 나간다)
+        _offs = torch.tensor(bead_offsets_in_cup(k), device=dev)
+        _layer = torch.arange(k, device=dev) // 5
+        _offs[:, 2] = -float(cfg.object_origin_offset_z) + float(cfg.bead_z_from_bottom) + float(cfg.bead_layer_dz) * _layer
+        self._bead_offs = _offs
+        if float(_offs[:, 2].max()) > float(cfg.cup_mouth_z) - 0.01:
+            raise RuntimeError(f"[pour_fabric_mimic] 비드 최상층 z {float(_offs[:, 2].max()):.3f} 이 림 {cfg.cup_mouth_z:.3f} 에 닿는다")
 
         self._success_now = torch.zeros(N, dtype=torch.bool, device=dev)
         self._success_streak = torch.zeros(N, dtype=torch.long, device=dev)
@@ -397,8 +403,14 @@ class PourFabricMimicEnv(DirectRLEnv):
         self.scene.rigid_objects["receiver_cup"] = self.receiver_cup
         # 컵↔컵 접촉(09.14 s2r 충돌 신호): 소스 컵 센서를 리시버 컵으로 필터.
         self._cup_cup_sensor = ContactSensor(ContactSensorCfg(
-            prim_path=_cfg.SOURCE_CUP_PRIM, filter_prim_paths_expr=[_cfg.RECEIVER_CUP_PRIM],
+            prim_path=_cfg.SOURCE_CUP_BODY, filter_prim_paths_expr=[_cfg.RECEIVER_CUP_BODY],
             history_length=1, track_air_time=False))
+        # 부팅 검사: 강체 prim 경로가 env 수만큼 매칭돼야 한다(0 이면 센서·필터가 전부 조용히 0 이 된다).
+        for expr in (_cfg.SOURCE_CUP_BODY, _cfg.RECEIVER_CUP_BODY):
+            n_hit = len(find_matching_prim_paths(expr))
+            if n_hit != self.num_envs:
+                raise RuntimeError(f"[pour_fabric_mimic] 물체 강체 prim {expr} 매칭 {n_hit} ≠ env {self.num_envs} — "
+                                   f"POUR_CUP_BODY_NAME 이 USD 와 다르다")
         self.scene.sensors["contact_cups"] = self._cup_cup_sensor
         self.beads = RigidObjectCollection(cfg.beads_cfg)
         self.scene.rigid_object_collections["beads"] = self.beads

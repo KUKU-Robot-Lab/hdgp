@@ -5,4 +5,6 @@
 - "frame origin robot base, +z up, +x forward, +y left": 원본 pour_bi 프롬프트와 동일 규약(env-local, side_rig.palm_pos = body_pos_w − env_origins); 부호는 홈 palm (0.31, −0.30) 이 우팔이라는 부팅 로그로 확인
 - "action layout 6+6 per side": pour_fabric_env_cfg.resolve_cfg (num_actions_per_side = 6 + 6), side_rig.synergy_targets(syn_slot: thumb_1,thumb_2,index_1,middle_1,ring_1,pinky_1 = hand_finger_channels)
 - "contact freeze / opening always allowed / near its cup": side_rig.synergy_targets(hold & delta>0 · close_gate) — 원본과 동일
-- "opening ~10 cm, cup ~7 cm": grasp_fj_rh CLAUDE.md 파지 창 105.5 mm(09.07 실측) · cup_big 외경 90 mm × cup_scale 0.8 = 72 mm
+- "slim shaker ~6 cm dia, 11 cm tall": pour_fabric_mimic cfg POUR_CUP_USD=shaker_closed_rl(외경 88 mm·높이 175 mm @1.0) × cup_scale 0.65
+- "fingertip grasp expected, wrap not required": 사용자 결정 09.14(인벨롭 파지 포기) · 09.14 프로브 7종에서 열린 손끝이 포켓을 막아 감쌈 진입 불가
+- "light cup, brushing knocks it over": 09.14 프로브 실측(손가락 3~14 N 접촉에 30~88° 전도)

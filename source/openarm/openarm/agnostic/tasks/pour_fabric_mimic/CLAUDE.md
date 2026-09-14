@@ -35,7 +35,13 @@
 같은 q 에서 4지 손끝 |l − mirror(r)| = 0.00 mm. 엄지 5.7 mm·palm_sensor 2.7 mm 는 벤더 자산 비대칭(부호 오류면 수 cm).
 부팅 fabric FK 게이트: 양팔 0.14 mm / 0.9° 통과. ★좌 yaw 가 ±π 경계에 있어 각도 차는 wrap 해서 잰다(side_rig).
 
-## 검증 게이트 (학습 전) — 원본 3종 + 언더액추
+## ★09.14 사용자 결정 — 대본 파지 게이트 없이 학습 시작 · shaker 계열 · 손끝 파지 허용
+프로브 7종(직진·옆·손끝쪽·오목면·Track B 대각·2단 xy→z, 컵 0.8/0.6/0.5)이 전부 접촉 즉시 전도(30~88°)였다.
+기하 덤프: '열린'(q=0) 손가락이 45° 안으로 굽어 손끝이 포켓 중심을 막고 엄지는 검지 위(z)에 있어 감쌈 진입이 불가하다.
+→ 물체를 `shaker_closed_rl` × 0.65(지름 57 mm, Track B shaker_one 과 동일)로 바꾸고, **인벨롭 파지를 포기**(손끝 파지 OK),
+대본 파지 없이 학습을 시작한다(Track B 선례: 대본 전도 611회여도 RL 은 학습). 비드는 바닥 기준 재적층.
+
+## 검증 게이트 (학습 전) — 원본 3종 + 언더액추(★2 는 이 트랙에서 면제)
 1. `probe_pour_fabric_mimic_boot.py` 무작위 300스텝: NaN 0 · runaway 0 · in_source ≥ 0.9 (09.14 PASS).
 2. `probe_pour_fabric_mimic_hand.py --approach cup`: 케이지→컵 접근·폐쇄·리프트 대본으로 파지 성립(`grasped`)·mimic 오차 ≤ 0.1 rad.
 3. `probe_pour_fabric_mimic_boot.py --script pour --tilt_slot 5`: 붓기 축 도달.

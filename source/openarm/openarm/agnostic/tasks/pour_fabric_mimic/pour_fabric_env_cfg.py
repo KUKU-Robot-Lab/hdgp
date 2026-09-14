@@ -52,18 +52,28 @@ _ASSETS_DIR = _ob.ASSETS_DIR
 # 컵 자산 — pour 전용 **SDF** 콜라이더(convex hull 은 컵 속을 메워 비드가 안 담긴다).
 # 원점 오프셋·내부 기하는 pour_v1 실측(.usd bbox) — bead_flags 판정과 같은 값.
 # =============================================================================
-POUR_CUP_USD = os.path.join(_ASSETS_DIR, "cup", "cup_big_sdf.usd")
-POUR_CUP_ORIGIN_OFFSET_Z = 0.0773     # 바닥 −0.0773
-POUR_CUP_MASS = 0.134                 # = object_bank.BASE_OBJECT_MASS
+# ★09.14 사용자 결정: 컵 대신 **shaker 계열**(`shaker_closed_rl.usd` = 바닥 플러그 + 열린 상단, SDF 콜라이더,
+#   object_bank 09.01 pxr 실측: 바닥 −0.0921 · 림 +0.0829 · 내경 r 0.0432 · 외경 r 0.0440, 벽 0.8 mm).
+#   RH56F1 은 엄지–4지 간극 최대 83.7 mm·실사용 ~70 mm(object_bank SHAKER_SMALL 주석) → cup_scale 0.65 = 지름 57 mm
+#   (Track B shaker_one 과 같은 크기). 인벨롭 파지는 포기, 손끝 파지로 잡아도 된다(사용자 09.14).
+POUR_CUP_USD = os.path.join(_ASSETS_DIR, "cup", "shaker_closed_rl.usd")
+POUR_CUP_ORIGIN_OFFSET_Z = 0.0921     # 바닥 −0.0921 (scale 1)
+POUR_CUP_MASS = 0.134                 # = object_bank.BASE_OBJECT_MASS (스케일 무관 실물값)
 
 SOURCE_CUP_PRIM = "/World/envs/env_.*/SourceCup"
 RECEIVER_CUP_PRIM = "/World/envs/env_.*/ReceiverCup"
+# ★shaker USD 는 강체(RigidBodyAPI)가 루트가 아니라 `baseLink` 하위 prim 이다(cup_big_sdf 는 루트).
+#   접촉 센서 prim 과 손가락 센서의 필터는 **강체 prim** 을 가리켜야 한다 — 어긋나면 PhysX 가 조용히 힘 0 을 준다
+#   (관측 #0230: 필터 0개 매칭 = 로그 한 줄 + 전부 0). env 가 부팅에서 매칭 수를 검사한다.
+POUR_CUP_BODY_NAME = "baseLink"
+SOURCE_CUP_BODY = SOURCE_CUP_PRIM + "/" + POUR_CUP_BODY_NAME
+RECEIVER_CUP_BODY = RECEIVER_CUP_PRIM + "/" + POUR_CUP_BODY_NAME
 TABLE_PRIM = "/World/envs/env_.*/Table"
 
 
 # 컵 기하(스케일 1.0 기준) — resolve_cfg 가 `cup_scale` 을 곱해 cfg 필드를 채운다(멱등).
-CUP_GEOM_UNIT = {"cup_inner_radius": 0.041, "cup_inside_z_min": -0.070, "cup_inside_z_max": 0.100,
-                 "cup_mouth_z": 0.100, "object_origin_offset_z": POUR_CUP_ORIGIN_OFFSET_Z}
+CUP_GEOM_UNIT = {"cup_inner_radius": 0.0432, "cup_inside_z_min": -0.085, "cup_inside_z_max": 0.0829,
+                 "cup_mouth_z": 0.0829, "object_origin_offset_z": POUR_CUP_ORIGIN_OFFSET_Z}
 
 
 def build_cup_cfg(prim_path: str, scale: float = 1.0) -> RigidObjectCfg:
@@ -215,10 +225,13 @@ class PourFabricMimicEnvCfg(DirectRLEnvCfg):
     ground_plane_z: float = -0.10
 
     # ---- 작업면·컵 기하 -------------------------------------------------------------
-    # ★RH56F1 파지 창(열림 105.5 → 폐쇄 46.6 mm, grasp_fj_rh 09.07) 대비 cup_big 외경 90 mm 는 여유 15 mm 뿐이다.
-    #   사용자 결정 09.14: 컵을 **0.8 배**(외경 72 mm·내경 66 mm·높이 142 mm)로 줄인다. 아래 기하 필드 5개는
+    # ★물체 = shaker_closed × cup_scale(위 주석). 아래 기하 필드 5개는
     #   resolve_cfg 가 CUP_GEOM_UNIT × cup_scale 로 **덮어쓴다**(hydra 로 개별 기하를 덮지 말 것). 질량은 실물값 유지.
-    cup_scale: float = 0.8
+    cup_scale: float = 0.65
+    # 비드 소환: xy 는 검증 배치(bead_offsets_in_cup) 그대로(반경 14/18 mm < 내경 28 mm), z 는 바닥 기준으로 다시 쌓는다
+    #   (원본 z 는 cup_big 원점 기준이라 shaker 0.65 에서는 림 위로 나간다). 층 간격 14 mm 유지.
+    bead_z_from_bottom: float = 0.008
+    bead_layer_dz: float = 0.014
     table_surface_z: float = 0.205
     object_origin_offset_z: float = POUR_CUP_ORIGIN_OFFSET_Z
     object_spawn_pad: float = 0.005           # 스폰 침투 반동 방지
@@ -393,8 +406,8 @@ def resolve_cfg(cfg: "PourFabricMimicEnvCfg") -> None:
     cfg.source_cup_cfg = build_cup_cfg(SOURCE_CUP_PRIM, s)
     cfg.receiver_cup_cfg = build_cup_cfg(RECEIVER_CUP_PRIM, s)
     cfg.beads_cfg = make_beads_cfg(_ASSETS_DIR, n=int(cfg.bead_count))
-    cfg.source_contact_filter = (SOURCE_CUP_PRIM,)
-    cfg.receiver_contact_filter = (RECEIVER_CUP_PRIM,)
+    cfg.source_contact_filter = (SOURCE_CUP_BODY,)
+    cfg.receiver_contact_filter = (RECEIVER_CUP_BODY,)
 
     # 물리 DR: 컵 마찰은 고정 범위(런타임 확장 불가) — term 생성 전인 cfg 단계에서 적용.
     if not bool(cfg.enable_events):

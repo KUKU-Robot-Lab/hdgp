@@ -18,10 +18,12 @@ by a geometric-fabrics controller toward this target
   actions[12:18] = receiver palm 6-DoF target offset
   actions[18:24] = receiver hand closure commands
 The hand controller stops a finger automatically once one of its links touches its own cup \
-(contact freeze), so a closing command produces a wrap-around power grasp; opening is always \
-allowed. Fingers can only close when the palm is near its cup. The hand opening between the thumb \
-and the four fingers is about 10 cm when open and the cups are about 7 cm in diameter, so the cup \
-must be placed well inside the hand before closing.
+(contact freeze); opening is always allowed. Fingers can only close when the palm is near its cup. \
+The "cups" are slim shaker bodies about 6 cm in diameter and 11 cm tall, and the hand is small: a \
+FINGERTIP (precision) grasp — thumb tip on one side, the tips of some fingers on the other — is the \
+expected way to hold the cup; a full wrap-around power grasp is NOT required and usually not \
+possible. The cups are light, so a finger brushing the cup easily knocks it over: approach slowly \
+and touch it only with the fingertips.
 
 Now I want you to help me write a reward function for reinforcement learning.
 
@@ -118,7 +120,7 @@ Additional knowledge:
 10. Each component you return is logged separately during training and shown back to you after training, so name them meaningfully (e.g. "approach_src", "grasp_rcv", "pour_delta").
 11. This policy will be deployed on the real robot, so collisions are a safety hazard: `ctx.cup_cup_force` is the contact force between the two cups, and `ctx.src_hand_foreign_force` / `ctx.rcv_hand_foreign_force` are the forces each hand exerts on anything other than its own cup (the other hand, the other cup, the table). During a correct pour the cups do not touch each other and the hands touch only their own cup; penalise these forces (bounded, e.g. `torch.tanh(f / 5.0)`) so the policy learns to keep clearance. Cup poses seen by the policy are delayed and noisy as on the real perception system.
 
-I want it to fulfil the following task: Using both arms, grasp each cup: the right hand grasps the source cup (which contains the beads) and the left hand grasps the empty receiver cup. Lift both cups off the table, bring the mouth of the source cup over the mouth of the receiver cup, and tilt the source cup so that the beads pour into the receiver cup. Keep the receiver cup upright, do not drop either cup, and spill as few beads as possible. The task is finished when at least half of the beads are inside the receiver cup with little spill.
+I want it to fulfil the following task: Using both arms, grasp each cup (a fingertip grasp is fine, no wrap-around needed): the right hand grasps the source cup (which contains the beads) and the left hand grasps the empty receiver cup. Lift both cups off the table, bring the mouth of the source cup over the mouth of the receiver cup, and tilt the source cup so that the beads pour into the receiver cup. Keep the receiver cup upright, do not drop either cup, and spill as few beads as possible. The task is finished when at least half of the beads are inside the receiver cup with little spill.
 1. Please think step by step and tell me what this task means and which stages the robot must go through.
 2. Then write a function with exactly this signature:
 ```python
