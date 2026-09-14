@@ -102,7 +102,7 @@ class IkerShoeEnvCfg(DirectRLEnvCfg):
 
     robot_cfg: ArticulationCfg = robot.robot_cfg()
     shoe_move_cfg: RigidObjectCfg = scene_cfg.shoe_cfg(layout.MOVING_SHOE, (0.27, 0.14, 0.26), SHOE_REST_QUAT_WXYZ)
-    shoe_other_cfg: RigidObjectCfg = scene_cfg.shoe_cfg(layout.OTHER_SHOE, (0.27, -0.15, 0.38), SHOE_REST_QUAT_WXYZ)
+    shoe_other_cfg: RigidObjectCfg = scene_cfg.shoe_cfg(layout.OTHER_SHOE, (0.27, layout.OTHER_SHOE_Y, 0.38), SHOE_REST_QUAT_WXYZ)
     table_cfg: AssetBaseCfg = scene_cfg.table_cfg()
     rack_cfg: AssetBaseCfg = scene_cfg.rack_cfg()
     light_cfg: AssetBaseCfg = scene_cfg.light_cfg()
