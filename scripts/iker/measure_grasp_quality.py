@@ -102,11 +102,12 @@ def main() -> int:
             step = u._last
             latched_now = step.just_latched & live
             if bool(latched_now.any()):
-                latch_q.append(u._q_at_latch[latched_now].cpu())
-                w_at_latch.append(u.grasp_quality_now()[1][latched_now].cpu())
+                # step() has already reset envs whose episode ended this step (clearing _q_at_*): read the step's own values
+                latch_q.append(u._q_step[latched_now].cpu())
+                w_at_latch.append(u._w_f_step[latched_now].cpu())
             succeeded_now = step.success & live
             if bool(succeeded_now.any()):
-                success_q.append(u._q_at_success[succeeded_now].cpu())
+                success_q.append(u._q_step[succeeded_now].cpu())
             done_first |= dones.bool()
             if bool(done_first.all()):
                 break

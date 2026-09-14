@@ -132,6 +132,8 @@ class IkerShoeGraspEnv(DirectRLEnv):
         self._start_bottom_z = torch.zeros(n, device=dev)
         self._q_at_latch = torch.zeros(n, device=dev)
         self._q_at_success = torch.zeros(n, device=dev)
+        # q and w_f of the latest _get_dones; _reset_idx leaves them alone, so a caller can read the step that ended an episode
+        self._q_step, self._w_f_step = torch.zeros(n, device=dev), None
         self._shoe_mass = self._shoe.root_physx_view.get_masses()[:, 0].to(dev)
         self._wrench = WrenchDR(n, dev, force_scale=cfg.wrench_force_per_kg, torque_scale=cfg.wrench_torque_per_kg,
                                 prob_range=cfg.wrench_prob_range)
@@ -215,6 +217,7 @@ class IkerShoeGraspEnv(DirectRLEnv):
         palm_pos = self._robot.data.body_pos_w[:, self._palm] - origins
         shoe_pos = self._shoe.data.root_pos_w - origins
         q, w_f, palm_cos = self.grasp_quality_now()
+        self._q_step, self._w_f_step = q, w_f
         hand_z = torch.cat([self._robot.data.body_pos_w[:, self._finger_links, 2], palm_pos[:, 2:3]], dim=1).min(dim=1).values
         dz_free = gs.free_lift_height(surface, self._start_bottom_z, layout.RACK_X_RANGE, layout.RACK_Y_RANGE)
         shoe_vel = self._shoe.data.root_lin_vel_w
