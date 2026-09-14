@@ -52,6 +52,7 @@ from rl_games.torch_runner import Runner  # noqa: E402
 import openarm.agnostic.tasks.iker_shoe.config  # noqa: E402,F401  (registers the gym ids)
 from openarm.agnostic.modules.iker import run_files  # noqa: E402
 from openarm.agnostic.tasks.iker_shoe import grasp_bank as gb  # noqa: E402
+from openarm.agnostic.tasks.iker_shoe import grasp_stage as gs  # noqa: E402
 from openarm.agnostic.tasks.iker_shoe import layout  # noqa: E402
 from openarm.agnostic.tasks.iker_shoe.iker_shoe_grasp_env import QUALITY_CALIBRATION_FILE  # noqa: E402
 from openarm.agnostic.tasks.iker_shoe.iker_shoe_grasp_env_cfg import IkerShoeGraspPlayEnvCfg  # noqa: E402
@@ -125,17 +126,17 @@ def main() -> int:
     if events < args.min_events:
         print(f"QUALITY config {args.config_index:02d} {result} passed False: {events} latch/success moments < {args.min_events}", flush=True)
         return 1
+    q_lo, q_hi = float(torch.quantile(moments, Q_LO_PERCENTILE)), float(torch.quantile(moments, Q_HI_PERCENTILE))
     result.update({
-        "q_lo": float(torch.quantile(moments, Q_LO_PERCENTILE)),
-        "q_hi": float(torch.quantile(moments, Q_HI_PERCENTILE)),
         "q_quantiles_10_25_50_75_90": [round(float(torch.quantile(moments, p)), 4) for p in (0.1, 0.25, 0.5, 0.75, 0.9)],
         "w_f_median_at_latch": {f: round(float(torch.cat(w_at_latch)[:, i].median()), 4) for i, f in enumerate(gb.FINGERS)} if w_at_latch else {},
     })
-    passed = result["q_lo"] < result["q_hi"]
+    passed = q_lo < q_hi
     out = layout.RUNS_DIR / f"config_{args.config_index:02d}" / QUALITY_CALIBRATION_FILE
     if passed:
-        run_files.write_json(out, result)
-    print(f"QUALITY config {args.config_index:02d} {result} passed {passed} -> {out}", flush=True)
+        # the environment reads the file with run_files.read_json, which requires the schema key
+        run_files.write_json(out, gs.quality_calibration_document(q_lo, q_hi, **result))
+    print(f"QUALITY config {args.config_index:02d} {result} q_lo {q_lo} q_hi {q_hi} passed {passed} -> {out}", flush=True)
     return 0 if passed else 1
 
 

@@ -5,6 +5,7 @@ import math
 import pytest
 import torch
 
+from openarm.agnostic.modules.iker import run_files
 from openarm.agnostic.tasks.iker_shoe import grasp_stage as gs
 
 NAMES = ("l_hj_thumb_3", "l_hj_index_3", "l_hj_index_4", "l_hj_index_1")
@@ -260,3 +261,19 @@ def test_reward_cfg_rejects_inconsistent_values():
     overridden.q_hi = overridden.q_lo  # a hydra override assigns with setattr and skips __post_init__
     with pytest.raises(ValueError, match="q_lo"):
         overridden.validate()
+
+
+def test_quality_calibration_document_round_trips_and_a_file_without_schema_is_rejected(tmp_path):
+    doc = gs.quality_calibration_document(0.12, 0.34, checkpoint="/a/ep250.pth", latch_events=80)
+    assert doc["schema"] == 1 and doc["checkpoint"] == "/a/ep250.pth" and (doc["q_lo"], doc["q_hi"]) == (0.12, 0.34)
+    path = run_files.write_json(tmp_path / "grasp_quality_calibration.json", doc)
+    assert gs.read_quality_calibration(path) == (0.12, 0.34)
+    # what measure_grasp_quality.py wrote before 2026-09-14: the environment could not read it
+    run_files.write_json(tmp_path / "old.json", {"checkpoint": "/a/ep250.pth", "q_lo": 0.12, "q_hi": 0.34})
+    with pytest.raises(ValueError, match="schema"):
+        gs.read_quality_calibration(tmp_path / "old.json")
+    for lo, hi in ((0.3, 0.3), (-0.1, 0.2), (0.1, 1.2), (math.nan, 0.2)):
+        with pytest.raises(ValueError, match="q_lo < q_hi"):
+            gs.quality_calibration_document(lo, hi)
+    with pytest.raises(ValueError, match="may not set"):
+        gs.quality_calibration_document(0.1, 0.2, schema=2)

@@ -14,6 +14,8 @@ from typing import Mapping, Sequence
 
 import torch
 
+from openarm.agnostic.modules.iker import run_files
+
 HAND_EMA_ALPHA = 1.0 - 0.9**6  # grasp_fj's 0.1 per 60 Hz step, same time constant at 10 Hz (= 0.468559)
 SURFACE_POINT_COUNT = 256
 KERNEL_TAU_M = 0.02
@@ -309,3 +311,22 @@ def stage1_step(
     new_state = replace(state, closest_palm=closest_palm, best_lift=best_lift, hold_count=hold_count,
                         latched=latched, succeeded=state.succeeded | success)
     return Stage1Step(reward=reward, terms=terms, state=new_state, held=held, just_latched=just_latched, success=success)
+
+
+def quality_calibration_document(q_lo: float, q_hi: float, **details) -> dict:
+    """The grasp quality calibration file (design §5): ``0 <= q_lo < q_hi <= 1`` and the measurement details, under the
+    run-file schema the environment reads it with (``run_files.read_json`` rejects a document without it)."""
+    reserved = sorted({"schema", "q_lo", "q_hi"} & set(details))
+    if reserved:
+        raise ValueError(f"calibration details may not set {reserved}")
+    lo, hi = float(q_lo), float(q_hi)
+    if not (math.isfinite(lo) and math.isfinite(hi) and 0.0 <= lo < hi <= 1.0):
+        raise ValueError(f"grasp quality calibration needs 0 <= q_lo < q_hi <= 1, got q_lo {lo}, q_hi {hi}")
+    return {"schema": run_files.SCHEMA_VERSION, **details, "q_lo": lo, "q_hi": hi}
+
+
+def read_quality_calibration(path) -> tuple[float, float]:
+    """(q_lo, q_hi) of a file written from ``quality_calibration_document``."""
+    doc = run_files.read_json(path)
+    checked = quality_calibration_document(doc["q_lo"], doc["q_hi"])
+    return checked["q_lo"], checked["q_hi"]

@@ -115,8 +115,8 @@ class IkerShoeGraspEnv(DirectRLEnv):
             if not calibration_path.is_file():
                 raise FileNotFoundError(f"g_min {reward_cfg.g_min} < 1 needs the grasp quality calibration {calibration_path} "
                                         "(scripts/iker/measure_grasp_quality.py on a phase-A checkpoint)")
-            calibration = run_files.read_json(calibration_path)
-            reward_cfg = replace(reward_cfg, q_lo=float(calibration["q_lo"]), q_hi=float(calibration["q_hi"]))
+            q_lo, q_hi = gs.read_quality_calibration(calibration_path)
+            reward_cfg = replace(reward_cfg, q_lo=q_lo, q_hi=q_hi)
         reward_cfg.validate()  # re-validate after the hydra round trip and the calibration
         self._reward_cfg = reward_cfg
         idle = gs.stage1_step(gs.Stage1State.start(1, dev), reward_cfg, **{k: torch.zeros(1, device=dev) for k in (
