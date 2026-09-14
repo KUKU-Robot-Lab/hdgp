@@ -33,6 +33,9 @@ class IkerShoeGraspEnvCfg(IkerShoeEnvCfg):
     drop_z = 0.10  # env-local shoe height below which the shoe has fallen off the table
     hand_floor_offset = 0.01  # the hand-below-table penalty starts this far above the table top
     hand_reset_clamp_max_rad = 0.6  # the profile's open pose may sit this far outside the hand action range
+    # Hand joint roles pinned at the profile's open pose: grasp_fj (2026-09-11) saw a free thumb_2 drop the thumb's
+    # opposition, and stage-1 phase A (2026-09-14) closed the thumb from the same side as the fingers.
+    frozen_hand_joints = ("thumb_2", "pinky_2")
 
     # grasp_fj disturbance (2.7 N/kg, 0.27 N m/kg) at 10 Hz: the per-step firing probability is x6 of its 60 Hz range
     wrench_force_per_kg = 2.7

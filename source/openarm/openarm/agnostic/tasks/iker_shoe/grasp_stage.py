@@ -20,6 +20,7 @@ KERNEL_TAU_M = 0.02
 SOFTMIN_TAU = 0.1
 PALM_COS_MIN = 0.0
 RACK_MARGIN_M = 0.01  # a shoe hull point this close to the rack's footprint counts as supported by the rack
+FROZEN_HALFWIDTH_RAD = 0.01  # a pinned hand joint keeps this much action range (zero width is rejected)
 
 
 @dataclass
@@ -98,6 +99,42 @@ def hand_action_limits(
     if dead:
         raise ValueError(f"hand action range has zero width for {dead}")
     return lo, hi
+
+
+def frozen_hand_override(
+    joint_names: Sequence[str], open_pose: Sequence[float], roles: Sequence[str], halfwidth: float = FROZEN_HALFWIDTH_RAD
+) -> dict[str, tuple[float, float]]:
+    """``hand_action_limits`` overrides pinning hand joints at the profile's open pose (+-halfwidth).
+
+    A role is a joint name without its side prefix (``thumb_2``, the thumb's opposition joint), so no side is spelled
+    out here; each role must name exactly one joint.
+    """
+    names = list(joint_names)
+    if len(open_pose) != len(names):
+        raise ValueError(f"open pose has {len(open_pose)} values for {len(names)} hand joints")
+    override = {}
+    for role in roles:
+        matches = [i for i, name in enumerate(names) if name.endswith(f"_hj_{role}")]
+        if len(matches) != 1:
+            raise ValueError(f"hand joint role {role!r} matches {len(matches)} joints of {names}")
+        value = float(open_pose[matches[0]])
+        override[re.escape(names[matches[0]]) + "$"] = (value - halfwidth, value + halfwidth)
+    return override
+
+
+def stage1_hand_limits(
+    joint_names: Sequence[str],
+    hard_lo: torch.Tensor,
+    hard_hi: torch.Tensor,
+    profile_override: Mapping[str, tuple],
+    open_pose: Sequence[float],
+    frozen_roles: Sequence[str],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Stage-1 hand action limits: the hard limits narrowed by the profile override, then narrowed again around the open
+    pose for the frozen roles. Two passes, so a frozen joint keeps the profile's narrowing — a merged override dict lets
+    a frozen entry replace a profile entry that uses the same pattern."""
+    lo, hi = hand_action_limits(joint_names, hard_lo, hard_hi, profile_override)
+    return hand_action_limits(joint_names, lo, hi, frozen_hand_override(joint_names, open_pose, frozen_roles))
 
 
 def hand_targets(

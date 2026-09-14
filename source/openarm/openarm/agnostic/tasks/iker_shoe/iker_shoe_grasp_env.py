@@ -82,7 +82,8 @@ class IkerShoeGraspEnv(DirectRLEnv):
         self._palmar_axis = torch.tensor(PALMAR_AXIS_LOCAL, device=dev).expand(n, 3)
 
         hard = self._robot.data.joint_pos_limits[0, self._hand_ids]
-        self._hand_lo, self._hand_hi = gs.hand_action_limits(prof.hand_joint_names, hard[:, 0], hard[:, 1], prof.hand_action_limit_override)
+        self._hand_lo, self._hand_hi = gs.stage1_hand_limits(prof.hand_joint_names, hard[:, 0], hard[:, 1], prof.hand_action_limit_override,
+                                                             prof.hand_open_pose, cfg.frozen_hand_joints)
         default_hand = self._robot.data.default_joint_pos[0, self._hand_ids]
         self._hand_reset = torch.max(torch.min(default_hand, self._hand_hi), self._hand_lo)
         moved = (self._hand_reset - default_hand).abs()

@@ -50,6 +50,28 @@ def test_hand_action_limits_narrow_only_and_reject_unmatched_or_empty():
         gs.hand_action_limits(NAMES, lo, hi, {r"l_hj_index_1$": (0.5, 0.5)})
 
 
+def test_frozen_hand_override_pins_joint_roles_at_the_open_pose():
+    names = ("l_hj_thumb_2", "l_hj_index_2", "l_hj_pinky_2")
+    override = gs.frozen_hand_override(names, (1.57, 0.3, 0.0), ("thumb_2", "pinky_2"), halfwidth=0.01)
+    lo, hi = gs.hand_action_limits(names, torch.tensor([0.0, 0.0, -1.571]), torch.tensor([2.705, 2.0, 0.0]), override)
+    assert lo.tolist() == pytest.approx([1.56, 0.0, -0.01])
+    assert hi.tolist() == pytest.approx([1.58, 2.0, 0.0])
+    with pytest.raises(ValueError, match="matches 0"):
+        gs.frozen_hand_override(names, (1.57, 0.3, 0.0), ("ring_2",))
+    with pytest.raises(ValueError, match="open pose"):
+        gs.frozen_hand_override(names, (1.57, 0.3), ("thumb_2",))
+
+
+def test_stage1_hand_limits_keep_the_profile_narrowing_on_frozen_joints():
+    # A merged override dict let the frozen entry replace a profile entry with the same pattern (pinky_2 hi 0.0 -> 0.01).
+    names = ("l_hj_thumb_2", "l_hj_pinky_2")
+    profile = {r"l_hj_pinky_2$": (None, 0.0)}
+    lo, hi = gs.stage1_hand_limits(names, torch.tensor([0.0, -1.571]), torch.tensor([2.705, 0.5]), profile, (1.57, 0.0),
+                                   ("thumb_2", "pinky_2"))
+    assert lo.tolist() == pytest.approx([1.56, -0.01])
+    assert hi.tolist() == pytest.approx([1.58, 0.0])
+
+
 def test_hand_targets_map_linearly_filter_and_clamp():
     lo, hi = torch.tensor([0.0, -1.0]), torch.tensor([2.0, 1.0])
     previous = torch.tensor([[1.0, 0.0]])
