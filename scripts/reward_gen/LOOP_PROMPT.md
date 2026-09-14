@@ -24,6 +24,8 @@
    프롬프트로 흘리지 않는다(생성기 오염 금지). 기계적 검증(ingest) PASS 면 바로 기동:
    - 커밋: `git add reward_gen/pour_bi/iter_(NN+1) && git commit -m "t2r: iter_(NN+1) …" && git push origin main`
    - 서버: `git fetch && git reset --hard origin/main`, 이전 런은 **RUN_LABEL 로 PID 확정 후 kill**(pkill 금지),
+     ★SIGTERM 후 30 s 안에 python 이 안 죽으면(09.14 i03: R 상태로 16.5 GB 유지) RUN_LABEL 재확인 후 `kill -9 <pid>`,
+     GPU 메모리가 비워진 것을 보고 기동한다. 런처는 `scripts/experiments/run_pour_t2r.sh`(f6f38389 에서 루트→이동).
      `nohup bash ~/logs/t2r/launch_t2r.sh <label> reward_gen/pour_bi/iter_(NN+1) <num_envs> > ~/logs/t2r/<label>.log 2>&1 < /dev/null &`
      **num_envs = 4096**(사용자 지시 09.13: 적은 env 는 분산이 큼 · 1024 에서 19 GB → 4096 ≈ 40 GB 예상). PhysX overflow/OOM 이면 2048 → 1024 로 후퇴.
    - 로컬: `iter_(NN+1)/launch.json` {"label","num_envs","started","commit","gpu":1} 기록, LOOP_STATE 갱신.
