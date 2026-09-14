@@ -5,7 +5,7 @@
  "label_prefix": "fj_reach_i",
  "round": 4,
  "status": "running",
- "awaiting": null,
+ "awaiting": "approval_iter_03",
  "best": null,
  "success_ticks": 0,
  "started": 1789399346,
@@ -29,5 +29,18 @@
    "iter_02/improvement.md"
   ],
   "note": "press-and-hold (reward 0.44-0.50) vs wrap-and-lift (0.15-0.35, first successes peak 1.4% e1970) alternate; video = press only"
+ },
+ "round_end": {
+  "label": "fj_reach_i03",
+  "epoch": 4423,
+  "hours": 5.92,
+  "verdict": "advance(stuck:grasp)",
+  "checked": "09-15 06:17",
+  "video": "our_source/fj_t2r_videos/fj_reach_i03_0915_0617.mp4",
+  "drafts": [
+   "iter_03/observation.md",
+   "iter_03/improvement.md"
+  ],
+  "note": "open hand hovers a few cm away, thumb only on the cup rim, palm sideways; finger_open (paid only away from the grasp spot, no decay) > approach; palm_contact gated to 0. video command killed locally by low memory, server play finished, video fetched and frames extracted manually"
  }
 }

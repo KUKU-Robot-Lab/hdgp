@@ -1,0 +1,14 @@
+- The video shows the last checkpoint (epoch 4423).
+- The arm brings the hand toward the cup within about 3 s with the hand fully open: the four fingers straight and together, the thumb stretched out ahead of them. The hand ends up beside the upper half of the cup (on its left in the video), not low near the table.
+- From about 3.5 s the hand is turned so that its thumb side faces the cup. From the camera the palm is seen edge-on and does not face the cup. The straight fingers hang down beside the cup, clear of the table, and the thumb is stretched out horizontally with its tip resting on the upper side of the cup near the rim. The palm stays a few centimetres away from the cup and never touches it, and the fingers never bend.
+- The hand holds this pose, with only the thumb on the cup, until the end of the episode. The cup stays upright and in place and is never lifted. The hand does not touch the table.
+- Training metrics (the round was ended at epoch 4423 by the stuck rule: reach at or above 0.9 across the last 600 epochs while grasp stayed at 0):
+  - The round went through three phases:
+    - Epochs 0-800: the hand stayed far from the cup (reach 0.00 of episodes, palm-centre-to-cup gap 0.25 m, reward 0.06 per step).
+    - Epochs 800-2600: it hovered about 10-13 cm from the cup with the hand open (reach 0.20, gap 0.13 m, reward 0.14).
+    - Epochs 2600-4423: it came closer (reach 0.81, gap 0.084 m, thumb contact in 5% of steps, reward 0.17).
+  - At the end (training kept running while waiting for approval; rechecked at epoch 4973): reach 0.82-0.84 of episodes (1.00 at epoch 4423), grasp 0.00, palm plus all five fingers 0.00, lift 0.00, success 0. The thumb touches the cup in 36-50% of steps and is the only digit in contact; the palm 0.
+  - Brief peaks during the round: grasp (three or more fingers on the cup) 0.24 at epoch 3138, palm plus all five fingers 0.03 at epoch 3481, lift 0.05 at epoch 4005; the cup was off the table in at most 0.3% of steps; no successes.
+  - Around epoch 1000 the palm touched the cup in up to 12% of steps, but palm_contact never paid more than 0.001 per step during the whole round.
+  - Reward components at the end (per step): finger_open 0.09 (its maximum is 0.1), reach_coarse 0.06, palm_orient 0.017, reach_oriented 0.011, palm_contact 0.0000, wrap_fingers 0.0000, lift 0; total 0.18. finger_open was more than half of the total reward from about epoch 800 to the end.
+  - Penalties stayed near zero: table_penalty -0.0009 on average after epoch 2600 (its largest value was -0.10 at epoch 574), cup tilt 0.1-0.2 degrees, cup_tilt_penalty and cup_push_penalty -0.0007 or less.
