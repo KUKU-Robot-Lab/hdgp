@@ -11,9 +11,11 @@ from . import agents
 _ENTRY = "openarm.agnostic.tasks.iker_shoe.iker_shoe_env:IkerShoeEnv"
 _CFG_MODULE = "openarm.agnostic.tasks.iker_shoe.iker_shoe_env_cfg"
 
+# Stage 2 moves the shoe with the left arm since 2026-09-14 (logs log/rl_games/open-sens/left/iker-shoe/); the right-arm
+# K1 runs under right/iker-shoe/ stay as the comparison.
 for _suffix, _cfg_name in (("", "IkerShoeEnvCfg"), ("-play", "IkerShoePlayEnvCfg")):
     gym.register(
-        id=f"open-sens_r_iker_shoe{_suffix}",
+        id=f"open-sens_l_iker_shoe{_suffix}",
         entry_point=_ENTRY,
         disable_env_checker=True,
         kwargs={

@@ -4,7 +4,7 @@
 2. with zero actions the shoe stays in the hand for 5 s;
 3. random actions for 25 s keep rewards finite and log episode-end metrics;
 4. a shoe placed at the interaction's target keypoints (robot moved home, out of the way) counts as a success;
-5. the right arm reaches the bank's grasp palm pose above the interaction's target slot (the mirrored slot on the
+5. the grasping arm reaches the bank's grasp palm pose above the interaction's target slot (the mirrored slot on the
    other side of the other shoe is measured and reported, not required).
 
 Usage:
@@ -23,6 +23,8 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description="Smoke-check the IKER shoe environment.")
 parser.add_argument("--num-envs", type=int, default=16)
 parser.add_argument("--config-index", type=int, default=0)
+parser.add_argument("--interaction", default="", help="interaction file (default: the configuration's interaction_human.json)")
+parser.add_argument("--grasp-bank", default="", help="grasp bank file (default: the configuration's grasp_bank.json)")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 app = AppLauncher(args).app
@@ -93,7 +95,9 @@ def main() -> int:
     cfg = IkerShoeEnvCfg()
     cfg.scene.num_envs = args.num_envs
     cfg.config_index = args.config_index
-    env = gym.make("open-sens_r_iker_shoe", cfg=cfg).unwrapped
+    cfg.interaction_path = args.interaction
+    cfg.grasp_bank_path = args.grasp_bank
+    env = gym.make("open-sens_l_iker_shoe", cfg=cfg).unwrapped
     n, dev = env.num_envs, env.device
     failures = []
 
