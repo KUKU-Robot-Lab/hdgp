@@ -1,0 +1,33 @@
+We trained an RL policy (PPO) using the reward function below and tracked the values of the individual reward components as well as task metrics (grasp rate per hand, cup lift, tilt, beads transferred, spill, success rate, episode length) at 10 evenly spaced points during training, plus the min / mean / max encountered:
+
+bead/in_target: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  min 0 · mean 2.49e-06 · max 0.000293
+bead/spill: [9.77e-05, 0.000244, 0.000342, 0.00215, 0.00132, 0.00083, 0.00083, 0.000635, 0.000781, 0.000391]  min 0 · mean 0.000975 · max 0.00459
+done/drop: [0.00879, 0, 0.00195, 0, 0, 0, 0, 0, 0, 0]  min 0 · mean 0.000411 · max 0.0107
+episode_lengths/step: [105, 867, 752, 826, 806, 878, 885, 888, 859, 886]  min 94.4 · mean 803 · max 898
+reward/action_rate: [-0.0204, -0.0193, -0.0185, -0.0168, -0.0176, -0.0168, -0.0172, -0.0177, -0.0176, -0.0175]  min -0.0207 · mean -0.0178 · max -0.0163
+reward/align: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  min 0 · mean 5.43e-06 · max 0.000852
+reward/approach_rcv: [0.402, 0.318, 0.355, 0.351, 0.35, 0.333, 0.333, 0.34, 0.347, 0.356]  min 0.318 · mean 0.348 · max 0.425
+reward/approach_src: [0.407, 0.336, 0.472, 0.569, 0.605, 0.621, 0.628, 0.614, 0.615, 0.619]  min 0.326 · mean 0.559 · max 0.631
+reward/drop: [-0.0957, -0.00195, -0.00586, 0, -0.00195, 0, 0, 0, 0, 0]  min -0.0957 · mean -0.00338 · max 0
+reward/grasp_rcv: [0, 0.00488, 0.00488, 0, 0, 0, 0, 0, 0, 0]  min 0 · mean 0.0037 · max 0.0708
+reward/grasp_src: [0, 0.00586, 0.639, 0.909, 1.01, 1.03, 1.06, 1.03, 1.02, 1.04]  min 0 · mean 0.82 · max 1.07
+reward/lift_rcv: [0, 0.000364, 0.000577, 0, 0, 0, 0, 0, 0, 0]  min 0 · mean 0.00149 · max 0.0337
+reward/lift_src: [0, 0.000404, 0.214, 1.41, 1.58, 1.64, 1.71, 1.68, 1.71, 1.73]  min 0 · mean 1.26 · max 1.8
+reward/pour_delta: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  min 0 · mean 3.89e-06 · max 0.00244
+reward/spill_delta: [-0.000977, 0, 0, 0, -0.000977, 0, 0, 0, 0, 0]  min -0.00781 · mean -0.000129 · max 0
+reward/success: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  min 0 · mean 0 · max 0
+reward/tilt: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  min 0 · mean 0 · max 0
+reward/tilt_premature: [-0.172, -0.00269, -0.0433, -0.188, -0.0444, -0.019, -0.00697, -0.00827, -0.0115, -0.0126]  min -0.215 · mean -0.035 · max -4.5e-06
+reward/total: [-0.0121, 0.613, 1.56, 3.01, 3.44, 3.56, 3.68, 3.6, 3.63, 3.69]  min -0.0121 · mean 2.89 · max 3.78
+reward/upright_rcv: [-0.489, -0.00624, -0.0234, -0.00654, -0.00359, -0.00323, -0.000574, -0.000405, -0.0018, -0.0016]  min -0.489 · mean -0.0165 · max -0.000145
+rewards/step: [8.95, 527, 1.13e+03, 2.36e+03, 2.71e+03, 3.14e+03, 3.21e+03, 3.22e+03, 3.15e+03, 3.27e+03]  min 8.95 · mean 2.42e+03 · max 3.32e+03
+task/aim_dist: [0.129, 0.319, 0.345, 0.457, 0.431, 0.405, 0.389, 0.377, 0.398, 0.371]  min 0.129 · mean 0.383 · max 0.756
+task/cups_center_dist: [0.189, 0.32, 0.329, 0.451, 0.42, 0.393, 0.387, 0.38, 0.392, 0.377]  min 0.189 · mean 0.38 · max 0.759
+task/episode_success: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  min 0 · mean 0 · max 0
+task/nested_rate: [0.0293, 0, 0.00391, 0, 0, 0, 0, 0, 0, 0]  min 0 · mean 0.00227 · max 0.0732
+task/rcv_cup_lift: [0.00244, 7.96e-05, 0.000631, 0.000119, 2.65e-05, 8.89e-06, 1.17e-05, 7.98e-06, 2.98e-05, 4.17e-05]  min -1.57e-05 · mean 0.000631 · max 0.0495
+task/rcv_grasped: [0, 0.00488, 0.00488, 0, 0, 0, 0, 0, 0, 0]  min 0 · mean 0.00359 · max 0.0674
+task/src_cup_lift: [0.000693, 3.49e-05, 0.0125, 0.09, 0.0974, 0.108, 0.109, 0.103, 0.112, 0.114]  min 2.5e-05 · mean 0.0814 · max 0.183
+task/src_grasped: [0, 0.00586, 0.639, 0.854, 0.87, 0.874, 0.89, 0.881, 0.878, 0.891]  min 0 · mean 0.716 · max 0.919
+task/src_tilt_deg: [29, 0.64, 16.7, 34.5, 25.7, 22.3, 19.1, 20.6, 23.1, 22.6]  min 0.233 · mean 19.9 · max 35
+task/success_now: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  min 0 · mean 0 · max 0

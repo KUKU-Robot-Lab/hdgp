@@ -14,5 +14,12 @@ v = json.load(open(pathlib.Path(sys.argv[1]) / "validation.json"))
 assert v["ok"], f"validation FAIL: {v['errors']}"
 EOF
 echo "reward: $CODE"
+# minibatch = num_envs×horizon(64)/8 (최소 8192) — actor·central_value 둘 다 같은 값이어야 한다.
+#   09.13 사용자 지시: 4096 env 로 확대(분산 축소). 8192 로 두면 32 minibatch 가 되어 느리다.
+NE=""; prev=""; for a in "$@"; do [ "$prev" = "--num_envs" ] && NE="$a"; prev="$a"; done
+MB=8192; if [ -n "$NE" ]; then MB=$(( NE * 64 / 8 )); [ "$MB" -lt 8192 ] && MB=8192; fi
+echo "num_envs=${NE:-cfg} minibatch=$MB"
 NOTE="${NOTE:-t2r $ITER}" exec "$HDGP_ROOT/train.sh" open-short_b_pour_fab "$LABEL" \
-    --headless "env.reward_code_path=$CODE" "$@"
+    --headless "env.reward_code_path=$CODE" \
+    "agent.params.config.minibatch_size=$MB" \
+    "agent.params.config.central_value_config.minibatch_size=$MB" "$@"

@@ -1,9 +1,26 @@
 {
- "iter": 0,
- "label": "t2r_i00fix",
- "round": 1,
- "best": null,
+ "iter": 2,
+ "label": "t2r_i02",
+ "round": 3,
+ "best": {
+  "iter": 1,
+  "label": "t2r_i01",
+  "epoch": 413,
+  "episode_success_last": 0.7287,
+  "episode_success_max": 0.7507,
+  "in_target_last": 0.6945,
+  "spill_last": 0.0708,
+  "nested_rate": 0.0099,
+  "time": 1789321439.155391
+ },
  "started": 1789282006.5596128,
  "success_ticks": 0,
- "restart": "09.13 nesting hacking \uc218\uc815 \ud6c4 \uac19\uc740 iter_00 \ubcf4\uc0c1\uc73c\ub85c \uc7ac\ud559\uc2b5"
+ "restart": "09.13 nesting hacking \uc218\uc815 \ud6c4 \uac19\uc740 iter_00 \ubcf4\uc0c1\uc73c\ub85c \uc7ac\ud559\uc2b5",
+ "prev": {
+  "iter": 1,
+  "label": "t2r_i01",
+  "epoch": 413,
+  "episode_success": 0.7287
+ },
+ "round3_note": "env \ubcc0\uacbd(hand_qd \uc81c\uac70\u00b7\uc9c0\uac01 \uc9c0\uc5f0/\ub178\uc774\uc988\u00b7\ubb3c\ub9ac DR+ADR\u00b7\ucda9\ub3cc \uc2e0\ud638) \ud6c4 iter_02 (notes_round3.md)"
 }

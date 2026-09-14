@@ -25,6 +25,7 @@
    - 커밋: `git add reward_gen/pour_bi/iter_(NN+1) && git commit -m "t2r: iter_(NN+1) …" && git push origin main`
    - 서버: `git fetch && git reset --hard origin/main`, 이전 런은 **RUN_LABEL 로 PID 확정 후 kill**(pkill 금지),
      `nohup bash ~/logs/t2r/launch_t2r.sh <label> reward_gen/pour_bi/iter_(NN+1) <num_envs> > ~/logs/t2r/<label>.log 2>&1 < /dev/null &`
+     **num_envs = 4096**(사용자 지시 09.13: 적은 env 는 분산이 큼 · 1024 에서 19 GB → 4096 ≈ 40 GB 예상). PhysX overflow/OOM 이면 2048 → 1024 로 후퇴.
    - 로컬: `iter_(NN+1)/launch.json` {"label","num_envs","started","commit","gpu":1} 기록, LOOP_STATE 갱신.
    - 첫 epoch 확인(3분 내 Traceback 이면 2 의 crashed 절차).
 6. 종료 조건: episode_success 최근 평균 ≥ 0.5 가 두 틱 연속 **그리고** task/nested_rate < 0.1 · bead/spill 정상

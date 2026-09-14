@@ -31,6 +31,19 @@ def test_env_does_not_import_specific_profiles():
     assert "from . import bimanual" in _ENV
 
 
+def test_actor_has_no_hand_joint_velocity():
+    """실기 손 드라이버 velocity 는 관절속도가 아니다(09.07) — actor 관측에 넣지 않는다."""
+    side = _ENV.split("def _side_obs")[1].split("def _mouth_from")[0]
+    assert "qd[:, rig.hand_t]" not in side and "hand_qd =" not in side
+
+
+def test_actor_cup_pose_is_perceived_not_ground_truth():
+    """actor 의 컵 파생 관측은 지연+노이즈를 거친 지각 pose 에서만 나온다."""
+    fn_src = _ENV.split("def _side_obs")[1].split("def _get_observations")[0]
+    assert "cup.data.root_pos_w" not in fn_src
+    assert "perceived" in fn_src
+
+
 def test_fabric_state_is_not_in_observation():
     """actor obs 에 fabric_q / 비드 ground truth 금지(실기에 없다)."""
     fn = next(n for n in ast.parse(_ENV).body[-1].body
@@ -141,19 +154,20 @@ def test_dims_from_resolve_cfg():
     cfg = C.PourFabricEnvCfg()
     pair = __import__("openarm.agnostic.tasks.pour_fabric.bimanual",
                       fromlist=["get_pair"]).get_pair(cfg.pair_name)
-    per = 0
+    per, hqd = 0, 0
     for p in (pair.source, pair.receiver):
         a, h, f = p.num_arm_joints, p.num_hand_joints, len(p.finger_sensor_bodies)
-        per += 2 * a + 2 * h + 3 + 6 + 3 * f + 3 + 3 * f + h + 3
+        per += 2 * a + h + 3 + 6 + 3 * f + 3 + 3 * f + h + 3     # hand_qd 는 actor 에 없다(09.14)
+        hqd += h
     assert cfg.action_space == 2 * (6 + 15)
     assert cfg.observation_space == per + 6 + cfg.action_space
-    assert cfg.state_space == cfg.observation_space + 4 + 3 + 12 + 1 + 10
+    assert cfg.state_space == cfg.observation_space + hqd + 4 + 3 + 12 + 1 + 10
 
 
 def test_short_reference_dimensions():
     C = _cfg_module()
     cfg = C.PourFabricEnvCfg()
-    assert (cfg.action_space, cfg.observation_space, cfg.state_space) == (42, 286, 316)
+    assert (cfg.action_space, cfg.observation_space, cfg.state_space) == (42, 246, 316)
 
 
 def test_registered_cfg_classes_keep_own_pair_name():

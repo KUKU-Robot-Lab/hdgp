@@ -33,7 +33,9 @@ SERVER_LOGDIR = "~/rl_ws/hdgp/log/rl_games/open-short/both/pour-fab"
 LOCAL_MIRROR = _HDGP / "log" / "server_mirror" / "pour-fab"
 KEY_TAGS = ("task/episode_success", "task/success_now", "task/src_grasped", "task/rcv_grasped",
             "task/src_cup_lift", "task/rcv_cup_lift", "task/src_tilt_deg", "task/aim_dist",
-            "bead/in_target", "bead/spill", "done/drop", "reward/total")
+            "bead/in_target", "bead/spill", "done/drop", "reward/total",
+            "task/nested_rate", "task/cups_center_dist", "task/cup_collision_rate",
+            "task/src_hand_foreign_rate", "task/rcv_hand_foreign_rate", "adr/progress", "dr/wrench_force_scale")
 
 
 def _ssh(cmd: str, timeout: int = 60) -> str:
