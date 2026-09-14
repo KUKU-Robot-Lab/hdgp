@@ -1,0 +1,197 @@
+"""pour_fabric_mimic 계약 — 저차원(언더액추) 손 전용 트랙이 원본 pour_fabric 과 갈라져야 하는 곳을 잠근다.
+
+Isaac 불요(소스·프로필 데이터). 차원 대조는 Isaac 있을 때만.
+"""
+import io
+import re
+import tokenize
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import pytest
+
+from openarm.agnostic.modules import robot_profiles as _rp
+from openarm.agnostic.tasks.pour_fabric_mimic import bimanual as _bm
+from openarm.agnostic.tasks.pour_fabric_mimic import robot_profiles as _local
+
+_PKG = Path(__file__).resolve().parents[1]
+
+
+def _code_only(src: str) -> str:
+    """주석·문자열(독스트링) 제거 — 리터럴 검사는 **코드**에만 건다(설명문은 로봇 이름을 써야 한다)."""
+    out = []
+    for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+        if tok.type in (tokenize.COMMENT, tokenize.STRING):
+            continue
+        out.append(tok.string)
+    return " ".join(out)
+
+
+_ENV = (_PKG / "pour_fabric_env.py").read_text()
+_RIG = (_PKG / "side_rig.py").read_text()
+_CFG = (_PKG / "pour_fabric_env_cfg.py").read_text()
+_ORIG = _PKG.parent / "pour_fabric"
+_HDGP = Path(__file__).resolve().parents[7]
+_ASSET = _HDGP / "assets" / "robot" / "openarm_rh56f1_bi_rl"
+assert (_ASSET / "openarm_rh56f1_bi_rl.urdf").exists(), _ASSET
+
+
+# =============================================================================
+# 원본 불변 · 이 트랙은 별도 폴더
+# =============================================================================
+def test_original_pour_fabric_untouched_by_this_track():
+    """원본에 mimic 문자열이 새로 들어가면 사용자 결정("원본 냅두고") 위반."""
+    for f in ("side_rig.py", "pour_fabric_env.py", "pour_fabric_env_cfg.py", "bimanual.py"):
+        assert "mimic" not in (_ORIG / f).read_text(), f
+    assert "openarm_rh56f1_bi_rl" not in (_ORIG / "bimanual.py").read_text()
+
+
+@pytest.mark.parametrize("name", ["env", "rig", "cfg"])
+def test_no_robot_specific_literals(name):
+    src = {"env": _ENV, "rig": _RIG, "cfg": _CFG}[name]
+    body = _code_only("\n".join(l for l in src.splitlines() if not l.startswith("import fabrics_sim")))
+    for lit in ("r_aj_", "l_aj_", "r_hj_", "l_hj_", "r_hl_", "l_hl_", "tesollo", "dg5f", "rh56f1_right", "RH56F1_"):
+        assert lit not in body, f"{name}: 로봇 리터럴 '{lit}' — 프로필로 옮길 것"
+
+
+# =============================================================================
+# 프로필 · 쌍
+# =============================================================================
+def test_pair_rh_is_default_and_only_from_local_profiles():
+    assert _bm.DEFAULT_PAIR == "rh" and set(_bm.PAIRS) == {"rh"}
+    p = _bm.get_pair("rh")
+    assert p.source.name == "rh56f1_right_fab" and p.receiver.name == "rh56f1_left_fab"
+    assert p.usd_relpath.endswith("openarm_rh56f1_bi_rl/openarm_rh56f1_bi_rl.usd")
+    # 모듈 레지스트리에는 안 들어간다(grasp config 가 그 dict 로 gym id 를 찍는다)
+    assert "rh56f1_right_fab" not in _rp.PROFILES and "rh56f1_left_fab" not in _rp.PROFILES
+
+
+def test_fabric_enabled_on_both_sides_with_26dof_order():
+    p = _bm.get_pair("rh")
+    assert p.source.fabric_class == "OpenArmRh56f1PoseFabric"
+    assert p.receiver.fabric_class == "OpenArmRh56f1LeftPoseFabric"
+    assert len(_local.FABRIC_JOINT_ORDER) == 26
+    assert p.source.fabric_joint_order == p.receiver.fabric_joint_order == _local.FABRIC_JOINT_ORDER
+    assert _bm.fabric_slots(p.source) == (slice(0, 7), slice(7, 13))
+    assert _bm.fabric_slots(p.receiver) == (slice(13, 20), slice(20, 26))
+    # 슬라이스 관절 = 프로필 관절(순서까지)
+    for prof in (p.source, p.receiver):
+        a, h = _bm.fabric_slots(prof)
+        order = _local.FABRIC_JOINT_ORDER
+        assert all(re.fullmatch(prof.arm_joint_regex, n) for n in order[a])
+        assert tuple(order[h]) == prof.hand_joint_names
+
+
+def test_left_is_mirror_of_right_arm_sign_and_hand_identity():
+    """09.14 순수 FK: 팔 (−1,−1,−1,+1,−1,−1,−1) · 손 +1 → 4지 손끝 0.00 mm 일치."""
+    p = _bm.get_pair("rh")
+    init = p.init_joint_pos
+    sign = (-1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0)
+    for i, s in enumerate(sign, start=1):
+        assert init[f"l_aj_{i}"] == pytest.approx(s * init[f"r_aj_{i}"])
+    for n in ("thumb_1", "thumb_2", "index_1", "middle_1", "ring_1", "pinky_1"):
+        assert init[f"l_hj_{n}"] == pytest.approx(init[f"r_hj_{n}"])
+    assert p.receiver.hand_open_pose == p.source.hand_open_pose
+    assert p.receiver.hand_grip_pose == p.source.hand_grip_pose
+    assert p.receiver.object_spawn_center == (p.source.object_spawn_center[0], -p.source.object_spawn_center[1])
+    assert p.receiver.palm_box_min[1] == -p.source.palm_box_max[1]
+
+
+def test_left_hand_limits_admit_the_mirrored_poses():
+    """좌 URDF 한계 안에 open/grip 이 들어가는지(부호 +1 이 성립하는 전제)."""
+    urdf = next(_ASSET.glob("*.urdf"))
+    lim = {j.get("name"): (float(j.find("limit").get("lower")), float(j.find("limit").get("upper")))
+           for j in ET.parse(urdf).getroot().iter("joint") if j.find("limit") is not None and j.get("type") == "revolute"}
+    p = _bm.get_pair("rh").receiver
+    for nm, o, g in zip(p.hand_joint_names, p.hand_open_pose, p.hand_grip_pose):
+        lo, hi = lim[nm]
+        assert lo - 1e-6 <= o <= hi + 1e-6 and lo - 1e-6 <= g <= hi + 1e-6, (nm, o, g, lo, hi)
+
+
+def test_dependent_actuators_zero_gain_both_sides():
+    p = _bm.get_pair("rh")
+    mimic = {k: v for k, v in p.actuator_specs.items() if k.endswith("_hand_mimic")}
+    assert set(mimic) == {"src_right_hand_mimic", "rcv_left_hand_mimic"}
+    for v in mimic.values():
+        assert (v["stiffness"], v["damping"]) == (0.0, 0.0)
+
+
+def test_per_finger_slots_bijective_with_driven_joints():
+    p = _bm.get_pair("rh")
+    for prof in (p.source, p.receiver):
+        slots = sorted(int(s) for m in prof.hand_finger_channels.values() for s in m.values())
+        assert slots == list(range(prof.num_hand_joints))
+        assert prof.hand_freeze_suffixes and set(prof.hand_freeze_suffixes) >= {"1", "2"}
+
+
+# =============================================================================
+# 소스 계약 — 원본과 갈라진 곳
+# =============================================================================
+def test_fabric_ctor_uses_bimanual_class_signature():
+    assert 'use_hand_fabric=False, hand_mode="direct")' in _RIG
+    code = _code_only(_RIG)
+    assert "robot_dir_name" not in code and "tip_per_finger" not in code
+    assert "def sync_other" in _RIG and "self.src.sync_other(self.rcv)" in _ENV and "self.rcv.sync_other(self.src)" in _ENV
+    assert "self.fabric_q[:, self.arm_sl]" in _RIG and "[:, :n_arm]" not in _RIG
+
+
+def test_hand_layout_is_per_finger_with_coupling_matrix():
+    assert "self.syn_slot" in _RIG and "self.syn_couple" in _RIG
+    assert "a_hand.view(N, nf, self.syn_nch)" not in _RIG
+    assert "hold = (h_mid | h_dist) & self.syn_flex" in _RIG
+    assert 'self.syn_flex = torch.tensor([s in p.hand_freeze_suffixes for s in sfx]' in _RIG
+    assert 's == "3"' not in _RIG
+
+
+def test_mimic_gates_present_and_read_from_asset():
+    for fn in ("_load_mimic_pairs", "_assert_mimic_constraints_present", "_assert_hand_pose_usable", "_widen_dependent_joint_limits"):
+        assert f"def {fn}" in _ENV
+    assert "physxMimicJoint:rotZ:gearing" in _ENV and 'j.find("mimic")' in _ENV
+    assert "ctrl/mimic_err_max" in _ENV
+    assert "self._widen_dependent_joint_limits()" in _ENV
+
+
+def test_cfg_kills_tesollo_only_knobs():
+    assert re.search(r"oppose_grip_delta_rad:\s*float\s*=\s*0\.0", _CFG)
+    assert re.search(r'synergy_freeze_scope:\s*str\s*=\s*"finger"', _CFG)
+    m = float(re.search(r"mimic_dep_limit_margin_rad:\s*float\s*=\s*([0-9.]+)", _CFG).group(1))
+    assert m >= 1.0
+    assert "_validate_mimic_fields(cfg, pair)" in _CFG
+
+
+def test_asset_actually_carries_mimic_multipliers_both_hands():
+    urdf = next(_ASSET.glob("*.urdf"))
+    pairs = {j.get("name"): float(j.find("mimic").get("multiplier"))
+             for j in ET.parse(urdf).getroot().iter("joint") if j.find("mimic") is not None}
+    for s in ("r", "l"):
+        assert pairs[f"{s}_hj_thumb_3"] == pytest.approx(1.1425)
+        assert pairs[f"{s}_hj_thumb_4"] == pytest.approx(0.7508)
+        for f in ("index", "middle", "ring", "pinky"):
+            assert pairs[f"{s}_hj_{f}_2"] == pytest.approx(1.1169)
+
+
+# 원본 계약 중 그대로 유지돼야 하는 것(보상 없음 · 성공은 env · a=0 = 앵커)
+def test_inherited_contracts_hold():
+    assert "load_reward_fn" in _ENV and "RewardContext(" in _ENV
+    assert not re.search(r"_weight\b", _ENV)
+    assert "success=self._success_now" in _ENV and "& (~self._cups_nested)" in _ENV
+    assert "torch.where(a6 >= 0.0, a6 * self.delta_hi, -a6 * self.delta_lo)" in _RIG
+    assert "torch.where(delta > 0.0, delta * g, delta)" in _RIG and "hold & (delta > 0.0)" in _RIG
+
+
+# =============================================================================
+# 차원 (Isaac 필요)
+# =============================================================================
+def test_dims_from_resolve_cfg():
+    pytest.importorskip("pxr"); pytest.importorskip("isaaclab")
+    from openarm.agnostic.tasks.pour_fabric_mimic import pour_fabric_env_cfg as C
+    cfg = C.PourFabricMimicEnvCfg()
+    assert cfg.action_space == 2 * (6 + 6) == 24
+    per = 0
+    for p in (cfg_pair := _bm.get_pair(cfg.pair_name)).source, cfg_pair.receiver:
+        a, h, f = p.num_arm_joints, p.num_hand_joints, len(p.finger_sensor_bodies)
+        per += 2 * a + h + 3 + 6 + 3 * f + 3 + 3 * f + h + 3
+    assert cfg.observation_space == per + 6 + 24 == 172
+    assert cfg.state_space == 172 + 12 + 4 + 3 + 12 + 1 + 10 == 214
+    from openarm.agnostic.tasks.pour_fabric_mimic import config as reg
+    assert reg.REGISTERED == {"rh": "open-rh_b_pour_fab_mimic"}
