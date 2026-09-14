@@ -1,0 +1,16 @@
+{
+ "track": "grasp_fj_envelope",
+ "iter": 1,
+ "task": "Grasp the upright cylindrical cup with an envelope grasp (a power grasp): bring the palm against the side of the cup and wrap all five fingers around it, with the thumb on the opposite side of the cup from the other four fingers, so that the palm and the links of every finger are in contact with the cup. Then lift the cup to the goal position and hold it there, upright and still, so that the environment keeps counting successes. Do not knock the cup over, do not drop it, and do not push the hand into the table.",
+ "created": "2026-09-14T13:16:40.789788",
+ "context": "openarm.agnostic.tasks.grasp_fj_t2r.t2r.context.RewardContext",
+ "prev_iter": "reward_gen/grasp_fj_envelope/iter_00",
+ "history_iters": [
+  0
+ ],
+ "description": "reward_gen/grasp_fj_envelope/iter_00/observation.md",
+ "feedback": "reward_gen/grasp_fj_envelope/iter_00/improvement.md",
+ "events": [
+  "log/server_mirror/grasp-fj-t2r/fj_t2r_i00/summaries/events.out.tfevents.1789344839.oem-MS73-HB1-000"
+ ]
+}

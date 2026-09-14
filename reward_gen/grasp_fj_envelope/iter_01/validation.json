@@ -1,0 +1,110 @@
+{
+ "ok": true,
+ "errors": [],
+ "warnings": [],
+ "term_stats": {
+  "approach": {
+   "mean": 0.47538506984710693,
+   "abs_max": 0.990292489528656
+  },
+  "finger_reach": {
+   "mean": 0.8964787125587463,
+   "abs_max": 0.9976044297218323
+  },
+  "wrap": {
+   "mean": 0.05380970860520998,
+   "abs_max": 0.7318322658538818
+  },
+  "contact": {
+   "mean": 1.4722168842951457,
+   "abs_max": 1.4998174905776978
+  },
+  "envelope": {
+   "mean": 1.9458674589792886,
+   "abs_max": 1.9997566938400269
+  },
+  "link_cover": {
+   "mean": 0.9464751482009888,
+   "abs_max": 0.9999779462814331
+  },
+  "squeeze": {
+   "mean": 0.1995394229888916,
+   "abs_max": 0.37583816051483154
+  },
+  "hold_wrap": {
+   "mean": 0.05146191579600176,
+   "abs_max": 1.951826572418213
+  },
+  "lift": {
+   "mean": 0.02011625406642755,
+   "abs_max": 0.7466709017753601
+  },
+  "goal": {
+   "mean": 0.022380514380832512,
+   "abs_max": 0.7144448757171631
+  },
+  "hold_still": {
+   "mean": 0.004391921761756142,
+   "abs_max": 0.31418412923812866
+  },
+  "success_bonus": {
+   "mean": 0.5218975394964218,
+   "abs_max": 6.6491522789001465
+  },
+  "tilt_penalty": {
+   "mean": -3.754294554392497,
+   "abs_max": 5.0
+  },
+  "push_penalty": {
+   "mean": -0.47064591447512305,
+   "abs_max": 1.0
+  },
+  "table_penalty": {
+   "mean": -0.3399135271708171,
+   "abs_max": 3.0
+  },
+  "hold_arm_action_penalty": {
+   "mean": -0.013786409671107927,
+   "abs_max": 0.1764206737279892
+  },
+  "arm_rate_penalty": {
+   "mean": -0.09575530638297398,
+   "abs_max": 0.28178444504737854
+  },
+  "hand_rate_penalty": {
+   "mean": -0.04507729162772497,
+   "abs_max": 0.0896378681063652
+  }
+ },
+ "total_stats": {
+  "mean": 1.8905474742253623,
+  "abs_max": 10.6497220993042
+ },
+ "fields_used": [
+  "actions",
+  "cup_ang_vel",
+  "cup_axis",
+  "cup_half_height",
+  "cup_lin_vel",
+  "cup_pos",
+  "cup_radius",
+  "cup_spawn_pos",
+  "cup_tilt",
+  "goal_dist",
+  "goal_pos",
+  "hand_q_norm",
+  "hand_target_norm",
+  "hand_z_min",
+  "lift_latch_height",
+  "lifted",
+  "link_cup_force",
+  "link_pos",
+  "palm_cup_force",
+  "palm_normal",
+  "palm_pos",
+  "prev_actions",
+  "success",
+  "success_tol",
+  "table_z"
+ ]
+}

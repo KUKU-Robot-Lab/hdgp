@@ -1,0 +1,4 @@
+- Keep the grasp that surrounds the cup with the palm and the fingers — that part works.
+- The cup must stay upright while it is lifted and held. The goal pose is upright and goal_dist includes the cup's orientation, so a tilted carry stops producing successes as the tolerance tightens. The arm should rotate as needed to keep the cup upright during lifting and holding; make uprightness count throughout lifting and holding, strongly enough that carrying the cup tilted is not worth it.
+- Near the goal the cup is almost never held still (hold_still stays about 0); successes need the upright cup held steady at the goal for consecutive steps.
+- The fingers mainly press with their fingertips (about one measured link per finger touches); the task asks for the links of every finger to touch the cup, so wrapping with more of each finger should be worth more while holding.
