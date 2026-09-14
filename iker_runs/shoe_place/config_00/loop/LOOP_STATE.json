@@ -1,7 +1,7 @@
 {
  "schema": 1,
  "track": "iker_shoe_c00",
- "phase": "vlm_target",
+ "phase": "stage2_train",
  "status": "running",
  "awaiting": null,
  "stage": 1,
@@ -75,8 +75,12 @@
   "path": "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/grasp_bank.json"
  },
  "attempts": {
-  "1": 0
+  "1": 2
  },
  "eval": {},
- "updated": "2026-09-14T22:25:55+09:00"
+ "updated": "2026-09-14T23:38:58+09:00",
+ "vlm_requests": {
+  "target_00": 1,
+  "target_01": 1
+ }
 }
