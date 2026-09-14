@@ -14,6 +14,8 @@ from typing import Mapping, Sequence
 
 import torch
 
+from openarm.agnostic.modules.iker.loop_state import LEARNED_BANK_SOURCE
+
 BANK_SCHEMA = 1
 BLOCKED_ERR_RAD = 0.2  # a joint this far from its target (and not at a limit) is pressed against the shoe
 LIMIT_MARGIN_RAD = 0.02
@@ -354,4 +356,52 @@ def gains_metadata(joint_names: Sequence[str], stiffness: torch.Tensor, damping:
     return {
         "stiffness": {n: round(float(k), 4) for n, k in zip(joint_names, stiffness.tolist())},
         "damping": {n: round(float(d), 4) for n, d in zip(joint_names, damping.tolist())},
+    }
+
+
+BOOT_METADATA_KEYS = (
+    "config_index", "physics_dt", "friction", "solver_position_iterations", "solver_velocity_iterations", "gains",
+    "robot_usd", "shoe_meta_sha256", "scene_config",
+)
+JOINT_COLUMNS = ("joint_pos", "joint_target")
+
+
+def sort_joint_columns(entries: Mapping[str, torch.Tensor], joint_names: Sequence[str]) -> tuple[dict[str, torch.Tensor], list[str]]:
+    """Bank entries with their joint columns ordered by joint name (auto-loop §5); ``load_bank`` reorders by name."""
+    order = sorted(range(len(joint_names)), key=lambda i: joint_names[i])
+    moved = {
+        key: value[:, torch.tensor(order, device=value.device)] if key in JOINT_COLUMNS else value for key, value in entries.items()
+    }
+    return moved, [joint_names[i] for i in order]
+
+
+def learned_bank_metadata(
+    boot: Mapping,
+    *,
+    side_sign: float,
+    checkpoint: str,
+    checkpoint_sha256: str,
+    stage1_reward: Mapping,
+    seeds: Sequence[int],
+    captured: int,
+    verified: int,
+) -> dict:
+    """Metadata of a bank harvested from a stage-1 checkpoint: the environments' boot comparison keys and its origin."""
+    missing = [key for key in BOOT_METADATA_KEYS if key not in boot]
+    extra = sorted(set(boot) - set(BOOT_METADATA_KEYS))
+    if missing or extra:
+        raise ValueError(f"boot metadata keys differ from {BOOT_METADATA_KEYS}: missing {missing}, extra {extra}")
+    _check_side_sign(float(side_sign))
+    if not 0 <= verified <= captured:
+        raise ValueError(f"verified {verified} must lie within 0..captured {captured}")
+    return {
+        **{key: boot[key] for key in BOOT_METADATA_KEYS},
+        "source": LEARNED_BANK_SOURCE,
+        "side_sign": float(side_sign),
+        "checkpoint": str(checkpoint),
+        "checkpoint_sha256": str(checkpoint_sha256),
+        "stage1_reward": dict(stage1_reward),
+        "seeds": [int(seed) for seed in seeds],
+        "captured": int(captured),
+        "verified": int(verified),
     }

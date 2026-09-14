@@ -277,3 +277,34 @@ def test_quality_calibration_document_round_trips_and_a_file_without_schema_is_r
             gs.quality_calibration_document(lo, hi)
     with pytest.raises(ValueError, match="may not set"):
         gs.quality_calibration_document(0.1, 0.2, schema=2)
+
+
+def test_capture_rows_keep_each_envs_first_success_until_cleared():
+    capture = gs.SuccessCapture.empty(3, 4)
+    first = dict(joint_pos=torch.ones(3, 4), joint_target=2 * torch.ones(3, 4), shoe_pose=3 * torch.ones(3, 7), palm_pose=4 * torch.ones(3, 7))
+    capture = gs.capture_rows(capture, torch.tensor([True, False, True]), step=5, **first)
+    later = {key: 10 * value for key, value in first.items()}
+    capture = gs.capture_rows(capture, torch.tensor([True, True, False]), step=9, **later)
+    assert capture.valid.tolist() == [True, True, True]
+    assert capture.step.tolist() == [5, 9, 5]
+    assert capture.joint_pos[:, 0].tolist() == [1.0, 10.0, 1.0]
+    assert capture.joint_target[:, 0].tolist() == [2.0, 20.0, 2.0]
+    assert capture.shoe_pose[:, 6].tolist() == [3.0, 30.0, 3.0] and capture.palm_pose[:, 0].tolist() == [4.0, 40.0, 4.0]
+    cleared = gs.SuccessCapture.empty(3, 4)
+    assert not cleared.valid.any() and cleared.step.tolist() == [-1, -1, -1]
+
+
+def test_holding_targets_pin_the_arm_at_its_position_and_the_hand_at_its_ema_target():
+    targets = torch.zeros(2, 6)
+    joint_pos = torch.arange(12, dtype=torch.float32).view(2, 6)
+    hand = torch.tensor([[7.0, 8.0], [9.0, 10.0]])
+    out = gs.holding_targets(targets, joint_pos, [0, 1], torch.tensor([3, 4]), hand)
+    assert out.tolist() == [[0.0, 1.0, 0.0, 7.0, 8.0, 0.0], [6.0, 7.0, 0.0, 9.0, 10.0, 0.0]]
+    assert float(targets.abs().sum()) == 0.0
+
+
+def test_the_normalized_ema_target_is_a_fixed_point_of_the_hand_law():
+    lo, hi = torch.tensor([-0.5, 0.0]), torch.tensor([0.5, 1.2])
+    previous = torch.tensor([[0.1, 0.9], [-0.5, 1.2]])
+    held = gs.hand_targets(gs.normalized_targets(previous, lo, hi), lo, hi, previous)
+    assert torch.allclose(held, previous, atol=1e-6)

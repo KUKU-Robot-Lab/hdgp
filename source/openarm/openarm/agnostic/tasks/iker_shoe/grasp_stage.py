@@ -330,3 +330,65 @@ def read_quality_calibration(path) -> tuple[float, float]:
     doc = run_files.read_json(path)
     checked = quality_calibration_document(doc["q_lo"], doc["q_hi"])
     return checked["q_lo"], checked["q_hi"]
+
+
+@dataclass(frozen=True)
+class SuccessCapture:
+    """Each env's state at its first success since the last clear, kept apart from the same step's reset (auto-loop §5)."""
+
+    joint_pos: torch.Tensor  # (N, J) articulation joint positions
+    joint_target: torch.Tensor  # (N, J) targets that hold the state (``holding_targets``)
+    shoe_pose: torch.Tensor  # (N, 7) env-local position + wxyz
+    palm_pose: torch.Tensor  # (N, 7) env-local position + wxyz
+    step: torch.Tensor  # (N,) long, the environment's common step counter at the capture, -1 before
+    valid: torch.Tensor  # (N,) bool
+
+    @classmethod
+    def empty(cls, num_envs: int, num_joints: int, device: str | torch.device = "cpu") -> "SuccessCapture":
+        return cls(
+            joint_pos=torch.zeros(num_envs, num_joints, device=device),
+            joint_target=torch.zeros(num_envs, num_joints, device=device),
+            shoe_pose=torch.zeros(num_envs, 7, device=device),
+            palm_pose=torch.zeros(num_envs, 7, device=device),
+            step=torch.full((num_envs,), -1, dtype=torch.long, device=device),
+            valid=torch.zeros(num_envs, dtype=torch.bool, device=device),
+        )
+
+
+def capture_rows(
+    capture: SuccessCapture,
+    mask: torch.Tensor,
+    *,
+    joint_pos: torch.Tensor,
+    joint_target: torch.Tensor,
+    shoe_pose: torch.Tensor,
+    palm_pose: torch.Tensor,
+    step: int,
+) -> SuccessCapture:
+    """A new capture holding the rows of ``mask`` that hold none yet; a row's later successes are ignored until a clear.
+    Tensor ops only, so the step path does not synchronise with the host."""
+    take = mask & ~capture.valid
+    rows = take[:, None]
+    return SuccessCapture(
+        joint_pos=torch.where(rows, joint_pos, capture.joint_pos),
+        joint_target=torch.where(rows, joint_target, capture.joint_target),
+        shoe_pose=torch.where(rows, shoe_pose, capture.shoe_pose),
+        palm_pose=torch.where(rows, palm_pose, capture.palm_pose),
+        step=torch.where(take, torch.full_like(capture.step, step), capture.step),
+        valid=capture.valid | take,
+    )
+
+
+def holding_targets(
+    joint_targets: torch.Tensor,
+    joint_pos: torch.Tensor,
+    arm_ids: Sequence[int] | torch.Tensor,
+    hand_ids: Sequence[int] | torch.Tensor,
+    hand_targets: torch.Tensor,
+) -> torch.Tensor:
+    """(N, J) joint targets that hold a state: the arm at its measured position, the hand at its EMA target and every
+    other joint at its command."""
+    out = joint_targets.clone()
+    out[:, arm_ids] = joint_pos[:, arm_ids]
+    out[:, hand_ids] = hand_targets
+    return out

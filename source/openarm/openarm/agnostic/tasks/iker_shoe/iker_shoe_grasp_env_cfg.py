@@ -29,6 +29,9 @@ class IkerShoeGraspEnvCfg(IkerShoeEnvCfg):
     pregrasp_bank_path = ""
     quality_calibration_path = ""
 
+    # harvest_grasp_bank.py: keep each env's first success state apart from the same step's reset (auto-loop design §5)
+    capture_success_states = False
+
     start_noise_xy = 0.02  # legacy IKER interact-object position noise
     drop_z = 0.10  # env-local shoe height below which the shoe has fallen off the table
     hand_floor_offset = 0.01  # the hand-below-table penalty starts this far above the table top

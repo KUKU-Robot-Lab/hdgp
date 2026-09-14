@@ -107,6 +107,7 @@ class IkerShoeGraspEnv(DirectRLEnv):
         }))
         bank_doc = run_files.read_json(_artifact(cfg.pregrasp_bank_path, run_dir / PREGRASP_BANK_FILE))
         self._bank = gb.load_bank(bank_doc, joint_names, expected, dev)
+        self._boot_metadata = expected  # harvest_grasp_bank.py writes these comparison keys into the learned bank
 
         reward_cfg = replace(cfg.grasp_reward)
         calibration_path = _artifact(cfg.quality_calibration_path, run_dir / QUALITY_CALIBRATION_FILE)
@@ -140,6 +141,7 @@ class IkerShoeGraspEnv(DirectRLEnv):
         # q and w_f of the latest _get_dones; _reset_idx leaves them alone, so a caller can read the step that ended an episode
         self._q_step, self._w_f_step = torch.zeros(n, device=dev), None
         self._episode_log = dict.fromkeys(EPISODE_LOG_KEYS, 0.0)  # statistics of the most recently finished episodes
+        self._capture = gs.SuccessCapture.empty(n, self._robot.num_joints, dev)  # written only with cfg.capture_success_states
         self._shoe_mass = self._shoe.root_physx_view.get_masses()[:, 0].to(dev)
         self._wrench = WrenchDR(n, dev, force_scale=cfg.wrench_force_per_kg, torque_scale=cfg.wrench_torque_per_kg,
                                 prob_range=cfg.wrench_prob_range)
@@ -242,6 +244,17 @@ class IkerShoeGraspEnv(DirectRLEnv):
         )
         self._q_at_latch = torch.where(step.just_latched, q, self._q_at_latch)
         self._q_at_success = torch.where(step.success, q, self._q_at_success)
+        if self.cfg.capture_success_states:
+            # the same step's reset overwrites the joints, their targets and the shoe pose (auto-loop design §5)
+            self._capture = gs.capture_rows(
+                self._capture,
+                step.success,
+                joint_pos=self._robot.data.joint_pos,
+                joint_target=gs.holding_targets(self._joint_targets, self._robot.data.joint_pos, self._arm_ids, self._hand_ids, self._hand_targets),
+                shoe_pose=torch.cat([shoe_pos, self._shoe.data.root_quat_w], dim=-1),
+                palm_pose=torch.cat([palm_pos, self._robot.data.body_quat_w[:, self._palm]], dim=-1),
+                step=self.common_step_counter,
+            )
         self._stage, self._last = step.state, step
         over_rack = (dz_free == 0.0) & (surface[..., 2].min(dim=-1).values - self._start_bottom_z > 0.02)
         log = {f"grasp_reward/{name}": value.mean().item() for name, value in step.terms.items()}
@@ -266,6 +279,42 @@ class IkerShoeGraspEnv(DirectRLEnv):
         if self._last is None:
             raise RuntimeError("_get_rewards called before _get_dones")
         return self._last.reward
+
+    # ------------------------------------------------------ success capture
+
+    def clear_success_captures(self) -> None:
+        self._capture = gs.SuccessCapture.empty(self.num_envs, self._robot.num_joints, self.device)
+
+    def restore_success_captures(self, env_ids: torch.Tensor) -> None:
+        """Write the captured success states of ``env_ids`` back as the start of a fresh episode (auto-loop design §5)."""
+        if not bool(self._capture.valid[env_ids].all()):
+            raise ValueError("restore_success_captures: some of the envs hold no capture")
+        count, dev = len(env_ids), self.device
+        joint_pos, joint_target = self._capture.joint_pos[env_ids], self._capture.joint_target[env_ids]
+        self._robot.write_joint_state_to_sim(joint_pos, torch.zeros_like(joint_pos), env_ids=env_ids)
+        self._robot.set_joint_position_target(joint_target, env_ids=env_ids)
+        self._joint_targets[env_ids] = joint_target
+        self._hand_targets[env_ids] = joint_target[:, self._hand_ids]
+        shoe_pose = self._capture.shoe_pose[env_ids].clone()
+        self._start_bottom_z[env_ids] = self._bottom_z(shoe_pose)
+        shoe_pose[:, :3] += self.scene.env_origins[env_ids]
+        self._shoe.write_root_pose_to_sim(shoe_pose, env_ids=env_ids)
+        self._shoe.write_root_velocity_to_sim(torch.zeros(count, 6, device=dev), env_ids=env_ids)
+        self._stage = self._stage.reset_rows(env_ids)
+        self._q_at_latch[env_ids] = 0.0
+        self._q_at_success[env_ids] = 0.0
+        self.episode_length_buf[env_ids] = 0
+        self._wrench.reset(env_ids)
+        self.actions[env_ids] = 0.0
+        self._ik.reset(env_ids)
+
+    def _bottom_z(self, shoe_pose: torch.Tensor) -> torch.Tensor:
+        """(K,) height of the lowest surface point of env-local shoe poses (K, 7)."""
+        count, points = shoe_pose.shape[0], self._surface_local.shape[0]
+        surface = quat_apply(
+            shoe_pose[:, None, 3:].expand(count, points, 4).reshape(-1, 4), self._surface_local.expand(count, -1, 3).reshape(-1, 3)
+        ).view(count, points, 3)
+        return (surface[..., 2] + shoe_pose[:, None, 2]).min(dim=-1).values
 
     # ----------------------------------------------------------------- reset
 
@@ -303,11 +352,7 @@ class IkerShoeGraspEnv(DirectRLEnv):
         zero_velocity = torch.zeros(count, 6, device=dev)
         shoe_pose = self._bank.shoe_pose[pick].clone()
         shoe_pose[:, :2] += sample_uniform(-self.cfg.start_noise_xy, self.cfg.start_noise_xy, (count, 2), dev)
-        start_points = quat_apply(
-            shoe_pose[:, None, 3:].expand(count, self._surface_local.shape[0], 4).reshape(-1, 4),
-            self._surface_local.expand(count, -1, 3).reshape(-1, 3),
-        ).view(count, -1, 3) + shoe_pose[:, None, :3]
-        self._start_bottom_z[env_ids] = start_points[..., 2].min(dim=-1).values
+        self._start_bottom_z[env_ids] = self._bottom_z(shoe_pose)
         shoe_pose[:, :3] += origins
         self._shoe.write_root_pose_to_sim(shoe_pose, env_ids=env_ids)
         self._shoe.write_root_velocity_to_sim(zero_velocity, env_ids=env_ids)

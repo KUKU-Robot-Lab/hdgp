@@ -7,7 +7,9 @@
 4. the reward wiring with the physics bypassed: a shoe written 6 cm above its start, clear of the hand, with zero velocity
    is held; the lift bonus latches on the third ``_get_dones`` call and the success bonus on the twentieth, each once;
 5. random actions for 12 s keep rewards finite, write the episode-end log, and publish the same log keys on every step
-   (rl_games reads each step's log with the keys of the epoch's first step).
+   (rl_games reads each step's log with the keys of the epoch's first step);
+6. with ``capture_success_states`` the success call of a forced hold is captured, and restoring it writes the captured joints
+   and hand targets back as a fresh episode (the learned grasp harvest, auto-loop design §5).
 
 Usage:
     cd ~/rl_ws/hdgp && PYTHONPATH=source/openarm ../IsaacLab/isaaclab.sh -p scripts/iker/grasp_smoke.py --headless
@@ -90,6 +92,7 @@ def main() -> int:
     cfg.add_noise = False
     cfg.wrench_prob_range = (1e-9, 1e-9)
     cfg.grasp_reward.hold_radius_m = FORCED_HOLD_RADIUS_M
+    cfg.capture_success_states = True
     env = gym.make("open-sens_l_iker_shoe_grasp", cfg=cfg).unwrapped
     n, dev = env.num_envs, env.device
     failures = []
@@ -152,6 +155,23 @@ def main() -> int:
           f"max {float(stacked.max()):.1f} episode-end log written {episode_logged} log key sets {len(key_sets)}", flush=True)
     if not torch.isfinite(stacked).all() or not episode_logged or len(key_sets) != 1:
         failures.append("random-action rewards, the episode-end log, or log keys that differ between steps")
+
+    env.reset()
+    env.clear_success_captures()
+    forced_hold(env, SUCCESS_CALL + 1)  # the success call is captured before anything could overwrite it
+    capture = env._capture
+    pose_error = float((capture.shoe_pose[:, :3] - (env._shoe.data.root_pos_w - origins)).abs().max())
+    home = env._robot.data.default_joint_pos.clone()
+    env._robot.write_joint_state_to_sim(home, torch.zeros_like(home))
+    env.episode_length_buf[:] = 7
+    env.restore_success_captures(torch.arange(n, device=dev))
+    joint_error = float((env._robot.data.joint_pos - capture.joint_pos).abs().max())
+    hand_error = float((env._hand_targets - capture.joint_target[:, env._hand_ids]).abs().max())
+    length = int(env.episode_length_buf.max())
+    print(f"SMOKE success capture: valid {bool(capture.valid.all())}, shoe pose error {pose_error:.2e}, restored joint error "
+          f"{joint_error:.2e}, hand target error {hand_error:.2e}, episode length {length}", flush=True)
+    if not bool(capture.valid.all()) or pose_error > 1e-4 or joint_error > 1e-5 or hand_error > 1e-6 or length != 0:
+        failures.append("the success capture or its restore does not reproduce the captured state")
 
     for failure in failures:
         print(f"SMOKE CHECK FAILED: {failure}", flush=True)

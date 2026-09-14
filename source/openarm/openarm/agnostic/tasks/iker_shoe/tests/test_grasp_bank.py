@@ -238,3 +238,33 @@ def test_bank_document_rejects_non_finite_rows():
 def test_gains_metadata_rounds_for_exact_comparison():
     meta = gb.gains_metadata(["a", "b"], torch.tensor([400.00001, 10.0]), torch.tensor([80.0, 0.123456]))
     assert meta == {"stiffness": {"a": 400.0, "b": 10.0}, "damping": {"a": 80.0, "b": 0.1235}}
+
+
+BOOT = {key: index for index, key in enumerate(gb.BOOT_METADATA_KEYS)}
+
+
+def test_sorted_joint_columns_load_back_in_articulation_order():
+    names = ["r_aj_1", "l_hj_thumb_1", "head_pan", "l_aj_1"]
+    entries = {
+        "joint_pos": torch.tensor([[1.0, 2.0, 3.0, 4.0]]), "joint_target": torch.tensor([[5.0, 6.0, 7.0, 8.0]]),
+        "shoe_pose": torch.zeros(1, 7), "palm_pose": torch.ones(1, 7),
+    }
+    moved, sorted_names = gb.sort_joint_columns(entries, names)
+    assert sorted_names == ["head_pan", "l_aj_1", "l_hj_thumb_1", "r_aj_1"]
+    assert moved["joint_pos"].tolist() == [[3.0, 4.0, 2.0, 1.0]] and moved["palm_pose"] is entries["palm_pose"]
+    bank = gb.load_bank(gb.bank_document(moved, sorted_names, {"k": 1}), names, {"k": 1}, "cpu")
+    assert bank.joint_pos.tolist() == [[1.0, 2.0, 3.0, 4.0]] and bank.joint_target.tolist() == [[5.0, 6.0, 7.0, 8.0]]
+
+
+def test_learned_bank_metadata_keeps_the_boot_keys_and_records_the_origin():
+    meta = gb.learned_bank_metadata(BOOT, side_sign=-1.0, checkpoint="/b/ep350.pth", checkpoint_sha256="ab",
+                                    stage1_reward={"g_min": 0.5}, seeds=(0, 1), captured=90, verified=70)
+    assert {key: meta[key] for key in gb.BOOT_METADATA_KEYS} == BOOT
+    assert (meta["source"], meta["side_sign"], meta["seeds"], meta["captured"], meta["verified"]) == ("learned_grasp", -1.0, [0, 1], 90, 70)
+    without_gains = {key: value for key, value in BOOT.items() if key != "gains"}
+    with pytest.raises(ValueError, match="missing"):
+        gb.learned_bank_metadata(without_gains, side_sign=-1.0, checkpoint="c", checkpoint_sha256="s", stage1_reward={},
+                                 seeds=(0,), captured=1, verified=1)
+    with pytest.raises(ValueError, match="verified"):
+        gb.learned_bank_metadata(BOOT, side_sign=-1.0, checkpoint="c", checkpoint_sha256="s", stage1_reward={},
+                                 seeds=(0,), captured=1, verified=2)
