@@ -49,8 +49,8 @@ COMMIT_ACTIONS = (
     "record_gate", "advance", "commit_calibration", "commit_bank", "commit_interaction", "record_eval", "store_video", "pause",
     "approve", "resume",
 )
-OBSERVE_FILES = ("prompt.md", "response.md", "requery.json", "snapshot.png", "snapshot_raw.png", "keypoints.json", "state.json",
-                 "rollout_summary.json")
+OBSERVE_FILES = ("prompt.md", "response.md", "generator.json", "requery.json", "snapshot.png", "snapshot_raw.png", "keypoints.json",
+                 "state.json", "rollout_summary.json")
 
 
 def now_iso() -> str:
@@ -119,6 +119,16 @@ def side_label(state: dict, run: str) -> str:
     return f"{state['track']}_{run}"
 
 
+def stop_run(state: dict, paths: lp.LoopPaths, run: str) -> list[str]:
+    """Stop a training run by PID after marking its record ``stopping`` in the state file, so a probe meanwhile (or after a
+    failed act) never reads the dying run as crashed; returns the ``stopped_runs`` for apply."""
+    if run in state["runs"]:
+        marked = {**state, "runs": {**state["runs"], run: {**state["runs"][run], "stopping": now_iso()}}}
+        ls.save_state(paths.state_file, marked)
+    stop(state["policy"]["labels"][run])
+    return [run] if run in state["runs"] else []
+
+
 def stage2_inputs(state: dict, paths: lp.LoopPaths) -> list[str]:
     bank = state["policy"]["grasp_bank_path"]
     return ["--interaction", str(paths.interaction_file), *(["--grasp-bank", bank] if bank else [])]
@@ -142,7 +152,7 @@ def commit_calibration(state, paths, decision):
 
 def launch_b(state, paths, decision):
     policy, labels = state["policy"], state["policy"]["labels"]
-    stopped = ["stage1_a"] if stop(labels["stage1_a"]) else []
+    stopped = stop_run(state, paths, "stage1_a")
     argv = [TRAIN_SCRIPT, "--task", STAGE1_TASK, "--num_envs", str(STAGE1_NUM_ENVS), "--headless", "--checkpoint", decision.params["checkpoint"],
             "--no-reset_epoch", "--max_iterations", str(policy["b_max_epochs"]), f"env.grasp_reward.g_min={policy['b_g_min']}"]
     note = f"IKER 1단계 B(g_min {policy['b_g_min']}, 보정 파일) {Path(decision.params['checkpoint']).name} 이어학습, 자동 루프"
@@ -156,8 +166,13 @@ def run_harvest(state, paths, decision):
     return {"run": launch(side_label(state, "harvest"), argv, paths.side_log("harvest", f"ep{epoch}"), f"IKER loop harvest ep {epoch}")}
 
 
+def advance(state, paths, decision):
+    run = decision.params.get("stop")
+    return {"stopped_runs": stop_run(state, paths, run)} if run else {}
+
+
 def commit_bank(state, paths, decision):
-    stopped = ["stage1_b"] if stop(state["policy"]["labels"]["stage1_b"]) else []
+    stopped = stop_run(state, paths, "stage1_b")
     return {"path": str(paths.harvest_bank_file), "stopped_runs": stopped, "commit_paths": [paths.harvest_bank_file],
             "message": f"iker(loop): 학습 파지 뱅크 {decision.params['verified']} 개 — {Path(decision.params['checkpoint']).name}"}
 
@@ -168,6 +183,14 @@ def write_prompt(state, paths, decision):
     for name in ("snapshot.png", "keypoints.json"):
         shutil.copyfile(paths.config_dir / name, paths.stage_dir / name)
     return {}
+
+
+def vlm_generate(state, paths, decision):
+    """Record one generator request: generator.json next to the response; the tick then dispatches the agent with ``vlm.brief``."""
+    request = vlm_request(paths, decision)
+    count = state.get("vlm_requests", {}).get(ls.vlm_request_key(decision.params), 0) + 1
+    record = run_files.write_json(Path(request["response"]).with_name("generator.json"), loop_vlm.generator_record(request, count, now_iso()))
+    return {"vlm": request, "generator": str(record)}
 
 
 def ingest(state, paths, decision):
@@ -268,7 +291,8 @@ def pause(state, paths, decision):
 
 EXECUTORS = {
     "run_calibrate": run_calibrate, "commit_calibration": commit_calibration, "launch_b": launch_b, "run_harvest": run_harvest,
-    "commit_bank": commit_bank, "write_prompt": write_prompt, "ingest": ingest, "commit_interaction": commit_interaction,
+    "advance": advance, "commit_bank": commit_bank, "write_prompt": write_prompt, "vlm_generate": vlm_generate, "ingest": ingest,
+    "commit_interaction": commit_interaction,
     "run_env_smoke": run_env_smoke, "launch_stage2": launch_stage2, "run_eval": run_eval, "record_eval": record_eval,
     "run_observe_rollout": run_observe_rollout, "run_observe_render": run_observe_render, "write_requery_prompt": write_requery_prompt,
     "parse_requery": parse_requery, "run_video": run_video, "store_video": store_video, "kill_stale": kill_stale, "pause": pause,
@@ -280,11 +304,11 @@ EXECUTORS = {
 
 def vlm_request(paths: lp.LoopPaths, decision: ls.Decision) -> dict:
     """Paths and the verbatim brief for the fresh generator agent (§6)."""
+    response = paths.state_dir / ls.vlm_response_file(decision.params)
     if decision.params["kind"] == "target":
-        folder, response = paths.stage_dir, paths.stage_dir / f"attempt_{decision.params['attempt']:02d}" / "response.md"
-        images = {prompts.IMAGE_MARKER: str(paths.stage_dir / "snapshot.png")}
+        folder, images = paths.stage_dir, {prompts.IMAGE_MARKER: str(paths.stage_dir / "snapshot.png")}
     else:
-        folder, response = paths.observe_dir, paths.observe_dir / "response.md"
+        folder = paths.observe_dir
         images = {prompts.IMAGE_MARKER: str(paths.observe_dir / "snapshot.png"), loop_vlm.STAGE_IMAGE_MARKER: str(paths.stage_dir / "snapshot.png")}
     prompt = folder / "prompt.md"
     return {"prompt": str(prompt), "response": str(response), "images": images, "brief": loop_vlm.generator_brief(prompt, response, images)}
@@ -359,6 +383,9 @@ def cmd_act(args) -> int:
     if args.action in ls.MANUAL_ACTIONS:
         params = {"policy": json.loads(args.policy)} if args.action == "resume" else {}
         decision = ls.Decision(args.action, f"the user asked to {args.action}", params)
+        result = {}
+        if args.action == "resume":  # dead runs that read as crashed are cleared, so their phase starts that step again
+            result = {"cleared_runs": list(ls.runs_to_clear(state, lp.run_statuses(state, paths, now_s=time.time())))}
     else:
         probe = lp.collect(state, paths, now_s=time.time(), gpu_used_mib=gpu_used_mib(), load_events=load_tfevents)
         decision = ls.decide(state, probe)
@@ -366,7 +393,7 @@ def cmd_act(args) -> int:
             raise SystemExit(f"the loop now decides {decision.action!r} ({decision.reason}), not {args.action!r}")
         if decision.action in ls.SESSION_ACTIONS:
             raise SystemExit(f"{decision.action!r} is carried out by the tick session (LOOP_PROMPT.md), not by act")
-    result = EXECUTORS.get(decision.action, lambda s, p, d: {})(state, paths, decision)
+        result = EXECUTORS.get(decision.action, lambda s, p, d: {})(state, paths, decision)
     new_state = ls.apply(state, decision, now_iso(), result)
     ls.save_state(paths.state_file, new_state)
     record = {"time": new_state["updated"], "phase": state["phase"], "action": decision.action, "reason": decision.reason,

@@ -7,7 +7,7 @@ in, so the tests run on temporary trees. A process belongs to a run only through
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -36,6 +36,8 @@ SIDE_MARKERS: Mapping[str, tuple[str, str]] = {  # run -> (result line prefix, c
     "observe_render": ("OBSERVE config", "OBSERVE FAILED"),
     "video": ("", ""),  # play.py prints no result line: the video file is the result
 }
+CHECK_FAILED_PREFIX: Mapping[str, str] = {"observe_render": "OBSERVE CHECK FAILED: "}  # blocking checks; REPORTED lines are not
+CHECKPOINT_SETTLE_S = 30.0  # a checkpoint file younger than this may still be written: not yet a candidate
 PASSED_RE = re.compile(r"\bpassed (True|False)\b")
 REWARD_LINE_RE = re.compile(r"\[iker_grasp\] reward Stage1RewardCfg\(([^)]*)\)")
 FIELD_RE = re.compile(r"(\w+)=([-+0-9.eE]+)")
@@ -121,14 +123,15 @@ def read_tail(path: Path, limit: int = LOG_TAIL_BYTES) -> str:
         return handle.read().decode("utf-8", errors="replace")
 
 
-def list_checkpoints(nn_dir: Path) -> dict[int, str]:
-    """epoch -> absolute path of rl_games' ``last_<name>_ep_<E>_rew_<R>.pth`` files; on a shared epoch the first name in sorted order (the periodic save) wins."""
+def list_checkpoints(nn_dir: Path, settled_before_s: float | None = None) -> dict[int, str]:
+    """epoch -> absolute path of rl_games' ``last_<name>_ep_<E>_rew_<R>.pth`` files; on a shared epoch the first name in sorted order (the periodic save) wins.
+    With ``settled_before_s``, files modified after that time are left out (they may still be written)."""
     if not nn_dir.is_dir():
         return {}
     found = {}
     for path in sorted(nn_dir.iterdir()):
         match = CHECKPOINT_RE.match(path.name)
-        if match:
+        if match and (settled_before_s is None or path.stat().st_mtime <= settled_before_s):
             found.setdefault(int(match.group(1)), str(path.resolve()))
     return found
 
@@ -188,8 +191,10 @@ def side_status(run: str, text: str, alive: bool, result_ready: bool, idle_s: fl
     found = PASSED_RE.search(marker)
     passed = (found.group(1) == "True") if found else (True if finished else None)
     crash = bool(crash_marker) and crash_marker in text
+    check_prefix = CHECK_FAILED_PREFIX.get(run, "")
+    checks = tuple(line[len(check_prefix):] for line in text.splitlines() if check_prefix and line.startswith(check_prefix))
     return ls.RunStatus(started=True, alive=alive, finished=finished, passed=passed, crashed=crash or (not alive and not finished),
-                        marker=marker or (crash_marker if crash else ""), idle_s=idle_s)
+                        marker=marker or (crash_marker if crash else ""), idle_s=idle_s, failed_checks=checks)
 
 
 def attempts(stage_dir: Path) -> tuple[ls.AttemptStatus, ...]:
@@ -229,25 +234,32 @@ def stage2_video(state: Mapping, paths: LoopPaths) -> Path | None:
 def collect(state: Mapping, paths: LoopPaths, *, now_s: float, gpu_used_mib: int,
             load_events: Callable[[str], Mapping[str, list]], proc_root: Path = Path("/proc")) -> ls.Probe:
     policy = state["policy"]
-    runs = {name: _run_status(name, record, state, paths, now_s, proc_root) for name, record in state["runs"].items()}
+    runs = run_statuses(state, paths, now_s=now_s, proc_root=proc_root)
     latched, over_rack, checkpoints, boot = (), (), {}, None
     training = PHASE_TRAINING.get(state["phase"])
     if training is not None:
-        record = state["runs"].get(training, {})
+        record = state["runs"].get(training, {})  # a cleared record still locates the run folder of its checkpoints
         run_dir = find_run_dir(paths.task_dir(training), policy["labels"][training], record.get("started_s", 0.0))
         if run_dir is not None:
-            checkpoints = list_checkpoints(run_dir / "nn")
+            checkpoints = list_checkpoints(run_dir / "nn", settled_before_s=now_s - CHECKPOINT_SETTLE_S)
             if training != "stage2":
                 series = _events(run_dir, load_events)
                 latched, over_rack = _series(series, LATCHED_TAG), _series(series, OVER_RACK_TAG)
-        if training == "stage1_b" and record:
-            boot = boot_reward(read_tail(Path(record["log"])))
+        live = ls.live_record(state, training)
+        if training == "stage1_b" and live:
+            boot = boot_reward(read_tail(Path(live["log"])))
     return ls.Probe(
         gpu_used_mib=gpu_used_mib, runs=runs, latched=latched, over_rack=over_rack, checkpoints=checkpoints, boot_reward=boot,
         calibration=_optional_json(paths.calibration_file), bank_meta=(_optional_json(paths.harvest_bank_file) or {}).get("metadata"),
         attempts=attempts(paths.stage_dir), evals=evals(paths.stage_dir), final_rows=final_rows(paths.final_states_file),
         requery=_optional_json(paths.observe_dir / "requery.json"), files=_files(state, paths),
     )
+
+
+def run_statuses(state: Mapping, paths: LoopPaths, *, now_s: float, proc_root: Path = Path("/proc")) -> dict[str, ls.RunStatus]:
+    """The status of every launch record ``resume`` has not cleared (a cleared run is absent)."""
+    return {name: _run_status(name, record, state, paths, now_s, proc_root)
+            for name, record in state["runs"].items() if ls.live_record(state, name) is not None}
 
 
 def _optional_json(path: Path) -> dict | None:
@@ -272,12 +284,14 @@ def _run_status(name: str, record: Mapping, state: Mapping, paths: LoopPaths, no
         run_dir = find_run_dir(paths.task_dir(name), record["label"], record.get("started_s", 0.0))
         checkpoints = list_checkpoints(run_dir / "nn") if run_dir is not None else {}
         max_epochs = {"stage1_a": None, "stage1_b": state["policy"]["b_max_epochs"], "stage2": state["policy"]["stage2_epochs"]}[name]
-        return training_status(text, alive, checkpoints, max_epochs, idle_s)
-    return side_status(name, text, alive, name == "video" and _video_ready(state, paths), idle_s)
+        status = training_status(text, alive, checkpoints, max_epochs, idle_s)  # every checkpoint: a young final save still finishes
+    else:
+        status = side_status(name, text, alive, name == "video" and _video_ready(state, paths), idle_s)
+    return replace(status, crashed=False) if ls.ended_by_loop(state, name) else status  # stopped by the loop, not crashed
 
 
 def _video_ready(state: Mapping, paths: LoopPaths) -> bool:
-    record, video = state["runs"].get("video"), stage2_video(state, paths)
+    record, video = ls.live_record(state, "video"), stage2_video(state, paths)
     if record is None or video is None or not video.is_file():
         return False
     stat = video.stat()

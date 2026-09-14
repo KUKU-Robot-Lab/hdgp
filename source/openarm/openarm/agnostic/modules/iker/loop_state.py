@@ -62,9 +62,12 @@ LAUNCH_RUNS: Mapping[str, str] = {
     "launch_stage2": "stage2", "run_eval": "eval", "run_observe_rollout": "observe_rollout",
     "run_observe_render": "observe_render", "run_video": "video",
 }
-SESSION_ACTIONS = ("wait", "vlm_generate")  # carried out by the tick session, never recorded by the CLI
+SESSION_ACTIONS = ("wait",)  # nothing to record
 MANUAL_ACTIONS = ("approve", "resume")  # only on the user's word
 FILE_ACTIONS = ("write_prompt", "write_requery_prompt", "parse_requery", "store_video", "kill_stale")  # files are the record
+VLM_MAX_REQUESTS = 3  # generator requests for one response file before the loop pauses (a module constant: a new policy key
+#                       would make validate_state reject existing state files)
+LOOP_END_MARKS = ("stopping", "stopped", "cleared")  # a run record carrying one ended by the loop's hand, never by a crash
 
 
 @dataclass(frozen=True)
@@ -76,6 +79,7 @@ class RunStatus:
     crashed: bool = False  # a Traceback or FAILED marker, or the process ended without a result
     marker: str = ""
     idle_s: float = 0.0  # seconds since the run's log last changed
+    failed_checks: tuple[str, ...] = ()  # side run: its blocking "CHECK FAILED" lines (observe_render)
 
 
 IDLE = RunStatus()
@@ -166,7 +170,8 @@ def new_state(now: str, *, track: str = TRACK, phase: str = "stage1_a", policy: 
     state = {
         "schema": SCHEMA, "track": track, "phase": phase, "status": "running", "awaiting": None, "stage": 1,
         "policy": {**copy.deepcopy(dict(DEFAULT_POLICY)), **overrides, "labels": labels},
-        "runs": {}, "gate1": None, "calibration": None, "bank": None, "attempts": {"1": 0}, "eval": {}, "updated": now,
+        "runs": {}, "gate1": None, "calibration": None, "bank": None, "attempts": {"1": 0}, "eval": {}, "vlm_requests": {},
+        "updated": now,
     }
     validate_state(state)
     return state
@@ -201,6 +206,32 @@ def save_state(path, state: Mapping):
     return run_files.write_json(path, state)
 
 
+def live_record(state: Mapping, run: str) -> Mapping | None:
+    """The run's launch record; None without one or once ``resume`` cleared it (the run is then absent)."""
+    record = state["runs"].get(run)
+    return None if record is None or "cleared" in record else record
+
+
+def ended_by_loop(state: Mapping, run: str) -> bool:
+    """The loop stopped (or is stopping) the run, or ``resume`` cleared it: its end is never a crash."""
+    return any(mark in state["runs"].get(run, {}) for mark in LOOP_END_MARKS)
+
+
+def runs_to_clear(state: Mapping, runs: Mapping[str, RunStatus]) -> tuple[str, ...]:
+    """The records ``resume`` clears: dead runs that read as crashed, so their phase starts that step again."""
+    return tuple(name for name in state["runs"]
+                 if name in runs and runs[name].crashed and not runs[name].alive and not ended_by_loop(state, name))
+
+
+def vlm_request_key(params: Mapping) -> str:
+    return f"target_{params['attempt']:02d}" if params["kind"] == "target" else "requery"
+
+
+def vlm_response_file(params: Mapping) -> str:
+    """The generator's response file relative to the loop directory (loop_probe.LoopPaths.stage_dir, observe_dir)."""
+    return f"stage_01/attempt_{params['attempt']:02d}/response.md" if params["kind"] == "target" else "stage_01/observe/response.md"
+
+
 # -------------------------------------------------------------------- decide
 
 
@@ -214,7 +245,7 @@ def decide(state: Mapping, probe: Probe) -> Decision:
         idle = probe.runs[hung].idle_s
         return Decision("kill_stale", f"{hung} wrote its result {idle:.0f} s ago and is still alive", {"run": hung})
     phase = state["phase"]
-    crashed = next((name for name in PHASE_RUNS[phase] if probe.runs.get(name, IDLE).crashed), None)
+    crashed = next((name for name in PHASE_RUNS[phase] if probe.runs.get(name, IDLE).crashed and not ended_by_loop(state, name)), None)
     if crashed is not None:
         return _pause(f"{crashed} crashed: {probe.runs[crashed].marker or 'ended without a result'}",
                       "read the end of its log; the loop never edits code - fix the cause, then `loop.py act resume`")
@@ -241,7 +272,15 @@ def _hung(run: RunStatus) -> bool:
 
 
 def _launched(state: Mapping, run: str, key: str) -> bool:
-    return state["runs"].get(run, {}).get("key") == key
+    return (live_record(state, run) or {}).get("key") == key
+
+
+def _vlm_generate(state: Mapping, reason: str, params: Mapping) -> Decision:
+    requests = state.get("vlm_requests", {}).get(vlm_request_key(params), 0)
+    if requests >= VLM_MAX_REQUESTS:
+        return _pause(f"{requests} generator requests wrote no {vlm_response_file(params)}",
+                      "check the iker-vlm-generator agent and its brief; `loop.py act resume` allows new requests")
+    return Decision("vlm_generate", reason, params)
 
 
 def _busy_side_run(probe: Probe) -> str | None:
@@ -311,7 +350,7 @@ def _calibrate(state: Mapping, probe: Probe) -> Decision:
 
 def _stage1_b(state: Mapping, probe: Probe) -> Decision:
     policy, calibration = state["policy"], state["calibration"]
-    if "stage1_b" not in state["runs"]:
+    if live_record(state, "stage1_b") is None:
         busy = _busy_side_run(probe)
         if busy is not None:
             return _wait(f"launch_b waits for the side run {busy}")
@@ -331,7 +370,7 @@ def _stage1_b(state: Mapping, probe: Probe) -> Decision:
 
 def _harvest(state: Mapping, probe: Probe) -> Decision:
     bank = state["bank"] or {"tried": [], "last_epoch": 0}
-    record, run = state["runs"].get("harvest"), probe.runs.get("harvest", IDLE)
+    record, run = live_record(state, "harvest"), probe.runs.get("harvest", IDLE)
     if record is not None and record["key"] not in bank["tried"]:
         if not run.finished:
             return _wait(f"harvesting ep {record['epoch']}")
@@ -339,6 +378,10 @@ def _harvest(state: Mapping, probe: Probe) -> Decision:
             meta = probe.bank_meta or {}
             if meta.get("source") != LEARNED_BANK_SOURCE or meta.get("checkpoint") != record["key"]:
                 return _pause("HARVEST passed but the grasp bank is not the learned bank of that checkpoint", "inspect grasp_bank.json")
+            verified, needed = meta.get("verified", 0), state["policy"]["harvest_min"]
+            if verified < needed:
+                return _pause(f"HARVEST passed but the grasp bank holds {verified} verified grasps < harvest_min {needed}",
+                              "inspect grasp_bank.json and the harvest log")
             return Decision("commit_bank", f"{meta['verified']} verified grasps at ep {record['epoch']}",
                             {"checkpoint": record["key"], "verified": meta["verified"]})
         return Decision("record_harvest_miss", f"ep {record['epoch']}: {run.marker}", {"checkpoint": record["key"], "epoch": record["epoch"]})
@@ -364,7 +407,7 @@ def _vlm_target(state: Mapping, probe: Probe) -> Decision:
     if len(attempts) >= state["policy"]["vlm_max_attempts"]:
         return _pause(f"{len(attempts)} VLM responses failed the gate",
                       "read attempt_*/gate.json; resume with a higher vlm_max_attempts, or stop")
-    return Decision("vlm_generate", f"attempt {len(attempts):02d}", {"kind": "target", "attempt": len(attempts)})
+    return _vlm_generate(state, f"attempt {len(attempts):02d}", {"kind": "target", "attempt": len(attempts)})
 
 
 def _stage2_train(state: Mapping, probe: Probe) -> Decision:
@@ -377,7 +420,7 @@ def _stage2_train(state: Mapping, probe: Probe) -> Decision:
             return _wait("stage-2 environment smoke running")
         if not smoke.passed:
             return _pause(f"stage-2 environment smoke failed: {smoke.marker}", "read its SMOKE CHECK FAILED lines")
-    if "stage2" not in state["runs"]:
+    if live_record(state, "stage2") is None:
         if any(probe.runs.get(name, IDLE).alive for name in ("stage1_a", "stage1_b")):
             return _wait("a stage-1 training is still alive")
         return Decision("launch_stage2", f"{policy['stage2_epochs']} epochs x {policy['stage2_num_envs']} envs", {"key": policy["labels"]["stage2"]})
@@ -387,7 +430,8 @@ def _stage2_train(state: Mapping, probe: Probe) -> Decision:
         return Decision("record_eval", f"ep {new[0]} success {_pct(summary['success_5cm_end'])}", {"epoch": new[0], "summary": dict(summary)})
     best = best_eval(state["eval"])
     if best is not None and best[1]["success"] >= policy["success_target"]:
-        return Decision("advance", f"ep {best[0]} success {_pct(best[1]['success'])}", {"to": "observe_requery", "epoch": best[0]})
+        return Decision("advance", f"ep {best[0]} success {_pct(best[1]['success'])}; stop stage 2",
+                        {"to": "observe_requery", "epoch": best[0], "stop": "stage2"})
     due = [epoch for epoch in eval_epochs(policy) if epoch in probe.checkpoints and str(epoch) not in state["eval"]]
     if due:
         epoch = due[0]
@@ -416,18 +460,20 @@ def _observe_requery(state: Mapping, probe: Probe) -> Decision:
     env = pick_observe_env(probe.final_rows)
     if env is None:
         return _pause(f"no env succeeded in the noise-free rollout of ep {epoch}", "watch a play video of the checkpoint; decide on stage 2")
-    files = probe.files
+    files, rendered, render = probe.files, _launched(state, "observe_render", f"env{env}"), probe.runs.get("observe_render", IDLE)
+    if rendered and not render.finished:
+        return _wait(f"rendering env {env}")
+    if rendered and render.passed is False:  # its files may exist: the render writes them before judging them
+        return _pause(f"the observation render of env {env} failed its checks: {'; '.join(render.failed_checks) or render.marker}",
+                      "read its OBSERVE CHECK FAILED lines; the loop does not requery a scene that failed its checks")
     if not files.get("observe_snapshot"):
-        if _launched(state, "observe_render", f"env{env}"):
-            run = probe.runs.get("observe_render", IDLE)
-            if not run.finished:
-                return _wait(f"rendering env {env}")
-            return _pause(f"the observation render failed: {run.marker}", "read its OBSERVE CHECK FAILED lines")
+        if rendered:
+            return _pause(f"the observation render finished without its files: {render.marker}", "inspect the observe_render log")
         return _side_launch(state, probe, "run_observe_render", {"key": f"env{env}", "env": env})
     if not files.get("requery_prompt"):
         return Decision("write_requery_prompt", "multi-step prompt with the stage-1 code as history")
     if not files.get("requery_response"):
-        return Decision("vlm_generate", "requery on the executed scene", {"kind": "requery"})
+        return _vlm_generate(state, "requery on the executed scene", {"kind": "requery"})
     if probe.requery is None:
         return Decision("parse_requery", "the requery response is not parsed yet")
     if not probe.requery["done"]:
@@ -549,6 +595,15 @@ def _apply_resume(new: dict, decision: Decision, params: Mapping, outcome: Mappi
     labels = {**new["policy"]["labels"], **updates.pop("labels", {})}
     new["policy"] = {**new["policy"], **updates, "labels": labels}
     new["status"], new["awaiting"] = "running", None
+    for name in outcome.get("cleared_runs", ()):  # dead runs that read as crashed: their phase starts that step again
+        if name in new["runs"]:
+            new["runs"][name] = {**new["runs"][name], "cleared": new["updated"]}
+    new["vlm_requests"] = {}
+
+
+def _apply_vlm_generate(new: dict, decision: Decision, params: Mapping, outcome: Mapping) -> None:
+    requests, key = dict(new.get("vlm_requests", {})), vlm_request_key(params)
+    new["vlm_requests"] = {**requests, key: requests.get(key, 0) + 1}
 
 
 _APPLIERS = {
@@ -556,5 +611,5 @@ _APPLIERS = {
     "next_calibration": _apply_next_calibration, "commit_calibration": _apply_commit_calibration,
     "record_harvest_miss": _apply_record_harvest_miss, "commit_bank": _apply_commit_bank, "ingest": _apply_ingest,
     "commit_interaction": _apply_commit_interaction, "record_eval": _apply_record_eval, "approve": _apply_approve,
-    "resume": _apply_resume,
+    "resume": _apply_resume, "vlm_generate": _apply_vlm_generate,
 }

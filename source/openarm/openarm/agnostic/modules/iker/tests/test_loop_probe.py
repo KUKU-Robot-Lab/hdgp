@@ -65,6 +65,71 @@ def test_side_status_reads_the_last_result_marker_and_the_excepthook_marker():
     assert video.finished and not video.crashed
 
 
+def test_side_status_exposes_the_failed_observe_checks_but_not_the_reported_ones():
+    text = ("OBSERVE config 00 source noise_free_rollout env 3 margin -2.0 px settle 4.10 mm passed False -> /o\n"
+            "OBSERVE CHECK REPORTED: settle: 4.10 mm > 2.00 mm\n"
+            "OBSERVE CHECK FAILED: margin: keypoint 3 is 2.0 px outside the frame\n")
+    render = lp.side_status("observe_render", text, False, False, 0.0)
+    assert render.finished and render.passed is False and not render.crashed
+    assert render.failed_checks == ("margin: keypoint 3 is 2.0 px outside the frame",)
+    settle_only = lp.side_status("observe_render", text.replace("passed False", "passed True").splitlines()[0] + "\n"
+                                 + "OBSERVE CHECK REPORTED: settle: 4.10 mm > 2.00 mm\n", False, False, 0.0)
+    assert settle_only.passed and settle_only.failed_checks == ()
+
+
+def test_a_checkpoint_younger_than_thirty_seconds_is_not_yet_a_candidate(tmp_path):
+    nn = tmp_path / "nn"
+    nn.mkdir()
+    old, young = nn / "last_x_ep_300_rew_1.0.pth", nn / "last_x_ep_350_rew_1.0.pth"
+    for path, mtime in ((old, 1000.0), (young, 1020.0)):
+        path.write_bytes(b"")
+        os.utime(path, (mtime, mtime))
+    assert lp.CHECKPOINT_SETTLE_S == 30.0
+    assert sorted(lp.list_checkpoints(nn, settled_before_s=1040.0 - lp.CHECKPOINT_SETTLE_S)) == [300]
+    assert sorted(lp.list_checkpoints(nn)) == [300, 350]
+    paths = lp.LoopPaths.of(tmp_path / "hdgp", 0, "iker_shoe_c00")
+    state = ls.new_state("t", phase="stage2_train")
+    label = state["policy"]["labels"]["stage2"]
+    final = paths.task_dir("stage2") / label / "nn" / "last_open-sens_l_iker_shoe_ep_750_rew_1.0.pth"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"")
+    log = paths.train_log(label)
+    log.write_text("epoch 750\n")
+    state["runs"] = {"stage2": {"label": label, "log": str(log), "started_s": 0.0, "key": label}}
+    (tmp_path / "proc").mkdir()
+    probe = lp.collect(state, paths, now_s=final.stat().st_mtime + 5.0, gpu_used_mib=0, load_events=lambda path: {},
+                       proc_root=tmp_path / "proc")
+    assert probe.checkpoints == {} and probe.runs["stage2"].finished and not probe.runs["stage2"].crashed
+
+
+def test_cleared_records_are_absent_and_runs_the_loop_stops_are_never_crashed(tmp_path):
+    paths = lp.LoopPaths.of(tmp_path / "hdgp", 0, "iker_shoe_c00")
+    state = ls.new_state("t", phase="harvest")
+    label = state["policy"]["labels"]["stage1_b"]
+    checkpoint = paths.task_dir("stage1_b") / label / "nn" / "last_open-sens_l_iker_shoe_grasp_ep_350_rew_1.0.pth"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"")
+    os.utime(checkpoint, (1000.0, 1000.0))
+    b_log, h_log = paths.train_log(label), paths.side_log("harvest", "ep350")
+    b_log.write_text("epoch 360\n")
+    h_log.parent.mkdir(parents=True)
+    h_log.write_text("HARVEST seed 0 envs 512\n")
+    stage1_b = {"label": label, "log": str(b_log), "started_s": 0.0, "key": label}
+    harvest = {"label": "iker_shoe_c00_harvest", "log": str(h_log), "started_s": 0.0, "key": str(checkpoint), "epoch": 350}
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    read = dict(now_s=5000.0, gpu_used_mib=0, load_events=lambda path: {}, proc_root=proc)
+    dead = lp.collect({**state, "runs": {"stage1_b": stage1_b, "harvest": harvest}}, paths, **read)
+    assert dead.runs["stage1_b"].crashed and dead.runs["harvest"].crashed
+    assert ls.decide({**state, "runs": {"stage1_b": stage1_b, "harvest": harvest}}, dead).reason.startswith("stage1_b crashed")
+    for mark in ("stopping", "stopped"):
+        marked = {**state, "runs": {"stage1_b": {**stage1_b, mark: "t"}, "harvest": {**harvest, "cleared": "t"}}}
+        probe = lp.collect(marked, paths, **read)
+        assert set(probe.runs) == {"stage1_b"} and not probe.runs["stage1_b"].crashed and not probe.runs["stage1_b"].alive
+        assert set(lp.run_statuses(marked, paths, now_s=5000.0, proc_root=proc)) == {"stage1_b"}
+        assert ls.decide(marked, probe).action == "run_harvest"
+
+
 def test_boot_reward_parses_the_last_reward_line_and_gpu_memory_reading():
     line = "[iker_grasp] reward Stage1RewardCfg(palm_scale=50.0, latch_steps=3, g_min=0.5, q_lo=0.1234567890123, q_hi=0.4) · idle income 0\n"
     assert lp.boot_reward("noise\n" + line) == {"g_min": 0.5, "q_lo": 0.1234567890123, "q_hi": 0.4}
@@ -95,6 +160,8 @@ def test_collect_reads_runs_events_checkpoints_and_the_calibration(tmp_path):
     (run_dir / "nn" / "last_open-sens_l_iker_shoe_grasp_ep_250_rew_1.0.pth").write_bytes(b"")
     train_log = paths.train_log(label)
     train_log.write_text("epoch\n")
+    saved = train_log.stat().st_mtime - lp.CHECKPOINT_SETTLE_S
+    os.utime(run_dir / "nn" / "last_open-sens_l_iker_shoe_grasp_ep_250_rew_1.0.pth", (saved, saved))
     side_log = paths.side_log("calibrate", "ep250")
     side_log.parent.mkdir(parents=True)
     side_log.write_text("QUALITY config 00 {} passed True -> x\n")

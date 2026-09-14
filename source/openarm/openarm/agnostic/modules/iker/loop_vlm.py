@@ -9,9 +9,15 @@ from __future__ import annotations
 
 from typing import Mapping, Sequence
 
-from . import interaction, prompts
+from . import interaction, prompts, run_files
 
 STAGE_IMAGE_MARKER = "[STAGE_1_IMAGE]"
+GENERATOR_AGENT = "iker-vlm-generator"  # .claude/agents/iker-vlm-generator.md
+GENERATOR_TOOLS = ("Read", "Write")
+GENERATOR_NOTE = (
+    "The agent definition limits the generator to the Read and Write tools and to the files its brief names; "
+    "Claude Code may still inject harness-level context (CLAUDE.md files, auto-memory) into the agent."
+)
 
 
 def target_prompt(task: str) -> str:
@@ -33,6 +39,15 @@ def requery_result(response: str, keypoints: Mapping[int, Sequence[float]]) -> d
     if result.done:
         return {"done": True, "detail": "get_interaction_data returned None (done=True)"}
     return {"done": False, "detail": f"new stage: move {result.object_name} keypoints {list(result.keypoint_ids)}"}
+
+
+def generator_record(request: Mapping, request_count: int, requested: str) -> dict:
+    """generator.json next to the response: which agent was asked, with which tools and brief, and how often (§6)."""
+    return {
+        "schema": run_files.SCHEMA_VERSION, "agent_type": GENERATOR_AGENT, "tools": list(GENERATOR_TOOLS), "request": request_count,
+        "requested": requested, "prompt": request["prompt"], "images": dict(request["images"]), "response": request["response"],
+        "brief": request["brief"], "note": GENERATOR_NOTE,
+    }
 
 
 def generator_brief(prompt_path, response_path, images: Mapping[str, str]) -> str:

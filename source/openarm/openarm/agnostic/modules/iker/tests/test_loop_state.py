@@ -188,6 +188,44 @@ def test_harvest_tries_the_newest_new_checkpoint_and_commits_only_a_learned_bank
     assert ls.decide(launched, replace(passed, bank_meta={"side_sign": 1.0, "seed": 0})).action == "pause"
 
 
+def test_commit_bank_needs_the_verified_count_to_reach_harvest_min():
+    state = _state("harvest", runs={"stage1_b": {"label": "b", "key": "b"}, "harvest": {"label": "h", "key": "/b/ep350.pth", "epoch": 350}})
+    short = {"source": "learned_grasp", "checkpoint": "/b/ep350.pth", "verified": 40}
+    probe = ls.Probe(checkpoints={350: "/b/ep350.pth"}, runs={"stage1_b": RUNNING, "harvest": DONE_PASS}, bank_meta=short)
+    decision = ls.decide(state, probe)
+    assert decision.action == "pause" and "40" in decision.reason and "64" in decision.reason
+    assert ls.decide(state, replace(probe, bank_meta={**short, "verified": 64})).action == "commit_bank"
+
+
+def test_resume_clears_a_dead_crashed_run_so_the_phase_launches_it_again_once():
+    state = _state("harvest", runs={"stage1_b": {"label": "b", "key": "b"}})
+    probe = ls.Probe(checkpoints={350: "/b/ep350.pth"}, runs={"stage1_b": RUNNING})
+    launched = ls.apply(state, ls.decide(state, probe), NOW, {"run": {"label": "iker_shoe_c00_harvest"}})
+    crashed = replace(probe, runs={"stage1_b": RUNNING, "harvest": ls.RunStatus(started=True, crashed=True)})
+    pause = ls.decide(launched, crashed)
+    assert pause.action == "pause" and pause.reason.startswith("harvest crashed")
+    paused = ls.apply(launched, pause, NOW)
+    assert ls.runs_to_clear(paused, crashed.runs) == ("harvest",)
+    resumed = ls.apply(paused, ls.Decision("resume", "user"), "later", {"cleared_runs": ["harvest"]})
+    assert resumed["status"] == "running" and resumed["runs"]["harvest"]["cleared"] == "later"
+    for seen in (crashed, probe):  # the probe omits a cleared run; a stale reading of its old log is ignored too
+        relaunch = ls.decide(resumed, seen)
+        assert relaunch.action == "run_harvest" and relaunch.params["checkpoint"] == "/b/ep350.pth"
+    relaunched = ls.apply(resumed, relaunch, NOW, {"run": {"label": "iker_shoe_c00_harvest"}})
+    assert "cleared" not in relaunched["runs"]["harvest"]
+    assert ls.decide(relaunched, replace(probe, runs={"stage1_b": RUNNING, "harvest": RUNNING})).action == "wait"
+    assert ls.runs_to_clear(paused, {"harvest": replace(crashed.runs["harvest"], alive=True)}) == ()
+
+
+def test_a_run_the_loop_stopped_is_never_a_crash_that_pauses_the_phase():
+    record = {"label": "iker_vlm_c00_s1", "key": "iker_vlm_c00_s1"}
+    dead = ls.RunStatus(started=True, crashed=True)
+    for mark in ("stopping", "stopped"):
+        state = _state("stage2_train", policy={**ls.DEFAULT_POLICY, "stage2_env_smoke": False}, runs={"stage2": {**record, mark: NOW}})
+        assert ls.decide(state, ls.Probe(runs={"stage2": dead})).action != "pause"
+        assert ls.runs_to_clear(state, {"stage2": dead}) == ()
+
+
 def test_vlm_target_writes_the_prompt_generates_ingests_and_stops_after_three_failures():
     state = _state("vlm_target")
     assert ls.decide(state, ls.Probe()).action == "write_prompt"
@@ -203,6 +241,27 @@ def test_vlm_target_writes_the_prompt_generates_ingests_and_stops_after_three_fa
     assert ls.decide(state, ls.Probe(files=files, attempts=three_failed)).action == "pause"
     passed = ls.decide(state, ls.Probe(files=files, attempts=(ls.AttemptStatus(0, False), ls.AttemptStatus(1, True))))
     assert passed.action == "commit_interaction" and ls.apply(state, passed, NOW)["phase"] == "stage2_train"
+
+
+def test_a_generator_that_never_writes_its_response_pauses_after_three_requests():
+    state = _state("vlm_target")
+    files = {"stage_prompt": True}
+    request = ls.decide(state, ls.Probe(files=files))
+    legacy = {key: value for key, value in state.items() if key != "vlm_requests"}  # a state file from before the counter
+    once = ls.apply(legacy, request, NOW)
+    assert once["vlm_requests"] == {"target_00": 1}
+    thrice = ls.apply(ls.apply(once, request, NOW), request, NOW)
+    paused = ls.decide(thrice, ls.Probe(files=files))
+    assert paused.action == "pause" and "3" in paused.reason and "stage_01/attempt_00/response.md" in paused.reason
+    answered = ls.decide(thrice, ls.Probe(files=files, attempts=(ls.AttemptStatus(0, False),)))
+    assert answered.action == "vlm_generate" and answered.params == {"kind": "target", "attempt": 1}
+    resumed = ls.apply(ls.apply(thrice, paused, NOW), ls.Decision("resume", "user"), NOW)
+    assert ls.decide(resumed, ls.Probe(files=files)).action == "vlm_generate"
+    observe = _state("observe_requery", eval={"500": {"success": 0.6, "checkpoint": "/s/ep500.pth", "dropped": 0.0}},
+                     vlm_requests={"requery": 3})
+    rows = ({"env": 3, "success": True, "end_dist": 0.02},)
+    requery = ls.decide(observe, ls.Probe(final_rows=rows, files={"observe_snapshot": True, "requery_prompt": True}))
+    assert requery.action == "pause" and "stage_01/observe/response.md" in requery.reason
 
 
 def test_stage2_train_smokes_launches_evaluates_and_advances_on_the_success_target():
@@ -229,7 +288,9 @@ def test_stage2_train_smokes_launches_evaluates_and_advances_on_the_success_targ
     assert ls.decide(recorded, ls.Probe(runs=runs, checkpoints=checkpoints, evals={250: summary})).action == "wait"
     good = {**recorded, "eval": {**recorded["eval"], "500": {"success": 0.55, "checkpoint": "/s/ep500.pth", "dropped": 0.0}}}
     advance = ls.decide(good, ls.Probe(runs=runs, checkpoints=checkpoints, evals={250: summary, 500: summary}))
-    assert advance.action == "advance" and advance.params == {"to": "observe_requery", "epoch": 500}
+    assert advance.action == "advance" and advance.params == {"to": "observe_requery", "epoch": 500, "stop": "stage2"}
+    advanced = ls.apply(good, advance, NOW, {"stopped_runs": ["stage2"]})
+    assert advanced["phase"] == "observe_requery" and advanced["runs"]["stage2"]["stopped"] == NOW
     low = {key: {"success": 0.3, "checkpoint": f"/s/ep{key}.pth", "dropped": 0.0} for key in ("250", "500", "750")}
     ended = {**recorded, "eval": low}
     all_checkpoints = {250: "a", 500: "b", 750: "c"}
@@ -264,6 +325,20 @@ def test_observe_requery_rolls_out_renders_requeries_and_stores_the_video():
     assert ls.decide(recording, probe).action == "store_video"
     review = ls.decide(recording, replace(probe, files={**files, "video_raw": True, "video": True}))
     assert review.action == "advance" and review.params == {"to": "completion_review"}
+
+
+def test_observe_requery_pauses_on_a_failed_render_even_when_its_files_exist():
+    state = _state("observe_requery", eval={"500": {"success": 0.6, "checkpoint": "/s/ep500.pth", "dropped": 0.0}},
+                   runs={"observe_render": {"label": "r", "key": "env3"}})
+    rows = ({"env": 3, "success": True, "end_dist": 0.02},)
+    files = {"observe_snapshot": True}
+    failed = ls.RunStatus(started=True, finished=True, passed=False, marker="OBSERVE config 00 passed False",
+                          failed_checks=("margin: keypoint 3 is 2.0 px inside the frame",))
+    decision = ls.decide(state, ls.Probe(runs={"observe_render": failed}, final_rows=rows, files=files))
+    assert decision.action == "pause" and "margin: keypoint 3 is 2.0 px inside the frame" in decision.reason
+    rendered = replace(failed, passed=True, failed_checks=())
+    assert ls.decide(state, ls.Probe(runs={"observe_render": rendered}, final_rows=rows, files=files)).action == "write_requery_prompt"
+    assert ls.decide(state, ls.Probe(runs={"observe_render": RUNNING}, final_rows=rows, files=files)).action == "wait"
 
 
 def test_completion_waits_for_the_user_and_resume_moves_the_gate():
