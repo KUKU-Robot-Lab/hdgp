@@ -66,6 +66,15 @@ for t in range(args.steps):
             a[:, k] = torch.where(v >= 0, (v / rig.delta_hi[k]).clamp(max=1.0), (v / rig.delta_lo[k]).clamp(max=1.0) * -1.0)
         if u in (79, 100, 120, 140) and not args.quiet2:
             print(f"[cupf u={u}] f={[round(float(x),2) for x in f[0]]} n={[round(float(x),2) for x in n[0]]} pocket-cup={[round(float(x),3) for x in (pocket[0]-cup_local()[0,:2])]} tilt={float(ex_prev['task/src_tilt_deg']) if ex_prev else 0:.1f}", flush=True)
+    if u >= 0 and args.approach == "trackb":
+        # grasp_fj_rh 09.07 실측 경로 재현: 홈 케이지−물체 = (+0.3, −105, +95) mm → 케이지를 (0, +0.105, −0.095) 옮긴다.
+        #   물체는 스폰 (0.38, −0.16) 그대로. 0~120 스텝 y·z 동시 접근(속도 제한: 스텝당 최대 slow_m), 그 뒤 폐쇄.
+        goal = cup_local() + torch.tensor([0.0, 0.0, args.z_off], device=env.device) - CAGE_OFF
+        d = goal - rig.anchor_env[:, :3]
+        frac = min(1.0, (u + 1) / 120.0)
+        for k in range(3):
+            v = d[:, k] * frac
+            a[:, k] = torch.where(v >= 0, (v / rig.delta_hi[k]).clamp(max=1.0), (v / rig.delta_lo[k]).clamp(max=1.0) * -1.0)
     if u >= 0 and args.approach in ("cup", "cup2"):
         # cup2: 컵 **옆**(바깥쪽 −y 로 side_m)에 먼저 서서 높이를 맞춘 뒤(u<80) 옆에서 밀어 넣는다(80~140).
         #   straight 접근(cup)은 아래로 향한 손가락이 컵 벽을 위에서 치며 들어가 컵을 넘어뜨린다(09.14 실측 tilt 50~80°).
@@ -82,14 +91,14 @@ for t in range(args.steps):
             import math as _m
             v = _m.radians(args.dey)
             a[:, 4] = v / float(rig.delta_hi[4]) if v >= 0 else -v / float(rig.delta_lo[4])
-    close_at = {"cup": 120, "cup2": 160, "cupf": 160}.get(args.approach, 40)
+    close_at = {"cup": 120, "cup2": 160, "cupf": 160, "trackb": 150}.get(args.approach, 40)
     if args.approach == "cup2" and u == close_at - 1 and args.print_q:
         q = env.robot.data.joint_pos[0]; jn = env.robot.data.joint_names
         print("[pre-close] arm q =", {jn[i]: round(float(q[i]), 4) for i in rig.arm_ids}, "palm6 =", [round(float(v), 4) for v in rig.palm_pose_6d()[0].tolist()],
               "palm-cup =", [round(float(v), 3) for v in (rig.palm_pos() - cup_local())[0].tolist()], flush=True)
     if u >= close_at:
         a[:, 6:half] = 1.0
-    if args.approach in ("cup", "cup2", "cupf") and u >= close_at + 150:
+    if args.approach in ("cup", "cup2", "cupf", "trackb") and u >= close_at + 150:
         a[:, 2] = a[:, 2] + 0.12 / float(rig.delta_hi[2])
     obs, rew, term, trunc, ex = env.step(a)
     ex_prev = ex
