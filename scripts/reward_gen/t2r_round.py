@@ -98,6 +98,7 @@ def summarize(events_dir: Path, last_n: int = 50) -> dict:
             vals = [v for _, v in pts]
             if vals:
                 out[tag] = {"n": len(vals), "last": round(sum(vals[-last_n:]) / len(vals[-last_n:]), 4),
+                            "recent": round(sum(vals[-10:]) / len(vals[-10:]), 4),
                             "max": round(max(vals), 4), "first": round(vals[0], 4)}
     return out
 
@@ -109,7 +110,10 @@ def cmd_status(a) -> int:
     meta_p = Path(a.iter) / "launch.json"
     started = json.loads(meta_p.read_text())["started"] if meta_p.exists() else None
     hours = (time.time() - started) / 3600 if started else None
-    succ = summ.get("task/episode_success", {}).get("last", 0.0)
+    # ★09.14 i03 실측: 50 epoch 평균(0.078)은 상승 램프(15 epoch 0.11→0.31)를 놓쳐 advance 를 냈다 —
+    #   KEEP 판정은 50 평균과 10 평균 중 큰 쪽(수렴 대기 의도).
+    es = summ.get("task/episode_success", {})
+    succ = max(es.get("last", 0.0), es.get("recent", 0.0))
     # ★nohup 리다이렉트는 stdout 이 블록 버퍼라 로그의 epoch 줄이 크게 뒤처진다 — TB 점 개수가 진실.
     n_tb = max((v["n"] for v in summ.values()), default=0)
     st["epoch"] = max(st["epoch"] or 0, n_tb)
