@@ -95,6 +95,19 @@ def track(name: str) -> dict:
     return t
 
 
+#: ROUND_POLICY 의 epoch 창은 SAPG 12,288 env(epoch 당 12,288×16 = 196,608 프레임)에서 잡았다.
+#: ★09.14 사용자 "프레임 기준으로 맞춤" — env 수가 다른 트랙은 같은 프레임이 되게 epoch 창을 env 수에 반비례로 늘린다
+#:   (reach PPO-LSTM 4096 → ×3: 라운드 3000 · 창 600 · 평균 150 epoch). 시간 상한 ROUND_HOURS 는 그대로.
+REF_ENVS = 12288
+_EPOCH_KEYS = ("ROUND_EPOCHS", "TOL_WINDOW", "LAST_N")
+
+
+def track_policy(t: dict, policy: dict = ROUND_POLICY) -> dict:
+    """트랙의 판정 수치 — epoch 창만 env 수로 환산해 프레임 기준을 맞춘다."""
+    scale = REF_ENVS / float(t["num_envs"])
+    return {**policy, **{k: int(round(policy[k] * scale)) for k in _EPOCH_KEYS}}
+
+
 def _ssh(cmd: str, timeout: int = 60, allow_timeout: bool = False) -> str:
     try:
         r = subprocess.run(["ssh", "-o", "BatchMode=yes", SERVER, cmd], capture_output=True, text=True,
@@ -362,19 +375,20 @@ def cmd_status(a) -> int:
     st = parse_tail(_ssh(f"grep -a -E 'epoch  |Traceback|Killed|overflow' {log} 2>/dev/null | tail -3; "
                          + procs_cmd(a.label)))
     mirror = sync(a.label, t)
+    pol = track_policy(t)                           # ★epoch 창은 프레임 기준(env 수 환산)
     files = sorted(glob.glob(str(mirror / "summaries" / "events.out.tfevents.*")))
-    summ = (summarize(load_tfevents(files[-1]), ROUND_POLICY["LAST_N"], ROUND_POLICY["TOL_WINDOW"])
+    summ = (summarize(load_tfevents(files[-1]), pol["LAST_N"], pol["TOL_WINDOW"])
             if files else {})
     it = Path(a.iter)
     started = json.loads((it / "launch.json").read_text())["started"] if (it / "launch.json").exists() else None
     hours = (time.time() - started) / 3600.0 if started else None
     n_tb = max((v["n"] for v in summ.values()), default=0)
     st["epoch"] = max(st["epoch"] or 0, n_tb)      # ★콘솔은 블록 버퍼라 뒤처진다 — TB 점 개수와 큰 쪽
-    verdict, info = judge(summ, st, hours)
+    verdict, info = judge(summ, st, hours, pol)
     funnel = stage_funnel(summ)
     rep = {"track": a.track, "label": a.label, "verdict": verdict, **info, "alive": st["alive"], "procs": st["procs"],
            "crashed_log": st["crashed"], "hours": round(hours, 2) if hours else None, "mirror": str(mirror),
-           "funnel": funnel, "policy": ROUND_POLICY, "metrics": summ}
+           "funnel": funnel, "policy": pol, "metrics": summ}
     (it / "status.json").write_text(json.dumps(rep, indent=1, ensure_ascii=False), encoding="utf-8")
     print(json.dumps({k: rep[k] for k in ("track", "label", "verdict", "epoch", "successes", "tol",
                                           "curriculum_moving", "stage_moving", "stage_stuck", "envelope_ok",

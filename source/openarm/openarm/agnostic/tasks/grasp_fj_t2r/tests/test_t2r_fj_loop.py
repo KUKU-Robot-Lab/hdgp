@@ -304,3 +304,19 @@ def test_reach_ppo_agent_yaml_builds_under_the_vendored_rl_games_fork():
     assert re.findall(r"^\s*fixed_sigma:\s*(\S+)", ppo, re.M) == ["fixed"]
     assert re.findall(r"^\s*fixed_sigma:\s*(\S+)", sapg, re.M) == ["coef_cond"]
     assert R.TRACKS["grasp_fj_reach"]["task"].endswith("-lstm"), "reach 루프가 이 PPO-LSTM yaml 을 쓴다"
+
+
+def test_judge_windows_follow_frames_not_epochs():
+    # ★09.14 사용자 "프레임 기준으로 맞춤": ROUND_POLICY 의 epoch 창은 SAPG 12,288 env 기준 — PPO 4096 은 epoch 당 프레임이 1/3
+    env = R.track_policy(R.track("grasp_fj_envelope"))
+    reach = R.track_policy(R.track("grasp_fj_reach"))
+    for k in ("ROUND_EPOCHS", "TOL_WINDOW", "LAST_N"):
+        assert env[k] == R.ROUND_POLICY[k], k
+    assert reach["ROUND_EPOCHS"] == 3000 and reach["TOL_WINDOW"] == 600 and reach["LAST_N"] == 150
+    for k in ("ROUND_EPOCHS", "TOL_WINDOW"):
+        assert reach[k] * R.TRACKS["grasp_fj_reach"]["num_envs"] == env[k] * R.TRACKS["grasp_fj_envelope"]["num_envs"]
+    assert reach["STAGE_EPS"] == env["STAGE_EPS"] and reach["ROUND_HOURS"] == env["ROUND_HOURS"]
+    # 같은 요약이라도 reach 에서는 아직 라운드 끝이 아니다
+    s = {**_summ(0.0), "stage/reach_ep": {"now": 0.5, "ago": 0.5}}
+    assert R.judge(s, {**ALIVE, "epoch": 1500}, 1.7)[0] == "advance"
+    assert R.judge(s, {**ALIVE, "epoch": 1500}, 1.7, reach)[0] == "continue"

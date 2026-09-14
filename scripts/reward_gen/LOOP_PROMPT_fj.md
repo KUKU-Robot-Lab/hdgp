@@ -14,6 +14,8 @@
 
 트랙(`t2r_fj_round.py` `TRACKS`): `grasp_fj_envelope`(라벨 `fj_t2r_iNN`, B leaf, SAPG 12,288 — 정지) · `grasp_fj_reach`(라벨 `fj_reach_iNN`,
 테이블 가장자리 시작·cup_family·0.3 rad/s·15 s — 09.14 최종 목표, PPO-LSTM 4096 · i00 만 SAPG 12,288). cron 프롬프트가 트랙을 지정한다.
+★판정 창은 **프레임 기준**(사용자 09.14): `track_policy` 가 ROUND_POLICY 의 epoch 값(라운드·창·평균)을 12,288/env 수 배로 늘린다 —
+아래의 "200 epoch" 은 기준값이고 reach(4096)는 **600 epoch**, 라운드 끝은 **3000 epoch**(≈3.3 h). 시간 상한 4 h 는 그대로.
 상태: `reward_gen/<track>/LOOP_STATE.json` = {"track","iter","label","round","awaiting","best","success_ticks",...}
 이력: `reward_gen/<track>/history.jsonl` — 라운드별 (코드 · 관찰 · 피드백), 다음 프롬프트에 전부 들어간다.
 판정 수치: `scripts/reward_gen/t2r_fj_round.py` 의 `ROUND_POLICY` 한 곳. 실행 위치 `cd ~/rl_ws/hdgp`. 아래 모든 명령에 `--track <track>`.
