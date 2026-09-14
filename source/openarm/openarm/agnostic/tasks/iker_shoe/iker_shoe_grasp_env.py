@@ -32,6 +32,10 @@ from .iker_shoe_grasp_env_cfg import ARM_ACTION_DIM, IkerShoeGraspEnvCfg
 
 PREGRASP_BANK_FILE = "pregrasp_bank.json"
 QUALITY_CALIBRATION_FILE = "grasp_quality_calibration.json"
+# Published on every step (0.0 until the first episode ends): rl_games' observer reads each step's log with the key set of
+# the epoch's first step, so a key that appears only on reset steps raises KeyError.
+EPISODE_LOG_KEYS = ("grasp_episode/success", "grasp_episode/latched", "grasp_episode/best_lift_m",
+                    "grasp_episode/q_at_latch", "grasp_episode/q_at_success")
 PALMAR_AXIS_LOCAL = (1.0, 0.0, 0.0)  # palm link +x is the grasping side (grasp_bank.palm_rotations, both hands)
 
 
@@ -134,6 +138,7 @@ class IkerShoeGraspEnv(DirectRLEnv):
         self._q_at_success = torch.zeros(n, device=dev)
         # q and w_f of the latest _get_dones; _reset_idx leaves them alone, so a caller can read the step that ended an episode
         self._q_step, self._w_f_step = torch.zeros(n, device=dev), None
+        self._episode_log = dict.fromkeys(EPISODE_LOG_KEYS, 0.0)  # statistics of the most recently finished episodes
         self._shoe_mass = self._shoe.root_physx_view.get_masses()[:, 0].to(dev)
         self._wrench = WrenchDR(n, dev, force_scale=cfg.wrench_force_per_kg, torque_scale=cfg.wrench_torque_per_kg,
                                 prob_range=cfg.wrench_prob_range)
@@ -250,6 +255,7 @@ class IkerShoeGraspEnv(DirectRLEnv):
             "grasp/hand_speed_sum": self._robot.data.joint_vel[:, self._hand_ids].abs().sum(dim=-1).mean().item(),
             **{f"grasp/w_{finger}": w_f[:, i].mean().item() for i, finger in enumerate(gb.FINGERS)},
         })
+        log.update(self._episode_log)
         self.extras["log"] = log
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         dropped = shoe_pos[:, 2] < self.cfg.drop_z
@@ -267,14 +273,14 @@ class IkerShoeGraspEnv(DirectRLEnv):
         if len(finished) == 0:
             return
         latched, succeeded = self._stage.latched[finished], self._stage.succeeded[finished]
-        log = self.extras.setdefault("log", {})
-        log.update({
-            "grasp_episode/success": succeeded.float().mean().item(),
-            "grasp_episode/latched": latched.float().mean().item(),
-            "grasp_episode/best_lift_m": self._stage.best_lift[finished].mean().item(),
-            "grasp_episode/q_at_latch": self._q_at_latch[finished][latched].mean().item() if bool(latched.any()) else 0.0,
-            "grasp_episode/q_at_success": self._q_at_success[finished][succeeded].mean().item() if bool(succeeded.any()) else 0.0,
-        })
+        self._episode_log = dict(zip(EPISODE_LOG_KEYS, (
+            succeeded.float().mean().item(),
+            latched.float().mean().item(),
+            self._stage.best_lift[finished].mean().item(),
+            self._q_at_latch[finished][latched].mean().item() if bool(latched.any()) else 0.0,
+            self._q_at_success[finished][succeeded].mean().item() if bool(succeeded.any()) else 0.0,
+        )))
+        self.extras.setdefault("log", {}).update(self._episode_log)
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         if env_ids is None:

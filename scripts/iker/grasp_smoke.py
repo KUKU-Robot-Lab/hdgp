@@ -6,7 +6,8 @@
 3. a shoe pushed up onto the rack is not a free lift (dz_free 0, never held);
 4. the reward wiring with the physics bypassed: a shoe written 6 cm above its start, clear of the hand, with zero velocity
    is held; the lift bonus latches on the third ``_get_dones`` call and the success bonus on the twentieth, each once;
-5. random actions for 12 s keep rewards finite and write episode-end logs.
+5. random actions for 12 s keep rewards finite, write the episode-end log, and publish the same log keys on every step
+   (rl_games reads each step's log with the keys of the epoch's first step).
 
 Usage:
     cd ~/rl_ws/hdgp && PYTHONPATH=source/openarm ../IsaacLab/isaaclab.sh -p scripts/iker/grasp_smoke.py --headless
@@ -139,17 +140,18 @@ def main() -> int:
         failures.append(f"forced hold latched at {latch_calls} (want [{LATCH_CALL}]) and succeeded at {success_calls} (want [{SUCCESS_CALL}])")
 
     env.reset()
-    rewards, logs = [], []
+    env._episode_log = dict.fromkeys(env._episode_log, -1.0)  # sentinel: an episode end must overwrite it
+    rewards, key_sets = [], set()
     for _ in range(120):
         _, reward, _, _, extras = env.step(2.0 * torch.rand(n, env.cfg.action_space, device=dev) - 1.0)
         rewards.append(reward)
-        if "grasp_episode/success" in extras.get("log", {}):
-            logs.append(dict(extras["log"]))
+        key_sets.add(frozenset(extras.get("log", {})))
     stacked = torch.stack(rewards)
+    episode_logged = all(value != -1.0 for value in env._episode_log.values())
     print(f"SMOKE random 12 s: reward finite {bool(torch.isfinite(stacked).all())} mean {float(stacked.mean()):.3f} "
-          f"max {float(stacked.max()):.1f} episode logs {len(logs)}", flush=True)
-    if not torch.isfinite(stacked).all() or not logs:
-        failures.append("random-action rewards or episode logs")
+          f"max {float(stacked.max()):.1f} episode-end log written {episode_logged} log key sets {len(key_sets)}", flush=True)
+    if not torch.isfinite(stacked).all() or not episode_logged or len(key_sets) != 1:
+        failures.append("random-action rewards, the episode-end log, or log keys that differ between steps")
 
     for failure in failures:
         print(f"SMOKE CHECK FAILED: {failure}", flush=True)
