@@ -1,0 +1,13 @@
+{
+ "track": "grasp_fj_reach",
+ "label": "fj_reach_i04",
+ "task": "open-short_r_grasp_fj_t2r_reach-lstm",
+ "sapg": false,
+ "num_envs": 4096,
+ "started": 1789424946.8112257,
+ "commit": "2ade74a57ff583be6b35f7e29d1c488b4ece874c",
+ "gpu": 0,
+ "pid": 4156688,
+ "console": "/home/oem/rl_ws/our_source/fj_t2r_runs/fj_reach_i04.out",
+ "killed": []
+}

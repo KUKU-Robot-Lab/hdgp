@@ -1,36 +1,23 @@
 {
  "track": "grasp_fj_reach",
- "iter": 3,
- "label": "fj_reach_i03",
+ "iter": 4,
+ "label": "fj_reach_i04",
  "label_prefix": "fj_reach_i",
- "round": 4,
+ "round": 5,
  "status": "running",
- "awaiting": "approval_iter_03",
+ "awaiting": null,
  "best": null,
  "success_ticks": 0,
- "started": 1789399346,
- "pid": 3925166,
- "commit": "6dd6132b",
+ "started": 1789424946,
+ "pid": 4156688,
+ "commit": "2ade74a5",
  "algo": {
   "iter_00": "SAPG 12,288 (open-short_r_grasp_fj_t2r_reach-lstm-sapg)",
   "from_iter_01": "PPO-LSTM 4096 (open-short_r_grasp_fj_t2r_reach-lstm)"
  },
  "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY",
- "note": "round 4 = iter_03(6dd6132b): 사용자 승인·교정 '누르기가 아니라 손바닥으로 컵을 기울이며 테이블을 누름' 반영 — 손끝·링크 높이 테이블 판정, 직립일 때만 손바닥 보상, 바닥 테두리 clearance 기반 lift×grasp_q, 손바닥 위치 게이트 감싸기, grasp_q 로 기울기/밀기 벌점 완화. i02 는 advance(stuck:grasp) e2418(첫 성공 최대 1.4%), 23:58 SIGTERM 정상 종료. 틱 3 h 간격(cron fe2b9c91). PPO-LSTM 4096 env · 콘솔 our_source/fj_t2r_runs/fj_reach_i03.out.",
+ "note": "round 5 = iter_04(2ade74a5): 사용자 승인. i03 퇴보(편 손 호버·엄지만 테두리, finger_open 이 파지 위치 밖에서만 무감쇠 지급, palm_contact 동시 게이트로 0) 반영 — 무게이트 reach_far 파지 위치까지 증가, 손바닥이 컵을 향할 때만 reach_facing, finger_open 소형·위치 무관, 쥐기 전 항 공통 감쇠, 손바닥 접촉 부드러운 곱. 단계 경계 계산: 5 cm 호버 0.30 < 파지 위치 0.72 < 누르기 1.4. i03 은 advance(stuck:grasp) e4423, 07:04 SIGTERM 정상 종료. 틱 3 h(cron fe2b9c91). PPO-LSTM 4096 · 콘솔 our_source/fj_t2r_runs/fj_reach_i04.out.",
  "prev_round_end": {
-  "label": "fj_reach_i02",
-  "epoch": 2418,
-  "hours": 3.37,
-  "verdict": "advance(stuck:grasp)",
-  "checked": "09-14 23:23",
-  "video": "our_source/fj_t2r_videos/fj_reach_i02_0914_2323.mp4",
-  "drafts": [
-   "iter_02/observation.md",
-   "iter_02/improvement.md"
-  ],
-  "note": "press-and-hold (reward 0.44-0.50) vs wrap-and-lift (0.15-0.35, first successes peak 1.4% e1970) alternate; video = press only"
- },
- "round_end": {
   "label": "fj_reach_i03",
   "epoch": 4423,
   "hours": 5.92,
