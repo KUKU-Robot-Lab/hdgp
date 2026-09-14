@@ -1,0 +1,28 @@
+{
+ "schema": 1,
+ "checkpoint": "log/rl_games/open-sens/left/iker-shoe-grasp/iker_grasp_c00_a/nn/last_open-sens_l_iker_shoe_grasp_ep_250_rew_120.69097.pth",
+ "checkpoint_sha256": "c375aa33496d30a2060a839539b90f2dc9e3030240360e14bb9bab9f6d8e88bc",
+ "envs": 512,
+ "latch_events": 193,
+ "success_events": 14,
+ "percentiles": {
+  "lo": 0.25,
+  "hi": 0.9
+ },
+ "q_quantiles_10_25_50_75_90": [
+  0.1375,
+  0.1556,
+  0.1891,
+  0.2237,
+  0.2482
+ ],
+ "w_f_median_at_latch": {
+  "thumb": 0.2732,
+  "index": 0.2428,
+  "middle": 0.1895,
+  "ring": 0.1724,
+  "pinky": 0.1807
+ },
+ "q_lo": 0.15558816492557526,
+ "q_hi": 0.2482142299413681
+}
