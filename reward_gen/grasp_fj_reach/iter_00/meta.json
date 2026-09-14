@@ -1,0 +1,11 @@
+{
+ "track": "grasp_fj_reach",
+ "iter": 0,
+ "task": "Starting from the raised pose beside the table, move the hand to the cup standing upright on the table and grasp it with an envelope grasp (a power grasp): bring the palm against the side of the cup and wrap all five fingers around it, with the thumb on the opposite side of the cup from the other four fingers, so that the palm and the links of every finger are in contact with the cup. Then lift the cup to the goal position and hold it there, upright and still, so that the environment keeps counting successes. The cups differ in shape and size between environments. Do not knock the cup over, do not drop it, and do not push the hand into the table.",
+ "variant": "reach",
+ "created": "2026-09-14T14:06:56.423807",
+ "context": "openarm.agnostic.tasks.grasp_fj_t2r.t2r.context.RewardContext",
+ "prev_code": null,
+ "feedback": null,
+ "notes": null
+}
