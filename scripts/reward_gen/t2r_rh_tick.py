@@ -14,7 +14,7 @@ for k, s, u in [("task/episode_success", 100, "%"), ("task/src_grasped", 100, "%
                 ("task/src_cup_lift", 100, "cm"), ("task/rcv_cup_lift", 100, "cm"), ("task/src_tilt_deg", 1, "°"),
                 ("task/aim_dist", 1, "m"), ("task/nested_rate", 100, "%"), ("task/cup_collision_rate", 100, "%"),
                 ("task/src_hand_foreign_rate", 100, "%"), ("task/rcv_hand_foreign_rate", 100, "%"), ("adr/progress", 1, ""),
-                ("bead/in_target", 100, "%"), ("bead/spill", 100, "%"), ("done/drop", 100, "%"), ("done/mimic_runaway", 100, "%"), ("reward/total", 1, ""),
+                ("bead/in_target", 100, "%"), ("bead/spill", 100, "%"), ("done/drop", 100, "%"), ("done/mimic_runaway", 100, "%"), ("done/mimic_err_runaway", 100, "%"), ("reward/total", 1, ""),
                 ("ctrl/mimic_err_max", 1, "rad")]:
     l, x = g(k, s); print(f"{k:28s} {l:9.3f} (max {x:.3f}) {u}")
 sys.path.insert(0, str(H / "scripts/tools")); from parse_tfevents import load_tfevents  # noqa: E402

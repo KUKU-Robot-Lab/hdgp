@@ -1,0 +1,7 @@
+{
+ "label": "t2r_rh_i01",
+ "num_envs": 1024,
+ "started": 1789393858,
+ "commit": "b066aa0c",
+ "host": "vision-3090"
+}

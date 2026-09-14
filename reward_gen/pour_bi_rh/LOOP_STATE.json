@@ -1,21 +1,16 @@
 {
- "iter": 0,
- "label": "t2r_rh_i00_r1",
- "round": 1,
+ "iter": 1,
+ "label": "t2r_rh_i01",
+ "round": 2,
  "host": "vision-3090",
  "gpu": 0,
  "num_envs": 1024,
  "best": null,
- "started": 1789377782.7472734,
+ "started": 1789393858,
  "success_ticks": 0,
  "note": "09.14 RH56F1 pour_fabric_mimic · shaker_closed×0.65 · 손끝 파지 허용 · 대본 파지 게이트 면제(사용자 결정)",
- "restart": "09.14 사용자 결정 '학습 종료하고 수정' — mimic 폭주 env 리셋 종료 조건(dep_qd>100) 추가 후 같은 iter_00 재기동. 이전 t2r_rh_i00_m3 epoch 178 에서 중단",
- "pending_at_advance": [
-  "손끝 촉각 obs 추가 여부는 파지 후 리프트 실패 유형 보고 결정",
-  "mimic 오차 기준 리셋 추가 여부 — 느린 폭주(epoch 321-323, 348-351)가 dep_qd>100 기준을 빠져나감"
- ],
+ "restart": null,
  "round1_end": "09.14 advance 판정(epoch 671, 3.93 h) — 사용자 결정 'advance 시점까지만 이번 런 진행'에 따라 학습 PID 126799 종료. 마지막 체크포인트 ep_650",
- "awaiting": "approval_iter_00",
  "video": "~/rl_ws/our_source/pour_t2r_rh_i00_ep650_0914_2231.mp4",
- "notes_draft": "reward_gen/pour_bi_rh/notes_round1.md"
+ "decisions_round1": "09.14 사용자 '수정 및 진행 · 2,3 추가' — notes_round1 승인(엄지 입구 걸림), mimic_runaway_err_rad 3.0 추가, 손끝 촉각 obs 5칸/손 추가(obs 182/critic 224, 새 학습)"
 }
