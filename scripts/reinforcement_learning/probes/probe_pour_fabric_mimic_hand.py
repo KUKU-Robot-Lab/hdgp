@@ -68,6 +68,17 @@ for t in range(args.steps):
     if bool(term.any()):
         print(f"[reset t={t}] terminated envs={int(term.sum())} runaway={float(ex['task/runaway_rate']):.2f} drop={float(ex['done/drop']):.2f} "
               f"tiltS={float(ex['task/src_tilt_deg']):.1f} mimic={float(ex['ctrl/mimic_err_max']):.2f}", flush=True)
+    if args.approach == "cup2" and (u in (79, 100, 110, 120, 130)):
+        # 손 링크 기하 덤프: 어떤 링크가 컵 높이/발자국 안에 있는가 (컵 원점 기준, 외경 r=0.036·림 z=+0.08·바닥 −0.062 @0.8)
+        c = cup_local()[0]; bn = env.robot.data.body_names
+        rows = []
+        for i, n in enumerate(bn):
+            if n.startswith(f"{side}_hl_"):
+                d = (env.robot.data.body_pos_w[0, i] - env.scene.env_origins[0]) - c
+                rows.append(f"{n.split('_hl_')[1]}({float(d[0]):+.3f},{float(d[1]):+.3f},{float(d[2]):+.3f})")
+        nets = {f: [round(float(s_.data.net_forces_w.view(N, -1, 3).sum(dim=1).norm(dim=-1)[0]), 1) for s_ in rig.sensors[f]] for f in rig.fingers}
+        pn = round(float(rig.palm_sensor.data.net_forces_w.view(N, -1, 3).sum(dim=1).norm(dim=-1)[0]), 1)
+        print(f"[geom u={u}] tilt={float(ex['task/src_tilt_deg']):.1f} palm_net={pn} net={nets}\n   " + " ".join(rows), flush=True)
     if args.quiet and t % 30 == 0:
         pc = (rig.palm_pos() - cup_local())[0].tolist()
         print(f"[t={t:3d}] clos={float(rig.closure()[0]):.2f} mimic={float(ex['ctrl/mimic_err_max']):.2f} grasped={float(ex['task/src_grasped']):.2f} "
