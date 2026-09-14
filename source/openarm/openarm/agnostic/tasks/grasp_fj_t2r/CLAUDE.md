@@ -44,11 +44,11 @@ R=$PWD/reward_gen/grasp_fj_envelope/iter_00/compute_reward.py
 gym id `open-short_r_grasp_fj_t2r-lstm-sapg`, 보상은 `env.reward_code_path=<절대경로>`. 학습 기동은 사용자 승인 후.
 t2r 트랙이라 reward-audit 은 쓰지 않는다(사용자 09.14) — 검증은 위 검증기 + 실제 장치 스모크.
 
-서버 기동 — i1/i2 와 같은 런처 `run_fj.sh` · 12,288 env · SAPG 2048(6블록) · seed 42 · FRESH · GPU0:
+서버 기동 — i1/i2 와 같은 런처 `scripts/experiments/run_fj.sh` · 12,288 env · SAPG 2048(6블록) · seed 42 · FRESH · GPU0:
 ```bash
 ssh server "cd ~/rl_ws/hdgp && TASK=open-short_r_grasp_fj_t2r-lstm-sapg RUN=fj_t2r_i00 GPU=0 ENVS=12288 BLK=2048 SERVER=1 \
   EXTRA='agent.params.config.expl_coef_block_size=2048 env.reward_code_path=/home/oem/rl_ws/hdgp/reward_gen/grasp_fj_envelope/iter_00/compute_reward.py' \
-  nohup bash ./run_fj.sh > ~/rl_ws/our_source/fj_t2r_runs/fj_t2r_i00.out 2>&1 < /dev/null & echo pid=\$!"
+  nohup bash scripts/experiments/run_fj.sh > ~/rl_ws/our_source/fj_t2r_runs/fj_t2r_i00.out 2>&1 < /dev/null & echo pid=\$!"
 ```
 ★`SERVER=1` 필수 — 서버에도 `../IsaacLab` 이 있어 없으면 conda 대신 isaaclab.sh 로 간다. 종료는 PID 로만(RUN_LABEL·CUDA 대조).
 부팅 확인: `[grasp_fj_t2r] 보상 = <경로> · … 필터 ['/World/envs/env_.*/Object']` 줄 · 로그에 `did not match` 0건.

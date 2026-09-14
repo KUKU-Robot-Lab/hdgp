@@ -48,12 +48,12 @@ def _hdgp_root() -> Path:
     """런처는 패키지 밖(hdgp 루트)에 산다. `parents[N]` 으로 세지 않고 **표식으로 찾는다** —
     디렉터리 한 겹만 바뀌어도 N 은 조용히 엉뚱한 곳을 가리킨다."""
     for q in Path(__file__).resolve().parents:
-        if (q / "run_fj.sh").is_file() and (q / "vendor").is_dir():
+        if (q / "scripts" / "experiments" / "run_fj.sh").is_file() and (q / "vendor").is_dir():
             return q
-    raise AssertionError("hdgp 루트를 못 찾았다 (run_fj.sh + vendor/ 표식)")
+    raise AssertionError("hdgp 루트를 못 찾았다 (scripts/experiments/run_fj.sh + vendor/ 표식)")
 
 
-_RUN = (_hdgp_root() / "run_fj.sh").read_text(encoding="utf-8")
+_RUN = (_hdgp_root() / "scripts" / "experiments" / "run_fj.sh").read_text(encoding="utf-8")
 
 
 def _calls(src: str, name: str) -> list[str]:

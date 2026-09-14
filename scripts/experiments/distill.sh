@@ -2,13 +2,13 @@
 # 증류 시작 래퍼: teacher 체크포인트 연결 + GPU 지정 + torchrun 포트 격리
 #
 # 사용법:
-#   ./distill.sh <task_id> <label> <teacher_ckpt> [추가 인자...]
+#   scripts/experiments/distill.sh <task_id> <label> <teacher_ckpt> [추가 인자...]
 #
 # 예시:
-#   GPU=0 ./distill.sh open-tesol_r_grasp_v2-distill test1 \
+#   GPU=0 scripts/experiments/distill.sh open-tesol_r_grasp_v2-distill test1 \
 #       log/rl_games/open-tesol/right/grasp-v2/lstm_test12/nn/last_....pth
 #
-#   GPU=1 ./distill.sh open-tesol_l_grasp_v2-distill test1 \
+#   GPU=1 scripts/experiments/distill.sh open-tesol_l_grasp_v2-distill test1 \
 #       log/rl_games/open-tesol/left/grasp-v2/lstm_test6/nn/last_....pth
 #
 # 환경변수:
@@ -28,12 +28,12 @@
 
 set -euo pipefail
 
-TASK="${1:?'Usage: ./distill.sh <task_id> <label> <teacher_ckpt> [args...]'}"
-LABEL="${2:?'Usage: ./distill.sh <task_id> <label> <teacher_ckpt> [args...]'}"
-TEACHER="${3:?'Usage: ./distill.sh <task_id> <label> <teacher_ckpt> [args...]'}"
+TASK="${1:?'Usage: scripts/experiments/distill.sh <task_id> <label> <teacher_ckpt> [args...]'}"
+LABEL="${2:?'Usage: scripts/experiments/distill.sh <task_id> <label> <teacher_ckpt> [args...]'}"
+TEACHER="${3:?'Usage: scripts/experiments/distill.sh <task_id> <label> <teacher_ckpt> [args...]'}"
 shift 3
 
-HDGP_ROOT="$(cd "$(dirname "$0")" && pwd)"
+HDGP_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"   # scripts/experiments/ → hdgp 루트
 ISAACLAB_ROOT="${ISAACLAB_ROOT:-$(cd "${HDGP_ROOT}/.." && pwd)/IsaacLab}"
 GPU="${GPU:-0}"
 NPROC="${NPROC:-1}"

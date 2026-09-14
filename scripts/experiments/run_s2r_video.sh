@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # grasp_s2r 체크포인트 재생 → 영상. ★set -u 금지(isaacsim setup 함정).
 #
-#   사용법: LABEL=e1_ep20000 ./run_s2r_video.sh
-#           CKPT=<경로> LABEL=<이름> ./run_s2r_video.sh      (체크포인트 직접 지정)
+#   사용법: LABEL=e1_ep20000 scripts/experiments/run_s2r_video.sh
+#           CKPT=<경로> LABEL=<이름> scripts/experiments/run_s2r_video.sh      (체크포인트 직접 지정)
 #
 # ★TASK 를 기본값으로 두되 **short 자산**을 박는다. 09.10 에 옛 학습 런처가
 #   `open-sens` 를 박아둔 채 남아 있어 24576 env × 45 epoch 를 **옛 로봇**으로 돌린
@@ -15,7 +15,7 @@
 #   580.178.04 로 갱신됐고, 커널 모듈은 GPU 를 잡은 학습 때문에 교체되지 못했다.
 #   그 상태에서 새 CUDA 프로세스는 error 804 로 죽는다. 아래 가드가 그것을 먼저 잡는다.
 set -o pipefail
-HDGP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HDGP="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # scripts/experiments/ → hdgp 루트
 cd "$HDGP" || exit 1
 
 TASK="${TASK:-open-short_r_grasp_s2r-play-lstm}"

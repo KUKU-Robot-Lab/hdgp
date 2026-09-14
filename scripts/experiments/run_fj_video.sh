@@ -2,7 +2,7 @@
 # grasp_fj 체크포인트 재생 → 영상. ★set -u 금지(isaacsim setup 함정).
 #
 #   사용법: TASK=open-short_r_grasp_fj-play-lstm-sapg LABEL=fj_w2 \
-#           CKPT=<경로> GPU=0 ./run_fj_video.sh
+#           CKPT=<경로> GPU=0 scripts/experiments/run_fj_video.sh
 #
 # ★TASK 를 **필수**로 둔다. 09.10 에 옛 학습 런처가 `open-sens` 를 박아둔 채 남아
 #   있어 24576 env × 45 epoch 를 **옛 로봇**으로 돌렸다. 재생 스크립트도 같은 결함을
@@ -15,7 +15,7 @@
 #       BLOCKS(기본 6, 학습 24576/4096 = 상류 고정) · ENVS = BLOCKS × BLOCK_SIZE
 #   마지막 블록이 탐색계수 0 = **리더(그리디)** 라, 기본 시점은 거기를 본다.
 set -o pipefail
-HDGP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HDGP="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # scripts/experiments/ → hdgp 루트
 cd "$HDGP" || exit 1
 
 : "${TASK:?TASK 필요 — 예: open-short_r_grasp_fj-play-lstm-sapg (open-sens 는 옛 dg5f-m)}"

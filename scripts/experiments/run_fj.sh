@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # grasp_fj 학습 런처 (서버·로컬 공용). ★set -u 금지(isaacsim setup 함정).
 #
-#   사용법: TASK=open-short_r_grasp_fj-lstm-sapg GPU=0 RUN=fj_x1 ./run_fj.sh
+#   사용법: TASK=open-short_r_grasp_fj-lstm-sapg GPU=0 RUN=fj_x1 scripts/experiments/run_fj.sh
 #
 # ★TASK 를 **필수**로 둔다. 09.10 에 옛 런처가 `--task open-sens_...` 를 박아둔 채로
 #   남아 있어, dg5f-m-short 로 바꾼 뒤에도 두 런이 **옛 로봇(open-sens)** 으로 24576 env
 #   × 45 epoch 를 돌았다. 기본값이 있으면 자산을 바꿔도 런처가 조용히 옛 것을 고른다.
 # ★학습 전 커밋 해시를 찍는다 — 서버는 git pull 로만 코드를 받는다(사용자 확정 09.10).
 set -o pipefail
-HDGP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HDGP="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # scripts/experiments/ → hdgp 루트
 cd "$HDGP" || exit 1
 
 : "${TASK:?TASK 필요 — 예: open-short_r_grasp_fj-lstm-sapg (open-sens 는 옛 dg5f-m)}"

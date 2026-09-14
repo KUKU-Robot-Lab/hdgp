@@ -146,8 +146,8 @@ state 기반 teacher를 RealSense D435i RGB-D만 보는 student로 증류한다.
 
 ```bash
 # GPU0 = right, GPU1 = left 동시 실행
-GPU=0 ./distill.sh open-tesol_r_grasp_v2-distill test1 <right_teacher.pth>
-GPU=1 ./distill.sh open-tesol_l_grasp_v2-distill test1 <left_teacher.pth>
+GPU=0 scripts/experiments/distill.sh open-tesol_r_grasp_v2-distill test1 <right_teacher.pth>
+GPU=1 scripts/experiments/distill.sh open-tesol_l_grasp_v2-distill test1 <left_teacher.pth>
 ```
 
 `distill.sh` 를 쓸 것 — Dagger가 DDP를 요구해 torchrun 기동이 필요하고, 같은 호스트에서

@@ -20,11 +20,11 @@ Dagger가 DDP 위에서 돌게 짜여 있어 **GPU가 하나여도 torchrun으�
 cd hdgp
 
 # GPU0 — right
-GPU=0 ./distill.sh open-tesol_r_grasp_v2-distill test1 \
+GPU=0 scripts/experiments/distill.sh open-tesol_r_grasp_v2-distill test1 \
     log/rl_games/open-tesol/right/grasp-v2/lstm_test12/nn/last_....pth
 
 # GPU1 — left (동시 실행 가능)
-GPU=1 ./distill.sh open-tesol_l_grasp_v2-distill test1 \
+GPU=1 scripts/experiments/distill.sh open-tesol_l_grasp_v2-distill test1 \
     log/rl_games/open-tesol/left/grasp-v2/lstm_test6/nn/last_....pth
 ```
 
@@ -58,14 +58,14 @@ right/left를 GPU0/GPU1에서 동시에 돌리면 정확히 이 상황이고, �
 ### 중단된 학습 재개
 
 ```bash
-GPU=0 ./distill.sh open-tesol_r_grasp_v2-distill test1 <teacher.pth> \
+GPU=0 scripts/experiments/distill.sh open-tesol_r_grasp_v2-distill test1 <teacher.pth> \
     --student log/distillation/open-tesol_r_grasp_v2-distill/test1/nn/grasp_student_20000_iters.pth
 ```
 
 ### 학습된 student 재생
 
 ```bash
-GPU=0 ./distill.sh open-tesol_r_grasp_v2-distill test1 <teacher.pth> \
+GPU=0 scripts/experiments/distill.sh open-tesol_r_grasp_v2-distill test1 <teacher.pth> \
     --student log/distillation/.../nn/grasp_student_20000_iters.pth \
     --play_policy --num_envs 16
 ```

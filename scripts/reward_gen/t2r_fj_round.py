@@ -206,7 +206,7 @@ def launch_command(label: str, rel_iter: str, num_envs: int, seed: int,
     return (f"mkdir -p {SERVER_CONSOLE} && cd {SERVER_HDGP} && TASK={task} RUN={label} GPU={GPU} "
             f"ENVS={num_envs} BLK={blk} SEED={seed} SERVER=1 NOTE='t2r {rel_iter}' "
             f"EXTRA='agent.params.config.expl_coef_block_size={blk} env.reward_code_path={code}' "
-            f"nohup bash ./run_fj.sh > {SERVER_CONSOLE}/{label}.out 2>&1 < /dev/null &")
+            f"nohup bash scripts/experiments/run_fj.sh > {SERVER_CONSOLE}/{label}.out 2>&1 < /dev/null &")
 
 
 VIDEO_CAM = ("1.10,-0.80,0.78", "0.36,-0.16,0.44")      # fj_i2·i00 영상과 같은 시점
