@@ -369,12 +369,13 @@ def cmd_launch(a) -> int:
         print(f"[round_fj] 종료: pid {pid} (RUN_LABEL={lab}, CUDA {GPU})")
         _ssh(f"kill {pid}")
     gone = {pid for pid, _, _ in victims}
-    for _ in range(30):
+    # ★09.14 실측: Isaac 은 SIGTERM 뒤 종료에 60초 넘게 걸린다(i00 이 60초 대기에서 걸려 기동이 중단됐다) — 5분 기다린다.
+    for _ in range(60):
         if not gone & {pid for pid, _, _ in parse_procs(_ssh(procs_cmd()))}:
             break
-        time.sleep(2)
+        time.sleep(5)
     else:
-        raise SystemExit(f"[round_fj] 이전 런 {sorted(gone)} 이 60초 안에 안 죽었다 — 확인 필요")
+        raise SystemExit(f"[round_fj] 이전 런 {sorted(gone)} 이 5분 안에 안 죽었다 — 확인 필요(SIGKILL 은 사용자 확인 후)")
 
     _ssh(launch_command(a.label, rel, a.num_envs, a.seed), timeout=20, allow_timeout=True)
     # ★기동은 되는데 ssh 가 안 돌아온다(09.14 실측) — 성공 여부는 PID 로만 판단한다.

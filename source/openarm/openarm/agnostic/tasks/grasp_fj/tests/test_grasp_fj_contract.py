@@ -967,7 +967,7 @@ def _run_validator(**over):
     base = dict(
         arm_cmd_dim=7, k_arm=0.025, arm_ema=0.1, arm_slew_rad_s=0.15, arm_target_box_rad=0.0,
         arm_dof_speed_scale=1.5,
-        arm_reset_offset_rad=(),
+        arm_reset_offset_rad=(), arm_reset_joint_pos_override=(),
         hand_layout="coupled3", hand_direct=True, hand_ema=0.1, hand_velocity_ff_scale=0.0,
         hand_reset_clamp_max_rad=0.6,
         episode_length_s=10.0, goal_clock_restart_step=2,

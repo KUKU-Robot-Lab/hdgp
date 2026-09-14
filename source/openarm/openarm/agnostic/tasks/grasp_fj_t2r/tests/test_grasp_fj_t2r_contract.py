@@ -90,6 +90,27 @@ def test_reward_code_path_defaults_empty_and_leaf_is_the_short_tl_hand():
     assert "(GraspFJTesolloRightShortEnvCfg)" in _CFG
 
 
+def test_reach_leaf_carries_the_user_decisions_of_0914():
+    # ★사용자 결정(09.14): 테이블 앞 가장자리 위 시작 · 팔 속도 2배 + 15 s · cup_family. 셋 중 하나라도 빠지면 다른 과제다.
+    assert "class GraspFJT2RReachEnvCfg(GraspFJT2RRightShortEnvCfg)" in _CFG
+    blk = _CFG.split("class GraspFJT2RReachEnvCfg", 1)[1]
+    for tok in ("arm_reset_joint_pos_override: tuple = (-1.1974, 0.6707, 0.1866, 1.7310, 0.6920, 0.0416, 0.9460)",
+                "k_arm: float = 0.05", "arm_dof_speed_scale: float = 3.0", "arm_slew_rad_s: float = 0.3",
+                "episode_length_s: float = 15.0", 'object_bank: str = "cup_family"', "start_palm_dist_band_m"):
+        assert tok in blk, tok
+    assert '("short_r", "grasp_fj_t2r_reach"): GraspFJT2RReachEnvCfg' in _REG
+
+
+def test_start_pose_override_is_read_by_both_validator_and_env():
+    # ★같은 자산 프로필 변종은 gym 슬롯이 겹친다 → cfg 덮어쓰기. 검증기(홈 1.5 rad)와 env 가 같은 값을 읽어야 한다.
+    base = (_HERE.parent / "grasp_fj")
+    cfg_src = (base / "grasp_fj_env_cfg.py").read_text(encoding="utf-8")
+    env_src = (base / "grasp_fj_env.py").read_text(encoding="utf-8")
+    assert "arm_reset_joint_pos_override: tuple = ()" in cfg_src
+    assert "tuple(self.arm_reset_joint_pos_override) or tuple(profile.arm_reset_joint_pos)" in cfg_src
+    assert "tuple(self.cfg.arm_reset_joint_pos_override) or tuple(self.profile.arm_reset_joint_pos)" in env_src
+
+
 def test_registration_reuses_track_b_agents_with_the_t2r_entry():
     assert "openarm.agnostic.tasks.grasp_fj_t2r.grasp_fj_t2r_env:GraspFJT2REnv" in _REG
     assert "from ...grasp_fj.config import agents" in _REG

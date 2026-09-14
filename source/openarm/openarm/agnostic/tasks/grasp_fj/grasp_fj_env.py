@@ -111,7 +111,8 @@ class GraspFJEnv(FJKeypointEnv):
         # ★09.10 시작 자세는 **프로필이 소유하는 절대 관절값**이다(`arm_reset_joint_pos`).
         #   구 `cfg.arm_reset_offset_rad`(홈 기준 델타)는 출발 자세에 종속이라 자산 간 이식이
         #   불가능했다 — 사유는 프로필 필드 주석. 빈 튜플이면 홈에서 시작한다.
-        _rq = tuple(self.profile.arm_reset_joint_pos)
+        # ★09.14 cfg `arm_reset_joint_pos_override` 가 있으면 그것 — 검증기와 같은 규칙(같은 자산의 프로필 변종은 gym 슬롯이 겹친다).
+        _rq = tuple(self.cfg.arm_reset_joint_pos_override) or tuple(self.profile.arm_reset_joint_pos)
         if _rq and len(_rq) != self.profile.num_arm_joints:
             raise RuntimeError(
                 f"[{self.profile.name}] arm_reset_joint_pos 길이 {len(_rq)} "

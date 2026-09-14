@@ -163,6 +163,10 @@ class GraspFJEnvCfg(FJKeypointEnvCfg):
     #:   대역은 자산·물체가 바뀌면 다시 재야 한다 — 물체 반경을 모르는 지표이므로
     #:   "이 값이면 감쌀 공간이 있다"를 보장하지 않는다. 그건 감쌈 여유 검사가 따로 한다.
     start_palm_dist_band_m: tuple = (0.10, 0.26)
+    #: ★09.14 시작 자세 **cfg 덮어쓰기**(절대 관절값 7개). 빈 튜플 = 프로필 `arm_reset_joint_pos`(기존 동작 그대로).
+    #:   왜 프로필 변종이 아니라 cfg 인가: 같은 자산에 프로필을 하나 더 등록하면 `test_gym_id_slots_are_unique`
+    #:   ((asset.short, side) 유일)에 걸리고 gym id·로그 폴더가 겹친다. 검증기(홈 1.5 rad)와 env 가 **같은 값**을 읽는다.
+    arm_reset_joint_pos_override: tuple = ()
 
     def _arm_action_dim(self, profile) -> int:
         """액션의 팔 구간 폭 = 관절 수(B). A 의 `_derive_spaces` 가 이 훅으로 22 를 만든다."""
@@ -230,21 +234,22 @@ class GraspFJEnvCfg(FJKeypointEnvCfg):
                         f"(k_arm {self.k_arm} · dt {_dt:.5f}) — dt 를 바꿨으면 k_arm 도 환산해야 한다")
         # ★09.10 시작 자세는 **프로필**이 소유한다(`arm_reset_joint_pos`, 절대 관절값).
         #   구 `arm_reset_offset_rad`(태스크 cfg 의 홈 기준 델타)는 자산 간 이식이 불가능해 폐기했다.
-        _rq = tuple(profile.arm_reset_joint_pos)
+        _rq = tuple(self.arm_reset_joint_pos_override) or tuple(profile.arm_reset_joint_pos)
+        _src = ("arm_reset_joint_pos_override" if self.arm_reset_joint_pos_override
+                else f"{profile.name}.arm_reset_joint_pos")
         if _rq and len(_rq) != int(profile.num_arm_joints):
-            errs.append(f"{profile.name}.arm_reset_joint_pos 길이 {len(_rq)} "
-                        f"≠ num_arm_joints {profile.num_arm_joints}")
+            errs.append(f"{_src} 길이 {len(_rq)} ≠ num_arm_joints {profile.num_arm_joints}")
         if _rq:
             import re as _re
             _pat = _re.compile(str(profile.arm_joint_regex))
             _home = [v for k, v in profile.init_joint_pos.items() if _pat.fullmatch(k)]
             if len(_home) != len(_rq):
                 errs.append(f"{profile.name}: arm_joint_regex 로 뽑은 홈 팔관절 {len(_home)}개 "
-                            f"≠ arm_reset_joint_pos {len(_rq)}개")
+                            f"≠ {_src} {len(_rq)}개")
                 _home = list(_rq)
             _d = max(abs(a - float(b)) for a, b in zip(_rq, _home))
             if _d > 1.5:
-                errs.append(f"{profile.name}.arm_reset_joint_pos 가 홈에서 {_d:.2f} rad 떨어져 있다 "
+                errs.append(f"{_src} 가 홈에서 {_d:.2f} rad 떨어져 있다 "
                             f"(|1.5| 초과) — 시작 자세가 아니라 다른 홈이다")
         _max_steps = int(round(float(self.episode_length_s) / _dt))
         _r = int(self.goal_clock_restart_step)
