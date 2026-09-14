@@ -73,7 +73,9 @@ def build_cup_cfg(prim_path: str, scale: float = 1.0) -> RigidObjectCfg:
             usd_path=POUR_CUP_USD,
             scale=(scale, scale, scale),
             activate_contact_sensors=True,
-            mass_props=sim_utils.MassPropertiesCfg(mass=POUR_CUP_MASS * scale ** 3),
+            # ★질량은 스케일과 무관하게 실물 컵 값(0.134 kg)을 유지한다 — s³ 로 줄이면 0.6 배 컵이 29 g 이 되어
+            #   손가락이 스치기만 해도 넘어진다(09.14 실측). 크기만 줄이는 것이 사용자 의도다.
+            mass_props=sim_utils.MassPropertiesCfg(mass=POUR_CUP_MASS),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 solver_position_iteration_count=16,
                 solver_velocity_iteration_count=1,
@@ -215,7 +217,7 @@ class PourFabricMimicEnvCfg(DirectRLEnvCfg):
     # ---- 작업면·컵 기하 -------------------------------------------------------------
     # ★RH56F1 파지 창(열림 105.5 → 폐쇄 46.6 mm, grasp_fj_rh 09.07) 대비 cup_big 외경 90 mm 는 여유 15 mm 뿐이다.
     #   사용자 결정 09.14: 컵을 **0.8 배**(외경 72 mm·내경 66 mm·높이 142 mm)로 줄인다. 아래 기하 필드 5개는
-    #   resolve_cfg 가 CUP_GEOM_UNIT × cup_scale 로 **덮어쓴다**(hydra 로 개별 기하를 덮지 말 것). 질량은 s³.
+    #   resolve_cfg 가 CUP_GEOM_UNIT × cup_scale 로 **덮어쓴다**(hydra 로 개별 기하를 덮지 말 것). 질량은 실물값 유지.
     cup_scale: float = 0.8
     table_surface_z: float = 0.205
     object_origin_offset_z: float = POUR_CUP_ORIGIN_OFFSET_Z
