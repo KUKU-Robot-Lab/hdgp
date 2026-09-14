@@ -1,0 +1,13 @@
+{
+ "track": "pour_bi_rh",
+ "iter": 2,
+ "task": "Using both arms, grasp each cup (a fingertip grasp is fine, no wrap-around needed): the right hand grasps the source cup (which contains the beads) and the left hand grasps the empty receiver cup. Lift both cups off the table, bring the mouth of the source cup over the mouth of the receiver cup, and tilt the source cup so that the beads pour into the receiver cup. Keep the receiver cup upright, do not drop either cup, and spill as few beads as possible. The task is finished when at least half of the beads are inside the receiver cup with little spill.",
+ "created": "2026-09-15T07:05:36.209252",
+ "prev_iter": "reward_gen/pour_bi_rh/iter_01",
+ "events": [
+  "/home/user/rl_ws/hdgp/log/pour_fabric_mimic/mirror/t2r_rh_i01/summaries/events.out.tfevents.1789393927.usr"
+ ],
+ "notes": "reward_gen/pour_bi_rh/notes_round2.md",
+ "robot_file": "/home/user/rl_ws/hdgp/scripts/reward_gen/tasks/pour_bi_rh_robot.md",
+ "num_actions": 24
+}
