@@ -1,12 +1,13 @@
 {
  "iter": 0,
- "label": "t2r_rh_i00",
+ "label": "t2r_rh_i00_m3",
  "round": 1,
  "host": "vision-3090",
  "gpu": 0,
  "num_envs": 1024,
  "best": null,
- "started": 1789367115.7616975,
+ "started": 1789373995.1644855,
  "success_ticks": 0,
- "note": "09.14 RH56F1 pour_fabric_mimic · shaker_closed×0.65 · 손끝 파지 허용 · 대본 파지 게이트 면제(사용자 결정)"
+ "note": "09.14 RH56F1 pour_fabric_mimic · shaker_closed×0.65 · 손끝 파지 허용 · 대본 파지 게이트 면제(사용자 결정)",
+ "restart": "09.14 epoch 273~304 에서 mimic 오차 79~483 rad·종속 qd 5e4 폭주(리프트 시작 구간) → mimic_dep_limit_margin_rad 1.5→3.0 으로 같은 iter 재기동. 이전 런 t2r_rh_i00 epoch 342 까지: grasp_src 2.1 %·rcv 0"
 }

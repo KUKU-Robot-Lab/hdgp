@@ -1,7 +1,11 @@
 {
- "label": "t2r_rh_i00",
+ "label": "t2r_rh_i00_m3",
  "num_envs": 1024,
- "started": 1789367115.761794,
+ "started": 1789373995.1645792,
  "host": "vision-3090",
- "gpu": 0
+ "gpu": 0,
+ "env_overrides": {
+  "mimic_dep_limit_margin_rad": 3.0
+ },
+ "prev_label": "t2r_rh_i00"
 }
