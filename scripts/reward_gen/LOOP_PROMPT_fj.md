@@ -8,8 +8,9 @@ fj 실험은 **GPU0 만** · **붓기 t2r 에 영향 금지**(GPU1 런 · `LOOP_
 
 1. `python3 scripts/reward_gen/t2r_fj_round.py status --label <label> --iter reward_gen/grasp_fj_envelope/iter_NN` → verdict.
 2. verdict 별 행동
-   - `continue` / `continue(success)`: 한 줄 요약(epoch · 성공 prev_ep · lifted · 성공 순간 손가락/손바닥 · envelope 항)만 남기고 종료.
-     `success_ticks` 는 0 으로.
+   - `continue` / `continue(success)` / `continue(curriculum)`: 한 줄 요약(epoch · 성공 prev_ep · tol · lifted ·
+     성공 순간 손가락/손바닥 · envelope 항)만 남기고 종료. `success_ticks` 는 0 으로.
+     (`continue(curriculum)` = 성공은 2.0 아래지만 공차가 최근 200 epoch 안에 조여졌다 — 조일 때마다 성공이 떨어지는 게 정상이다.)
    - `done_candidate`: `success_ticks += 1`. 2 틱 연속이면 6(종료 게이트), 아니면 요약만.
    - `crashed` / `dead`: 서버 콘솔 `~/rl_ws/our_source/fj_t2r_runs/<label>.out` 의 마지막 Traceback 을 읽는다.
        · 생성 코드 런타임 오류 → 오류 문장을 notes 파일로 만들어 3 → 4 → 5.

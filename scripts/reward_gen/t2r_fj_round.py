@@ -13,11 +13,15 @@
 
 판정 규칙(ROUND_POLICY — 루프 프롬프트는 이 값을 인용만 한다):
   · 로그 Traceback/Killed/overflow, 또는 죽었는데 epoch < 10 → crashed / 그 밖에 죽음 → dead
-  · 성공(ctrl/prev_ep_successes_mean 최근 평균) ≥ DONE_SUCCESSES 이고 인벨롭 판정이 실패가 아님 → done_candidate
+  · 성공 ≥ DONE_SUCCESSES · task/tol ≤ DONE_TOL · 인벨롭 판정이 실패가 아님 → done_candidate
       인벨롭 = 성공 순간 손가락 ≥ DONE_FINGERS 그리고 손바닥 ≥ DONE_PALM. 지표가 없거나 아직 성공이 없으면 판정 보류(None)
       → 종료 게이트의 영상이 가른다.
-  · 성공 ≥ KEEP_SUCCESSES → continue(success). 단 epoch ≥ 2×ROUND_EPOCHS 인데 인벨롭 판정이 실패면 advance(envelope)
-  · epoch ≥ ROUND_EPOCHS 또는 ROUND_HOURS 경과 → advance
+  · 유지 = 성공(ctrl/prev_ep_successes_mean 최근 평균) ≥ KEEP_SUCCESSES **또는** 공차 커리큘럼이 최근 TOL_WINDOW epoch 안에
+      조여졌다 → continue(success) / continue(curriculum). 단 epoch ≥ 2×ROUND_EPOCHS 인데 인벨롭 판정이 실패면 advance(envelope)
+      ★왜 커리큘럼을 보나(09.14 i00 실측): 공차는 3000 프레임(≈188 epoch)마다 성공 평균 ≥ 2.0 이면 ×0.9 로만 조여진다
+        (e562·e749·e937). 조일 때마다 성공 수가 떨어져(3.46→2.72) 성공은 게이트 2.0 근처로 수렴한다 —
+        성공만 보면 들기·접촉이 오르는 중인 런을 죽인다.
+  · 유지가 아니고 epoch ≥ ROUND_EPOCHS 또는 ROUND_HOURS 경과 → advance
 """
 
 from __future__ import annotations
@@ -36,9 +40,11 @@ from parse_tfevents import load_tfevents   # noqa: E402
 
 #: ★09.14 근거: 12,288 env 에서 ~340 epoch/h. fj_i2(사람 보상)는 e51 에 들기, e500 에 성공 3.8~4.0 —
 #:   ROUND 1000 epoch(~3h) 안에 들기·성공이 안 서면 보상이 신호를 못 주는 것으로 본다.
-#:   KEEP 2.0 = 공차 커리큘럼 게이트(tol_success_threshold)와 같은 40%. 인벨롭 = 사용자 09.13 "5손가락 개입".
-ROUND_POLICY = {"ROUND_EPOCHS": 1000, "ROUND_HOURS": 4.0, "KEEP_SUCCESSES": 2.0, "DONE_SUCCESSES": 4.0,
-                "DONE_FINGERS": 4.0, "DONE_PALM": 0.5, "MAX_ROUNDS": 8, "LAST_N": 50}
+#:   KEEP 2.0 = 공차 커리큘럼 게이트(tol_success_threshold). TOL_WINDOW 200 = 커리큘럼 점검 간격(3000 프레임 ≈ 188 epoch)+여유.
+#:   DONE_TOL 0.03 = 느슨한 공차(시작 0.1125)의 성공은 종료 근거가 아니다. 인벨롭 = 사용자 09.13 "5손가락 개입".
+ROUND_POLICY = {"ROUND_EPOCHS": 1000, "ROUND_HOURS": 4.0, "KEEP_SUCCESSES": 2.0, "TOL_WINDOW": 200, "TOL_EPS": 1e-4,
+                "DONE_SUCCESSES": 4.0, "DONE_TOL": 0.03, "DONE_FINGERS": 4.0, "DONE_PALM": 0.5,
+                "MAX_ROUNDS": 8, "LAST_N": 50}
 SERVER = "server"
 SERVER_HDGP = "/home/oem/rl_ws/hdgp"
 SERVER_LOGDIR = f"{SERVER_HDGP}/log/rl_games/open-short/right/grasp-fj-t2r"
@@ -112,8 +118,8 @@ def parse_tail(text: str) -> dict:
     return st
 
 
-def summarize(data: dict, last_n: int) -> dict:
-    """`load_tfevents` 결과 → 판정 태그 {n, last(최근 last_n 평균), now(마지막 점), max, first}."""
+def summarize(data: dict, last_n: int, window: int) -> dict:
+    """`load_tfevents` 결과 → 판정 태그 {n, last(최근 last_n 평균), now(마지막 점), ago(window epoch 전), max, first}."""
     out = {}
     for raw, pts in data.items():
         if not raw.endswith("/iter"):
@@ -123,8 +129,9 @@ def summarize(data: dict, last_n: int) -> dict:
             vals = [v for _, v in pts if v == v]
             if vals:
                 tail = vals[-last_n:]
+                ago = vals[-(window + 1)] if len(vals) > window else vals[0]
                 out[tag] = {"n": len(vals), "last": round(sum(tail) / len(tail), 4), "now": round(vals[-1], 4),
-                            "max": round(max(vals), 4), "first": round(vals[0], 4)}
+                            "ago": round(ago, 4), "max": round(max(vals), 4), "first": round(vals[0], 4)}
     return out
 
 
@@ -137,21 +144,31 @@ def envelope_ok(summary: dict, policy: dict = ROUND_POLICY) -> bool | None:
     return f >= policy["DONE_FINGERS"] and p >= policy["DONE_PALM"]
 
 
+def curriculum_moving(summary: dict, policy: dict = ROUND_POLICY) -> bool:
+    """최근 TOL_WINDOW epoch 안에 공차가 조여졌나 = 마지막 커리큘럼 점검에서 성공 게이트를 넘었다."""
+    t = summary.get("task/tol")
+    return bool(t) and (t["ago"] - t["now"]) > policy["TOL_EPS"]
+
+
 def judge(summary: dict, st: dict, hours: float | None, policy: dict = ROUND_POLICY) -> tuple[str, dict]:
     epoch = st.get("epoch") or 0
     succ = summary.get(SUCCESS_TAG, {}).get("last", 0.0)
+    tol = summary.get("task/tol", {}).get("now")
     env_ok = envelope_ok(summary, policy)
-    info = {"epoch": epoch, "successes": succ, "envelope_ok": env_ok}
+    moving = curriculum_moving(summary, policy)
+    info = {"epoch": epoch, "successes": succ, "tol": tol, "curriculum_moving": moving, "envelope_ok": env_ok}
     if st.get("crashed") or (not st.get("alive") and epoch < 10):
         return "crashed", info
     if not st.get("alive"):
         return "dead", info
-    if succ >= policy["DONE_SUCCESSES"] and env_ok is not False:
+    if (succ >= policy["DONE_SUCCESSES"] and tol is not None and tol <= policy["DONE_TOL"]
+            and env_ok is not False):
         return "done_candidate", info
-    if succ >= policy["KEEP_SUCCESSES"]:
+    keep_succ = succ >= policy["KEEP_SUCCESSES"]
+    if keep_succ or moving:
         if env_ok is False and epoch >= 2 * policy["ROUND_EPOCHS"]:
             return "advance(envelope)", info
-        return "continue(success)", info
+        return ("continue(success)" if keep_succ else "continue(curriculum)"), info
     if epoch >= policy["ROUND_EPOCHS"] or (hours or 0.0) >= policy["ROUND_HOURS"]:
         return "advance", info
     return "continue", info
@@ -196,7 +213,8 @@ def cmd_status(a) -> int:
                          + procs_cmd(a.label)))
     mirror = sync(a.label)
     files = sorted(glob.glob(str(mirror / "summaries" / "events.out.tfevents.*")))
-    summ = summarize(load_tfevents(files[-1]), ROUND_POLICY["LAST_N"]) if files else {}
+    summ = (summarize(load_tfevents(files[-1]), ROUND_POLICY["LAST_N"], ROUND_POLICY["TOL_WINDOW"])
+            if files else {})
     it = Path(a.iter)
     started = json.loads((it / "launch.json").read_text())["started"] if (it / "launch.json").exists() else None
     hours = (time.time() - started) / 3600.0 if started else None
@@ -207,14 +225,14 @@ def cmd_status(a) -> int:
            "crashed_log": st["crashed"], "hours": round(hours, 2) if hours else None, "mirror": str(mirror),
            "policy": ROUND_POLICY, "metrics": summ}
     (it / "status.json").write_text(json.dumps(rep, indent=1, ensure_ascii=False), encoding="utf-8")
-    print(json.dumps({k: rep[k] for k in ("label", "verdict", "epoch", "successes", "envelope_ok", "alive", "hours")},
-                     ensure_ascii=False))
+    print(json.dumps({k: rep[k] for k in ("label", "verdict", "epoch", "successes", "tol", "curriculum_moving",
+                                          "envelope_ok", "alive", "hours")}, ensure_ascii=False))
     for tag in (SUCCESS_TAG, "task/lifted_frac", "task/tol", "contact/fingers_touching_at_success",
                 "contact/palm_touching_at_success", "contact/fingers_touching", "contact/palm_touching",
                 "reward/envelope", "reward/total", "done/tipped"):
         if tag in summ:
             m = summ[tag]
-            print(f"  {tag:38s} last {m['last']:+.3f}  now {m['now']:+.3f}  max {m['max']:+.3f}")
+            print(f"  {tag:38s} last {m['last']:+.3f}  now {m['now']:+.3f}  ago {m['ago']:+.3f}  max {m['max']:+.3f}")
     return 0
 
 

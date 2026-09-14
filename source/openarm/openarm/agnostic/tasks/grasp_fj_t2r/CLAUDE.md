@@ -51,6 +51,8 @@ ssh server "cd ~/rl_ws/hdgp && TASK=open-short_r_grasp_fj_t2r-lstm-sapg RUN=fj_t
 ## t2r 루프 (09.14 사용자: "루프 틱을 검사하면서 보상함수 설계가 제대로 되고 있는지 피드백 구조")
 - 틱 절차 `scripts/reward_gen/LOOP_PROMPT_fj.md` · 상태 `reward_gen/grasp_fj_envelope/LOOP_STATE.json` · cron(세션 한정).
 - `scripts/reward_gen/t2r_fj_round.py status|advance|launch` — 판정 수치는 `ROUND_POLICY` 한 곳(라운드 1000 epoch/4h ·
-  유지 성공 ≥2.0 · 종료 후보 성공 ≥4.0 + 성공 순간 손가락 ≥4 · 손바닥 ≥0.5 → 2틱 연속이면 **영상 게이트**).
+  유지 = 성공 ≥2.0 **또는 최근 200 epoch 안에 공차가 조여짐** · 종료 후보 성공 ≥4.0 + tol ≤0.03 + 성공 순간 손가락 ≥4 · 손바닥 ≥0.5
+  → 2틱 연속이면 **영상 게이트**). ★공차 커리큘럼(3000 프레임≈188 epoch 마다 성공 ≥2.0 이면 ×0.9)이 성공 수를 게이트 2.0 쪽으로
+  끌어내린다(i00: 3.46→2.71) — 성공만으로 판정하면 개선 중인 런을 죽인다(09.14 틱에서 발견·수정).
 - `t2r_fj.py reflect` — 피드백 표 = `reward/*`·`contact/*`·과제 지표. B 설계 계측(`task/grasp_q*`)은 생성기에 안 준다.
 - 붓기 루프(`LOOP_PROMPT.md`·`t2r_round.py`·`reward_gen/pour_bi`·GPU1)와 파일·GPU·cron 을 공유하지 않는다.

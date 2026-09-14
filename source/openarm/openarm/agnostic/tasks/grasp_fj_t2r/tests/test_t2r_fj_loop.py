@@ -38,8 +38,9 @@ R = _load("t2r_fj_round")
 T = _load("t2r_fj")
 
 
-def _summ(succ=0.0, fingers=None, palm=None):
-    s = {R.SUCCESS_TAG: {"last": succ, "now": succ}}
+def _summ(succ=0.0, fingers=None, palm=None, tol=0.1125, tol_ago=None):
+    s = {R.SUCCESS_TAG: {"last": succ, "now": succ},
+         "task/tol": {"now": tol, "ago": tol if tol_ago is None else tol_ago}}
     if fingers is not None:
         s["contact/fingers_touching_at_success"] = {"now": fingers}
     if palm is not None:
@@ -59,11 +60,15 @@ RE = R.ROUND_POLICY["ROUND_EPOCHS"]
     (_summ(0.3), {**ALIVE, "epoch": RE}, 3.0, "advance"),
     (_summ(0.3), {**ALIVE, "epoch": 300}, R.ROUND_POLICY["ROUND_HOURS"], "advance"),
     (_summ(2.5), {**ALIVE, "epoch": RE + 200}, 3.5, "continue(success)"),
+    # ★09.14 i00 실측: 공차가 조여질 때마다 성공이 게이트 2.0 쪽으로 떨어진다 — 최근에 조여졌으면 유지, 멈췄으면 advance
+    (_summ(1.7, tol=0.082, tol_ago=0.0911), {**ALIVE, "epoch": RE + 100}, 4.2, "continue(curriculum)"),
+    (_summ(1.7, tol=0.082, tol_ago=0.082), {**ALIVE, "epoch": RE + 100}, 4.2, "advance"),
     (_summ(2.5, fingers=2.0, palm=0.1), {**ALIVE, "epoch": 2 * RE}, 6.0, "advance(envelope)"),
-    (_summ(4.3, fingers=4.6, palm=0.8), {**ALIVE, "epoch": 1500}, 4.5, "done_candidate"),
-    (_summ(4.3, fingers=2.0, palm=0.0), {**ALIVE, "epoch": 1500}, 4.5, "continue(success)"),
-    (_summ(4.3), {**ALIVE, "epoch": 1500}, 4.5, "done_candidate"),                 # 인벨롭 지표 없음 → 영상
-    (_summ(4.3, fingers=-1.0, palm=-1.0), {**ALIVE, "epoch": 1500}, 4.5, "done_candidate"),
+    (_summ(4.3, fingers=4.6, palm=0.8, tol=0.02), {**ALIVE, "epoch": 3000}, 9.0, "done_candidate"),
+    (_summ(4.3, fingers=4.6, palm=0.8, tol=0.08), {**ALIVE, "epoch": 1500}, 4.5, "continue(success)"),  # 느슨한 공차
+    (_summ(4.3, fingers=2.0, palm=0.0, tol=0.02), {**ALIVE, "epoch": 1500}, 4.5, "continue(success)"),
+    (_summ(4.3, tol=0.02), {**ALIVE, "epoch": 3000}, 9.0, "done_candidate"),         # 인벨롭 지표 없음 → 영상
+    (_summ(4.3, fingers=-1.0, palm=-1.0, tol=0.02), {**ALIVE, "epoch": 3000}, 9.0, "done_candidate"),
 ])
 def test_judge_follows_the_round_policy(summary, st, hours, want):
     verdict, info = R.judge(summary, st, hours)
@@ -96,12 +101,15 @@ def test_launch_command_matches_the_i00_launcher_on_gpu0():
         R.launch_command("x", "reward_gen/grasp_fj_envelope/iter_01", 12289, 42)
 
 
-def test_summarize_keeps_judge_tags_and_the_last_point():
+def test_summarize_keeps_judge_tags_the_last_point_and_the_window_value():
     data = {"ctrl/prev_ep_successes_mean/iter": [(i, float(i)) for i in range(10)],
+            "task/tol/iter": [(i, 0.1125) for i in range(5)] + [(i, 0.1013) for i in range(5, 10)],
             "contact/palm_touching_at_success/iter": [(0, -1.0), (1, 0.6)],
             "reward/envelope/iter": [(0, 0.1)], "losses/a_loss": [(0, 1.0)]}
-    s = R.summarize(data, last_n=4)
+    s = R.summarize(data, last_n=4, window=7)
     assert s[R.SUCCESS_TAG]["last"] == 7.5 and s[R.SUCCESS_TAG]["now"] == 9.0
+    assert s["task/tol"]["ago"] == 0.1125 and R.curriculum_moving(s)
+    assert not R.curriculum_moving(R.summarize(data, last_n=4, window=3))     # 3 epoch 전에도 이미 0.1013
     assert s["contact/palm_touching_at_success"]["now"] == 0.6
     assert "reward/envelope" in s and "losses/a_loss" not in s
 
