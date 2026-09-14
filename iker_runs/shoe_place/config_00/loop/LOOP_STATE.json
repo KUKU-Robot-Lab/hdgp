@@ -2,8 +2,12 @@
  "schema": 1,
  "track": "iker_shoe_c00",
  "phase": "stage2_train",
- "status": "running",
- "awaiting": null,
+ "status": "awaiting",
+ "awaiting": {
+  "reason": "stage-2 environment smoke failed: SMOKE passed False",
+  "needs": "read its SMOKE CHECK FAILED lines",
+  "phase": "stage2_train"
+ },
  "stage": 1,
  "policy": {
   "gate_epoch": 200,
@@ -63,6 +67,24 @@
    ],
    "key": "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe-grasp/iker_grasp_c00_b/nn/last_open-sens_l_iker_shoe_grasp_ep_500_rew_182.43721.pth",
    "epoch": 500
+  },
+  "env_smoke": {
+   "label": "iker_shoe_c00_env_smoke",
+   "log": "/home/user/rl_ws/hdgp-iker/log/iker_loop/iker_shoe_c00/env_smoke_vlm_target.log",
+   "pid": 4079543,
+   "started": "2026-09-14T23:39:12+09:00",
+   "started_s": 1789396752.7718344,
+   "commit": "a3ff6e97",
+   "argv": [
+    "scripts/iker/env_smoke.py",
+    "--config-index",
+    "0",
+    "--interaction",
+    "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop/stage_01/interaction_vlm.json",
+    "--headless"
+   ],
+   "key": "vlm_target",
+   "epoch": null
   }
  },
  "gate1": null,
@@ -78,7 +100,7 @@
   "1": 2
  },
  "eval": {},
- "updated": "2026-09-14T23:38:58+09:00",
+ "updated": "2026-09-15T00:08:44+09:00",
  "vlm_requests": {
   "target_00": 1,
   "target_01": 1
