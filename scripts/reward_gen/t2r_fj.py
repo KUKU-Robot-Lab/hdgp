@@ -74,12 +74,12 @@ def cmd_render(a) -> int:
     if (d / "prompt.md").exists() and not a.force:
         raise SystemExit(f"[t2r_fj] {d / 'prompt.md'} 가 이미 있다 — 덮으려면 --force")
     d.mkdir(parents=True, exist_ok=True)
-    spec = P.PromptSpec(task=task,
+    spec = P.PromptSpec(task=task, variant=a.variant,
                         previous_code=Path(a.prev_code).read_text(encoding="utf-8") if a.prev_code else None,
                         feedback=Path(a.feedback).read_text(encoding="utf-8") if a.feedback else None,
                         user_notes=Path(a.notes).read_text(encoding="utf-8") if a.notes else None)
     (d / "prompt.md").write_text(P.render_prompt(spec), encoding="utf-8")
-    meta = {"track": a.track, "iter": n, "task": task, "created": datetime.now().isoformat(),
+    meta = {"track": a.track, "iter": n, "task": task, "variant": a.variant, "created": datetime.now().isoformat(),
             "context": "openarm.agnostic.tasks.grasp_fj_t2r.t2r.context.RewardContext",
             "prev_code": a.prev_code, "feedback": a.feedback, "notes": a.notes}
     (d / "meta.json").write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
@@ -163,10 +163,11 @@ def cmd_reflect(a) -> int:
         "## I can see from the robot that\n" + entry["description"] + "\n\n## Feedback for improvement\n"
         + entry["feedback"] + "\n" + ("\n" + metrics if metrics else ""), encoding="utf-8")
     nd.mkdir(parents=True, exist_ok=True)
-    spec = P.PromptSpec(task=meta["task"], history=tuple(history), metrics=metrics)
+    variant = meta.get("variant", "envelope")
+    spec = P.PromptSpec(task=meta["task"], history=tuple(history), metrics=metrics, variant=variant)
     (nd / "prompt.md").write_text(P.render_prompt(spec), encoding="utf-8")
     (nd / "meta.json").write_text(json.dumps({
-        "track": track, "iter": n_next, "task": meta["task"], "created": datetime.now().isoformat(),
+        "track": track, "iter": n_next, "task": meta["task"], "variant": variant, "created": datetime.now().isoformat(),
         "context": meta.get("context"), "prev_iter": str(d), "history_iters": [int(h["iter"]) for h in history],
         "description": a.description, "feedback": a.feedback, "events": a.events},
         indent=1, ensure_ascii=False), encoding="utf-8")
@@ -187,6 +188,8 @@ def main(argv=None) -> int:
     r.add_argument("--prev-code", default=None)
     r.add_argument("--feedback", default=None)
     r.add_argument("--notes", default=None)
+    r.add_argument("--variant", default="envelope", choices=sorted(P.VARIANTS),
+                   help="환경 사실 묶음 — 트랙의 env 와 맞춘다(grasp_fj_reach → reach)")
     r.add_argument("--force", action="store_true")
     r.set_defaults(fn=cmd_render)
     i = sub.add_parser("ingest")

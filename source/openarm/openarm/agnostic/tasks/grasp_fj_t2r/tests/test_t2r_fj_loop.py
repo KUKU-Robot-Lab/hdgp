@@ -215,3 +215,29 @@ def test_reflect_refuses_events_without_generated_terms(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         T.main(["--root", str(tmp_path), "reflect", "--iter", str(_iter(tmp_path, 0)), "--description", o0,
                 "--feedback", f0, "--events", "ev"])
+
+
+def test_tracks_map_to_their_own_gym_ids_and_log_dirs():
+    env, reach = R.track("grasp_fj_envelope"), R.track("grasp_fj_reach")
+    assert env["task"] == "open-short_r_grasp_fj_t2r-lstm-sapg" and env["logdir"] == "grasp-fj-t2r"
+    assert reach["task"] == "open-short_r_grasp_fj_t2r_reach-lstm-sapg" and reach["logdir"] == "grasp-fj-t2r-reach"
+    assert reach["play"] == "open-short_r_grasp_fj_t2r_reach-play-lstm-sapg"
+    assert reach["server_logdir"].endswith("/open-short/right/grasp-fj-t2r-reach")
+    cmd = R.launch_command("fj_reach_i00", "reward_gen/grasp_fj_reach/iter_00", 12288, 42, task=reach["task"])
+    assert "TASK=open-short_r_grasp_fj_t2r_reach-lstm-sapg" in cmd and "grasp_fj_reach/iter_00/compute_reward.py" in cmd
+    vid = R.video_command("/x/fj_reach_i00", "fj_reach_i00", 0.1, "0914_1500", task=reach["task"], play_task=reach["play"])
+    assert "--task open-short_r_grasp_fj_t2r_reach-play-lstm-sapg" in vid
+    assert "open-short_r_grasp_fj_t2r_reach-lstm-sapg.pth" in vid
+    with pytest.raises(SystemExit):
+        R.track("pour_bi")          # 붓기 트랙은 이 도구가 다루지 않는다
+
+
+def test_reflect_carries_the_variant_into_the_next_prompt(tmp_path, fake_events):
+    d0 = _iter(tmp_path, 0)
+    meta = json.loads((d0 / "meta.json").read_text())
+    (d0 / "meta.json").write_text(json.dumps({**meta, "variant": "reach"}))
+    o0, f0 = _texts(tmp_path, "R0")
+    assert T.main(["--root", str(tmp_path), "reflect", "--iter", str(d0), "--description", o0, "--feedback", f0]) == 0
+    nxt = tmp_path / "grasp_fj_envelope" / "iter_01"
+    assert "roughly 0.38 m" in (nxt / "prompt.md").read_text()
+    assert json.loads((nxt / "meta.json").read_text())["variant"] == "reach"

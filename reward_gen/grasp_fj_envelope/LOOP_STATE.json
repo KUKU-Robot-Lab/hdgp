@@ -2,9 +2,11 @@
  "iter": 0,
  "label": "fj_t2r_i00",
  "round": 1,
+ "status": "stopped",
+ "awaiting": null,
  "best": null,
  "success_ticks": 0,
  "started": 1789344839,
  "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY",
- "note": "09.14 사용자: t2r = 루프 틱 판정 피드백 구조 · GPU0 만 · 붓기 t2r 무영향. i00 은 성공 순간 접촉 지표가 없는 코드(e3f28985)로 기동 — envelope 판정은 영상 게이트"
+ "note": "09.14 사용자: t2r = 루프 틱 판정 피드백 구조 · 피드백은 원본 t2r interactive(영상 관찰 + 개선 피드백, Claude 초안 → 사용자 승인) · GPU0 만 · 붓기 t2r 무영향. i00(e3f28985)은 성공 순간 접촉 지표가 없다. 12:53 영상: 감싸서 들지만 컵을 ≈45° 기울인 채 든다 → iter_01 생성(7df3a0a1). 이후 사용자 '지금 전환' → 최종 목표 env 트랙 reward_gen/grasp_fj_reach 로 옮김: i00 SIGKILL(사용자 승인), iter_01 은 기동하지 않았다. 이 트랙 루프는 멈춤."
 }

@@ -6,6 +6,16 @@
 DG-5F full-joint 손(액션 26 = 팔 7 증분 + 손 19 절대)으로 **인벨롭 파지 → 들기 → 유지**. 보상은 사람이 쓰지 않고
 text2reward 방식으로 생성한다: 환경 설명(RewardContext 소스)+과제 문장 → LLM → `compute_reward(ctx)`.
 
+## 트랙 (09.14)
+| 트랙 (`reward_gen/<트랙>`) | gym id | 시작 | 컵 | 팔 | 에피소드 |
+|---|---|---|---|---|---|
+| `grasp_fj_envelope` (정지 — iter_01 미기동) | `open-short_r_grasp_fj_t2r-lstm-sapg` | B 홈 · 손바닥↔컵 0.16 m | shaker_sweep 반경 29–44 mm | 0.15 rad/s | 10 s |
+| `grasp_fj_reach` (최종 목표) | `open-short_r_grasp_fj_t2r_reach-lstm-sapg` | 테이블 앞 가장자리 밖 · 0.38 m (cfg `arm_reset_joint_pos_override`) | cup_family 반경 44–81 mm | 0.3 rad/s | 15 s |
+
+프롬프트의 환경 사실은 `t2r/prompts.py` `VARIANTS`(`render --variant`, meta 로 다음 iter 에 승계) — reach 값이 등록 cfg 와 어긋나면 테스트가 막는다.
+루프 도구는 전부 `--track`. ★관측·actor 는 sim2real 가능한 구조로만 바꾼다(사용자 09.14) — 컵 종류·반경·접촉은 obs 에 없다.
+★reach 팔 0.3 rad/s 는 실기 reduced 상한 0.25 를 넘는다(full 2.0 · bridge 기본 0.5) — 배포 전 확인.
+
 ## 계약 (`tests/` 가 잠근다)
 | 계약 | 왜 |
 |---|---|

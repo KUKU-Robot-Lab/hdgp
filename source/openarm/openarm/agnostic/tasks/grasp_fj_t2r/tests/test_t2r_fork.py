@@ -148,3 +148,29 @@ def test_prompt_joint_table_matches_the_profile_order():
     from openarm.agnostic.modules.robot_profiles import TESOLLO_RIGHT_SHORT_TL as prof
     assert tuple(P.HAND_JOINT_NAMES) == tuple(prof.hand_joint_names)
     assert len(P.HAND_JOINT_NAMES) == 19
+
+
+def test_prompt_env_facts_follow_the_variant():
+    # ★09.14 reach(최종 목표 env) 추가 — 트랙마다 생성기가 보는 환경 사실(시작 거리·컵·팔 속도·에피소드)이 다르다.
+    env = P.render_prompt(P.PromptSpec(task="T"))
+    for tok in ("29 mm to 44 mm", "roughly 0.16 m", "0.025 * a", "0.15 rad/s", "600 steps (10 s)"):
+        assert tok in env, tok
+    reach = P.render_prompt(P.PromptSpec(task="T", variant="reach"))
+    for tok in ("44 mm to 81 mm", "roughly 0.38 m", "0.05 * a", "0.3 rad/s", "900 steps (15 s)",
+                "+x points from the robot toward the table", "open cups of several sizes and a closed shaker"):
+        assert tok in reach, tok
+    for tok in ("29 mm to 44 mm", "0.16 m", "600 steps"):
+        assert tok not in reach, tok
+    with pytest.raises(KeyError):
+        P.render_prompt(P.PromptSpec(task="T", variant="nope"))
+
+
+def test_reach_variant_facts_match_the_registered_leaf_cfg():
+    # 프롬프트의 팔 속도·에피소드 길이가 등록된 env cfg 와 어긋나면 생성기가 틀린 세계를 본다.
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "grasp_fj_t2r_env_cfg.py").read_text(encoding="utf-8")
+    reach = src.split("class GraspFJT2RReachEnvCfg", 1)[1]
+    f = P.VARIANTS["reach"]
+    assert f"k_arm: float = {f.k_arm}" in reach and f"arm_slew_rad_s: float = {f.arm_slew}" in reach
+    assert f"episode_length_s: float = {f.episode_s}" in reach
+    assert f.episode_steps == round(f.episode_s * 60)

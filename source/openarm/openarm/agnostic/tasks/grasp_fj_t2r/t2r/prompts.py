@@ -45,17 +45,48 @@ def _joint_table() -> str:
     return "\n".join(rows)
 
 
+@dataclass(frozen=True)
+class EnvFacts:
+    """변종(= reward_gen 트랙의 env)별 환경 사실 — 부팅 로그·IK·물체 뱅크로 확인한 값만 적는다."""
+
+    scene: str
+    k_arm: float
+    arm_slew: float
+    episode_steps: int
+    episode_s: float
+
+
+VARIANTS: dict[str, EnvFacts] = {
+    # grasp_fj_t2r(B leaf): 시작 손바닥→컵 159.8/163.4 mm(09.14 부팅 가드 로그) · shaker_sweep 반경 29.2–43.8 mm ·
+    #   k_arm 0.025 · slew 0.15 · 600 스텝.
+    "envelope": EnvFacts(
+        scene=("An upright cylindrical cup stands on the table in front of the hand; its radius differs between "
+               "parallel environments (29 mm to 44 mm) and is given per environment. At the start of an episode "
+               "the palm is roughly 0.16 m from the cup."),
+        k_arm=0.025, arm_slew=0.15, episode_steps=600, episode_s=10.0),
+    # grasp_fj_t2r_reach(09.14 사용자 최종 목표) — 서버 GPU0 스냅샷(13:55): palm (0.050, −0.300, 0.450) · 손바닥 법선 +y ·
+    #   손가락 +x 로 상판(x 0.07–0.47) 위 x ≤0.25 · 시작 거리 가드 380.5 mm · 로봇 루트 x 0 → +x 가 테이블 쪽 ·
+    #   cup_family 반경 44–80.6 mm · 반높이 42.5–65 mm · k_arm 0.05 · slew 0.3 · 900 스텝.
+    "reach": EnvFacts(
+        scene=("+x points from the robot toward the table. Each episode starts with the arm raised beside the "
+               "robot: the palm is just outside the table edge nearest the robot, about 0.25 m above the table "
+               "top, turned sideways, with the fingers pointing forward over the table edge; the palm is roughly "
+               "0.38 m from the cup. A cup stands upright on the table; parallel environments use different cups "
+               "(open cups of several sizes and a closed shaker), so the graspable radius (44 mm to 81 mm) and "
+               "half height (42 mm to 65 mm) differ between environments and are given per environment."),
+        k_arm=0.05, arm_slew=0.3, episode_steps=900, episode_s=15.0),
+}
+
+
 ROBOT_DESCRIPTION = """\
 We control one 7-DOF OpenArm robot arm (the right arm) carrying a five-finger Tesollo DG-5F hand, \
-standing at a table. An upright cylindrical cup stands on the table in front of the hand; its radius \
-differs between parallel environments (29 mm to 44 mm) and is given per environment. At the start of \
-an episode the palm is roughly 0.15 m from the cup. Positions are in metres in each environment's local \
+standing at a table. {scene} Positions are in metres in each environment's local \
 frame, with +z pointing up; the table top is at z = table_z.
 
 The action space is a normalized `Box(-1, 1, (26,), float32)` with direct joint control. There is no \
 grasp primitive, no hand synergy and no automatic finger stopping:
-    actions[0:7]  = arm joint increments: each arm joint target moves by 0.025 * a rad per step and then \
-passes a first-order filter (factor 0.1), so each arm joint moves at most about 0.15 rad/s.
+    actions[0:7]  = arm joint increments: each arm joint target moves by {k_arm:g} * a rad per step and then \
+passes a first-order filter (factor 0.1), so each arm joint moves at most about {arm_slew:g} rad/s.
     actions[7:26] = finger joint targets: each value is mapped linearly onto that joint's commandable \
 range (a = -1 gives the lower limit, a = +1 the upper limit) and then low-pass filtered (factor 0.1). \
 The order, which is also the order of ctx.hand_q / hand_q_norm / hand_target_norm / hand_qd, is:
@@ -96,7 +127,7 @@ only on these links and the palm — the finger links nearest the palm are not m
 anything else (the table, the hand itself) are not included. A value of 0 means that link is not touching \
 the cup. Contact forces come from the physics engine each step and can spike. These forces are only \
 available to the reward; the policy itself does not observe contact.
-5. Cylinder geometry: for a point p (e.g. `ctx.link_pos[:, f, k]`), with `v = p - ctx.cup_pos`, the axial \
+5. Cylinder geometry (the cups are roughly cylindrical): for a point p (e.g. `ctx.link_pos[:, f, k]`), with `v = p - ctx.cup_pos`, the axial \
 coordinate is `h = (v * ctx.cup_axis).sum(-1)` and the radial vector is `v - h.unsqueeze(-1) * ctx.cup_axis`; \
 its norm is the distance from the cup axis. The cup surface is at `ctx.cup_radius` and the graspable \
 band is `|h| <= ctx.cup_half_height`. The palm normal `ctx.palm_normal` points out of the palm.
@@ -111,9 +142,9 @@ next goal is at the same place, so holding the cup still there keeps producing s
 `ctx.max_successes`, which ends the episode. The keypoints are fixed on the cup, so tilting the cup also \
 increases `goal_dist`. `ctx.success_tol` starts at 0.1125 m and shrinks towards 0.015 m as the policy \
 succeeds more often during training. You may add a bonus on `ctx.success`.
-8. An episode lasts at most 600 steps (10 s), and the step budget restarts after every success. The \
-episode ends early when the cup falls below z = 0.15 (off the table), leaves the table area, or tilts more \
-than 60 degrees; when any hand link goes more than 3 cm below the table top; or when an arm joint goes \
+8. An episode lasts at most {episode_steps} steps ({episode_s:g} s), and the step budget restarts after every success. The \
+episode ends early when the cup falls below z = 0.15 (off the table), leaves the allowed area around the table, or \
+tilts more than 60 degrees; when any hand link goes below z = table_z - 0.03 (wherever the hand is); or when an arm joint goes \
 past its limit or moves faster than 20 rad/s. On that last kind of physics violation the environment \
 also adds a fixed -1 to the reward, outside your function.
 9. Do not keep any state between calls (no globals, no attributes); the function must be pure.
@@ -202,18 +233,23 @@ class PromptSpec:
     user_notes: str | None = None     # 사용자 관찰(선택)
     history: tuple = ()               # ★t2r interactive: ({"code","description","feedback"}, …) 라운드 순서
     metrics: str | None = None        # 이력 뒤에 붙는 참고 지표 표(선택)
+    variant: str = "envelope"         # ★환경 사실 묶음(VARIANTS) — 트랙의 env 와 맞춘다(09.14 reach 추가)
 
 
 def render_prompt(spec: PromptSpec) -> str:
+    if spec.variant not in VARIANTS:
+        raise KeyError(f"모르는 환경 변종 '{spec.variant}' (있는 것: {sorted(VARIANTS)})")
+    facts = VARIANTS[spec.variant]
     parts = [
         "You are an expert in robotics, reinforcement learning and code generation.",
-        ROBOT_DESCRIPTION.format(joint_table=_joint_table()),
+        ROBOT_DESCRIPTION.format(joint_table=_joint_table(), scene=facts.scene, k_arm=facts.k_arm,
+                                 arm_slew=facts.arm_slew),
         "Now I want you to help me write a reward function for reinforcement learning.",
         REWARD_STRUCTURE,
         "The reward function receives a single argument `ctx`, an instance of this class "
         "(all positions env-local, metres; angles rad; forces N):",
         "```python\n" + context_stub_source() + "```",
-        ADDITIONAL_KNOWLEDGE,
+        ADDITIONAL_KNOWLEDGE.format(episode_steps=facts.episode_steps, episode_s=facts.episode_s),
         OUTPUT_RULES.format(task=spec.task, entry=ENTRY_NAME),
     ]
     # ★원본 text2reward interactive: 지난 (코드 · 로봇 관찰 · 개선 피드백) 전 이력 → "Re-imagine …" 로 새 코드.

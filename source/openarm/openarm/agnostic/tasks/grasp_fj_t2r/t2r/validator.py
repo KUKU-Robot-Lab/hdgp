@@ -128,7 +128,7 @@ def make_fake_context(n: int = 16, *, device: str = "cpu", seed: int = 0) -> Rew
         cup_pos=r(n, 3, lo=0.0, hi=0.6), cup_quat=unit(n, 4), cup_axis=axis,
         cup_tilt=torch.acos(axis[:, 2].clamp(-1.0, 1.0)),
         cup_lin_vel=r(n, 3), cup_ang_vel=r(n, 3), cup_spawn_pos=r(n, 3, lo=0.0, hi=0.6),
-        cup_radius=r(n, lo=0.029, hi=0.044), cup_half_height=r(n, lo=0.04, hi=0.06),
+        cup_radius=r(n, lo=0.029, hi=0.081), cup_half_height=r(n, lo=0.04, hi=0.065),   # shaker_sweep ∪ cup_family
         goal_pos=r(n, 3, lo=0.0, hi=0.6), goal_dist=r(n, lo=0.0, hi=0.3), success_tol=r(n, lo=0.015, hi=0.1125),
         lifted=r(n) > 0.0, success=r(n) > 0.8, num_successes=torch.floor(r(n, lo=0.0, hi=5.99)),
         episode_progress=r(n, lo=0.0, hi=1.0),

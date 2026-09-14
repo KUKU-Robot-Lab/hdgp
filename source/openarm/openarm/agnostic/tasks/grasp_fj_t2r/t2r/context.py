@@ -37,14 +37,14 @@ class RewardContext:
     hand_q_norm: torch.Tensor      # (N,19) joint angles normalised to each joint's commandable range: 0 = lower limit (straight), 1 = upper limit (most flexed)
     hand_target_norm: torch.Tensor  # (N,19) commanded finger joint targets (after filtering), same normalisation as hand_q_norm
     hand_qd: torch.Tensor          # (N,19) finger joint velocities [rad/s]
-    hand_z_min: torch.Tensor       # (N,) height of the lowest hand link, palm excluded [m]; below table_z means the hand presses into the table
+    hand_z_min: torch.Tensor       # (N,) height of the lowest hand link, palm excluded [m]; below table_z - 0.03 ends the episode wherever the hand is
 
     # ---- arm: 7-DOF ------------------------------------------------------------------------
     arm_q: torch.Tensor            # (N,7) arm joint angles [rad]
     arm_qd: torch.Tensor           # (N,7) arm joint velocities [rad/s]
 
-    # ---- cup: a cylinder standing upright on the table at the start ------------------------
-    cup_pos: torch.Tensor          # (N,3) cup reference point: on the cylinder axis at the cup's centre of mass, which is also the middle of its graspable band
+    # ---- cup: a roughly cylindrical cup standing upright on the table at the start ----------
+    cup_pos: torch.Tensor          # (N,3) cup reference point on its axis; the graspable band (cup_half_height above and below) is centred on it
     cup_quat: torch.Tensor         # (N,4) cup orientation quaternion (w,x,y,z)
     cup_axis: torch.Tensor         # (N,3) unit vector along the cylinder axis towards its top; (0,0,1) when upright
     cup_tilt: torch.Tensor         # (N,) angle between cup_axis and world +z [rad]
