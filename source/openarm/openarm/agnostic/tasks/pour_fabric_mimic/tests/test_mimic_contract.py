@@ -188,6 +188,36 @@ def test_mimic_blowup_terminates_episode():
     assert 'self.extras["done/mimic_runaway"]' in _ENV
 
 
+def test_slow_mimic_drift_also_terminates():
+    """09.14 라운드 1: 오차가 epoch 321-323(39→236 rad)·348-351(7→18 rad) 동안 속도 100 rad/s 아래로 천천히 벌어져
+    속도 기준을 빠져나갔다 → 사용자 결정 "2 추가": 결합 오차 자체도 종료 조건."""
+    m = re.search(r"mimic_runaway_err_rad:\s*float\s*=\s*([0-9.]+)", _CFG)
+    assert m and 1.7 < float(m.group(1)) < 7.0, "정상 epoch 최대 1.7 rad · 느린 폭주 시작 7 rad 사이"
+    code = _code_only(_ENV)
+    assert "cfg . mimic_runaway_err_rad" in code
+    assert "mimic_runaway = ( dep_qd > float ( cfg . mimic_runaway_dep_qd ) ) | ( mim_err > float ( cfg . mimic_runaway_err_rad ) )" in code
+    assert 'self.extras["done/mimic_err_runaway"]' in _ENV
+    assert "mimic_runaway_err_rad" in _CFG.split("def _validate_mimic_fields")[1]
+
+
+def test_fingertip_tactile_obs_is_sim2real_shaped():
+    """09.14 사용자 결정 "3 추가": RH56F1 실기 손끝 촉각(TouchData1.finger_forces[5], 0.01 N)에 대응하는 5칸/손.
+    실기 센서는 무엇에 닿든 재므로 sim 도 컵 필터(force_matrix_w)가 아니라 손끝 링크 **전체** 접촉력(net_forces_w)."""
+    rig = _code_only(_RIG)
+    assert "def tip_tactile ( self )" in rig
+    body = _RIG.split("def tip_tactile(self)")[1].split("\n    def ")[0]
+    assert "net_forces_w" in body and "force_matrix_w" not in body
+    assert "self.sensors[f][-1]" in body, "프로필 규약 (중간, 원위, 팁) — 마지막이 팁"
+    env = _code_only(_ENV)
+    assert env.count("self . _tactile ( self . src , noisy = True )") == 1
+    assert env.count("self . _tactile ( self . rcv , noisy = True )") == 1
+    assert env.count("self . _tactile ( self . src , noisy = False )") == 1
+    assert env.count("self . _tactile ( self . rcv , noisy = False )") == 1
+    assert re.search(r"tactile_obs_clip_n:\s*float\s*=\s*10\.0", _CFG), "실기 1024 = 10.24 N 포화"
+    assert re.search(r"tactile_obs_noise_n:\s*float\s*=", _CFG)
+    assert "+ f  # tactile" in _CFG, "관측 차원식에 손끝 촉각 f 칸"
+
+
 # 원본 계약 중 그대로 유지돼야 하는 것(보상 없음 · 성공은 env · a=0 = 앵커)
 def test_inherited_contracts_hold():
     assert "load_reward_fn" in _ENV and "RewardContext(" in _ENV
@@ -208,8 +238,8 @@ def test_dims_from_resolve_cfg():
     per = 0
     for p in (cfg_pair := _bm.get_pair(cfg.pair_name)).source, cfg_pair.receiver:
         a, h, f = p.num_arm_joints, p.num_hand_joints, len(p.finger_sensor_bodies)
-        per += 2 * a + h + 3 + 6 + 3 * f + 3 + 3 * f + h + 3
-    assert cfg.observation_space == per + 6 + 24 == 172
-    assert cfg.state_space == 172 + 12 + 4 + 3 + 12 + 1 + 10 == 214
+        per += 2 * a + h + 3 + 6 + 3 * f + 3 + 3 * f + h + 3 + f  # 09.14 손끝 촉각 f 칸
+    assert cfg.observation_space == per + 6 + 24 == 182
+    assert cfg.state_space == 182 + 12 + 4 + 3 + 12 + 1 + 10 == 224
     from openarm.agnostic.tasks.pour_fabric_mimic import config as reg
     assert reg.REGISTERED == {"rh": "open-rh_b_pour_fab_mimic"}

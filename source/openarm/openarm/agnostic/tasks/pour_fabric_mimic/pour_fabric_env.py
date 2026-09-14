@@ -475,6 +475,13 @@ class PourFabricMimicEnv(DirectRLEnv):
             self.robot.set_joint_effort_target(self._grav_comp * tau[:, : self.robot.num_joints])
 
     # ==================================================================
+    def _tactile(self, rig: SideRig, noisy: bool) -> torch.Tensor:
+        """손끝 촉각 5칸 [N] — 실기 TouchData1.finger_forces 대응(사용자 결정 09.14). 실기 포화 10.24 N 에 맞춰 자른다."""
+        f = rig.tip_tactile()
+        if noisy:
+            f = f + torch.randn_like(f) * float(self.cfg.tactile_obs_noise_n)
+        return f.clamp(0.0, float(self.cfg.tactile_obs_clip_n))
+
     def _side_obs(self, rig: SideRig, cup_p: torch.Tensor, cup_q: torch.Tensor,
                   noisy: bool) -> list[torch.Tensor]:
         """한 팔의 actor 관측. cup_p/cup_q 는 **지각된**(perceived: 지연+노이즈) 컵 pose 다.
@@ -518,14 +525,16 @@ class PourFabricMimicEnv(DirectRLEnv):
         rp, rq = self._perceive("rcv", self.receiver_cup)
         self._perc_flush[:] = False
         parts = self._side_obs(self.src, sp, sq, noisy=True) + self._side_obs(self.rcv, rp, rq, noisy=True)
-        parts += [rp - sp, self._mouth_from(rp, rq) - self._mouth_from(sp, sq), self.prev_actions]
+        parts += [rp - sp, self._mouth_from(rp, rq) - self._mouth_from(sp, sq),
+                  self._tactile(self.src, noisy=True), self._tactile(self.rcv, noisy=True), self.prev_actions]
         obs = torch.cat(parts, dim=1)
 
         # ---- critic: 참값(clean) + hand_qd + 비드 GT + 속도 + 접촉력 -------------------------
         tp_s, tq_s = self._local(self.source_cup.data.root_pos_w), self.source_cup.data.root_quat_w
         tp_r, tq_r = self._local(self.receiver_cup.data.root_pos_w), self.receiver_cup.data.root_quat_w
         clean = self._side_obs(self.src, tp_s, tq_s, noisy=False) + self._side_obs(self.rcv, tp_r, tq_r, noisy=False)
-        clean += [tp_r - tp_s, self._mouth(self.receiver_cup) - self._mouth(self.source_cup), self.prev_actions]
+        clean += [tp_r - tp_s, self._mouth(self.receiver_cup) - self._mouth(self.source_cup),
+                  self._tactile(self.src, noisy=False), self._tactile(self.rcv, noisy=False), self.prev_actions]
         qd = self.robot.data.joint_vel
         bead_fracs = torch.stack([self._prev_in_src, self._prev_in_tgt, self._prev_spill,
                                   self._crossed.float().mean(dim=-1)], dim=1)
@@ -704,11 +713,15 @@ class PourFabricMimicEnv(DirectRLEnv):
         runaway = (qd.abs() > float(cfg.runaway_joint_vel)).any(dim=-1)
         # 언더액추 폭주: 종속관절 속도(mimic 제약이 깨진 서명) — 09.14 사용자 결정, 깨진 env 는 즉시 리셋.
         dep_qd = self.robot.data.joint_vel[:, self._mim_dep_t].abs().max(dim=-1).values
-        mimic_runaway = dep_qd > float(cfg.mimic_runaway_dep_qd)
+        # 09.14 라운드 1: 속도 기준을 빠져나간 느린 폭주 → 결합 오차 자체도 종료(사용자 결정 "2 추가").
+        q = self.robot.data.joint_pos
+        mim_err = (q[:, self._mim_dep_t] - self._mim_mult * q[:, self._mim_lead_t]).abs().max(dim=-1).values
+        mimic_runaway = (dep_qd > float(cfg.mimic_runaway_dep_qd)) | (mim_err > float(cfg.mimic_runaway_err_rad))
         terminated = runaway | mimic_runaway | self._dropped
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         self.extras["task/runaway_rate"] = runaway.float().mean()
         self.extras["done/mimic_runaway"] = mimic_runaway.float().mean()
+        self.extras["done/mimic_err_runaway"] = (mim_err > float(cfg.mimic_runaway_err_rad)).float().mean()
         return terminated, truncated
 
     # ==================================================================

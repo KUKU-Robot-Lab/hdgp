@@ -305,10 +305,19 @@ class PourFabricMimicEnvCfg(DirectRLEnvCfg):
     #   **종속관절 속도가 이 값을 넘으면 runaway 로 종료**한다(사용자 결정 "폭주 오면 리셋"). 건전 기준선 09.07: 자유 폐쇄 ≤7.2,
     #   접촉 킥 수십~수백 rad/s → 100 은 킥 상단·폭주(500+) 사이.
     mimic_runaway_dep_qd: float = 100.0
+    # ★09.14 라운드 1(t2r_rh_i00_r1): 오차가 속도 100 rad/s 아래로 천천히 벌어진 폭주 2회(epoch 321-323 39→236 rad,
+    #   348-351 7→18 rad)가 위 기준을 빠져나갔다. 정상 epoch 의 전 env 최대 오차는 ≤1.7 rad → 결합 오차 자체도 종료 조건
+    #   (사용자 결정 09.14 "2 추가").
+    mimic_runaway_err_rad: float = 3.0
 
     # ---- 접촉 --------------------------------------------------------------------
     contact_force_threshold: float = 1.0      # N — 파지(대향) 게이트·동결 판정
     contact_obs_clip: float = 20.0
+    # ---- 손끝 촉각 actor obs (사용자 결정 09.14 "3 추가") ------------------------------------
+    # 실기 출처: RH56F1 TouchData1.finger_forces[5] (정전용량 손끝 법선력, 0.01 N 단위, 1024 = 10.24 N).
+    # 실기 센서는 무엇에 닿든 재므로 sim 도 컵 필터가 아닌 손끝 링크 전체 접촉력(net). 배포 시 손가락 순서 재배열 필요.
+    tactile_obs_clip_n: float = 10.0
+    tactile_obs_noise_n: float = 0.1
     collision_force_threshold: float = 1.0    # N — 컵끼리·손↔타물체 충돌 지표 임계
 
     # ---- 성공 판정 (pour_v1 계승) — 보상과 분리된 **기준 지표** ----------------------
@@ -391,6 +400,8 @@ def _validate_mimic_fields(cfg: "PourFabricMimicEnvCfg", pair) -> None:
         errs.append("synergy_freeze_scope 는 finger 만(손가락당 구동관절 1개)")
     if float(cfg.mimic_dep_limit_margin_rad) < 0.0:
         errs.append("mimic_dep_limit_margin_rad 는 ≥ 0")
+    if float(cfg.mimic_runaway_err_rad) <= 0.0:
+        errs.append("mimic_runaway_err_rad 는 > 0 (0 이면 모든 env 가 매 스텝 종료)")
     for p in (pair.source, pair.receiver):
         for name, spec in p.actuator_specs.items():
             if name.endswith("_hand_mimic") and (spec.get("stiffness"), spec.get("damping")) != (0.0, 0.0):
@@ -439,7 +450,7 @@ def resolve_cfg(cfg: "PourFabricMimicEnvCfg") -> None:
     hand_qd_total = 0
     for p in (pair.source, pair.receiver):
         a, h, f = p.num_arm_joints, p.num_hand_joints, len(p.finger_sensor_bodies)
-        per += 2 * a + h + 3 + 6 + 3 * f + 3 + 3 * f + h + 3
+        per += 2 * a + h + 3 + 6 + 3 * f + 3 + 3 * f + h + 3 + f  # tactile
         hand_qd_total += h
     cfg.observation_space = per + 3 + 3 + cfg.action_space
     # critic = policy(clean) + hand_qd(2H) + 비드 분율 4 + 비드 무게중심(rcv 프레임) 3

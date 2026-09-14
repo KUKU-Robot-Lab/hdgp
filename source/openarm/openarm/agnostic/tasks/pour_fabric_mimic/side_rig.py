@@ -261,6 +261,15 @@ class SideRig:
             tot = tot + (net - self._mag(s)).clamp(min=0.0)
         return tot
 
+    def tip_tactile(self) -> torch.Tensor:
+        """손끝 촉각 (N,F) [N] — 실기 RH56F1 TouchData1.finger_forces 대응.
+
+        실기 센서는 닿은 대상과 무관하게 재므로 컵 필터 행렬이 아니라 손끝 링크 전체 접촉력(net)을 쓴다.
+        """
+        out = [self.sensors[f][-1].data.net_forces_w.view(self.N, -1, 3).sum(dim=1).norm(dim=-1)
+               for f in self.fingers]
+        return torch.stack(out, dim=1)
+
     def grasped(self, forces: torch.Tensor) -> torch.Tensor:
         thr = float(self.env.cfg.contact_force_threshold)
         return (forces[:, self.grp_a] > thr).any(dim=1) & (forces[:, self.grp_b] > thr).any(dim=1)

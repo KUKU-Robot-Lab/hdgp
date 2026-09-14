@@ -10,7 +10,7 @@
 (`tests/test_mimic_contract.py::test_original_pour_fabric_untouched_by_this_track` 가 잠근다).
 
 - gym id `open-rh_b_pour_fab_mimic` (+`-play`, `-lstm`) · 로그 `log/rl_games/open-rh/both/pour-fab-mimic/`
-- 액션 **24** = (palm 6 + 손 6) × 2 · actor obs **172** · critic **214**
+- 액션 **24** = (palm 6 + 손 6) × 2 · actor obs **182** · critic **224** (09.14 손끝 촉각 5칸×2 추가 전 172/214)
 - 보상: `reward_gen/pour_bi_rh/iter_NN/compute_reward.py` (`RewardContext` 는 원본과 **동일 클래스** — F=5 손가락, 손 폐쇄도·접촉력 필드 의미 그대로)
 - 학습 호스트: **vision-3090**(RTX 3090 24 GB) — 루프 도구 `scripts/reward_gen/t2r_rh_round.py` · `LOOP_PROMPT_rh.md` · `run_pour_t2r_rh.sh`
 
@@ -58,3 +58,8 @@ PYTHONPATH=source/openarm python3 -m pytest source/openarm/openarm/agnostic/task
 ~/rl_ws/IsaacLab/isaaclab.sh -p scripts/reinforcement_learning/probes/probe_pour_fabric_mimic_boot.py --num_envs 8 --steps 300
 ./run_pour_t2r_rh.sh <label> reward_gen/pour_bi_rh/iter_00 --num_envs 1024     # vision-3090 에서
 ```
+
+### 09.14 라운드 1 종료 후 env 변경 (사용자 결정 "2,3 추가")
+- **느린 mimic 폭주도 종료**: `mimic_runaway_err_rad` 3.0 — 속도 100 rad/s 아래로 오차만 벌어진 폭주 2회(epoch 321-323, 348-351)가 속도 기준을 빠져나갔다. 지표 `done/mimic_err_runaway`.
+- **손끝 촉각 actor obs**: 손당 5칸 = 손끝 링크 전체 접촉력(net, 컵 필터 아님) · 노이즈 0.1 N · 클립 10 N. 실기 출처 RH56F1 `TouchData1.finger_forces[5]`(0.01 N 단위). sim 손가락 순서(thumb, index, middle, ring, pinky) ≠ 벤더 순서일 수 있다 — 배포 시 재배열. obs 변경이라 iter_01 부터 새로 학습.
+- 계기: 라운드 1 영상 — 오른손 엄지가 컵 입구 테두리에 걸려 들지 못함, 왼손은 컵에 닿지 않음.
