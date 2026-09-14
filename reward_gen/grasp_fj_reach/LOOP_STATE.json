@@ -1,18 +1,17 @@
 {
  "track": "grasp_fj_reach",
- "iter": 0,
- "label": "fj_reach_i00",
+ "iter": 1,
+ "label": "fj_reach_i01",
  "label_prefix": "fj_reach_i",
- "round": 1,
- "status": "advancing",
- "awaiting": "generating_iter_01",
+ "round": 2,
+ "status": "running",
+ "awaiting": null,
  "best": null,
  "success_ticks": 0,
- "started": 1789364573,
- "pid": 3382683,
- "commit": "8eb68150",
+ "started": 1789374092,
+ "pid": 3587663,
+ "commit": "46b4069a",
  "algo": {"iter_00": "SAPG 12,288 (open-short_r_grasp_fj_t2r_reach-lstm-sapg)", "from_iter_01": "PPO-LSTM 4096 (open-short_r_grasp_fj_t2r_reach-lstm)"},
- "video": "our_source/fj_t2r_videos/fj_reach_i00_0914_1631.mp4",
  "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY",
- "note": "09.14 사용자: '생성 완료 후 gpu0 학습 진행 · 컵에 접근, 파지, 리프트가 잘 되는지 틱을 확인하면서 t2r feedback reward design 구조 활성화'. zero-shot iter_00(ee16aeff) · 에피소드 퍼널 로그(1c0d775b) · abnormal 스텝 생성 보상 가림(8eb68150). 09.14 16:2x 사용자 'sapg 꼭 해야 하나 · env 수를 너무 늘린 게 아닌지' → PPO-LSTM 4096 · i00 e571 라운드 끝(ca140744). 09.14 17:3x 사용자 '컵의 옆으로 다가가는 게 아니라 손을 회전하는 상태로 접근함 · t2r 재분석 후에 재학습 필요' → 영상 재분석(1~3 s 손 굴림, 손바닥이 아래·바깥) + 항 분석(reach·palm_contact·finger_wrap 이 방향·접촉 없이 오름, palm_orient 0.10 정체)으로 observation/improvement 수정 → advance → iter_01 생성 중."
+ "note": "round 2 = iter_01(788adfdd): 사용자 교정 '손을 회전하는 상태로 접근' · 'palm_ee = 손바닥 중심(collision 없는 가상 점)' 반영 — ctx.palm_pos 를 palm_ee 로(ea2f3e83) · 방향 게이트·stall 감쇠 보상. PPO-LSTM 4096 env(사용자 결정). 서버 스모크 GATE PASS(무작위 스텝당 +0.064). i00 퍼널 간극은 손목 쪽 원점 기준이라 i01 과 비교 금지. 틱 요약 = 퍼널, 막힌 단계 200 epoch 정체면 advance(stuck)."
 }
