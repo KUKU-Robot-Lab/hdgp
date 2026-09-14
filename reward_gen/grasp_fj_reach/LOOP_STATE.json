@@ -1,0 +1,16 @@
+{
+ "track": "grasp_fj_reach",
+ "iter": 0,
+ "label": "fj_reach_i00",
+ "label_prefix": "fj_reach_i",
+ "round": 1,
+ "status": "running",
+ "awaiting": null,
+ "best": null,
+ "success_ticks": 0,
+ "started": 1789364573,
+ "pid": 3382683,
+ "commit": "8eb68150",
+ "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY",
+ "note": "09.14 사용자: '생성 완료 후 gpu0 학습 진행 · 컵에 접근, 파지, 리프트가 잘 되는지 틱을 확인하면서 t2r feedback reward design 구조 활성화'. zero-shot iter_00(ee16aeff) · 에피소드 퍼널 로그(1c0d775b) · abnormal 스텝 생성 보상 가림(8eb68150). 틱 요약 = 퍼널(접근→파지→인벨롭→리프트→성공)과 막힌 단계. 라운드 끝 = 영상 → 관찰·개선 초안 → 사용자 승인 → advance. 팔 0.3 rad/s 는 사용자 확인('제어 루프 주기로 속도를 낮출 것이라 괜찮음')."
+}
