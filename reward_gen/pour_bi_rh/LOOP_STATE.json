@@ -9,5 +9,9 @@
  "started": 1789373995.1644855,
  "success_ticks": 0,
  "note": "09.14 RH56F1 pour_fabric_mimic · shaker_closed×0.65 · 손끝 파지 허용 · 대본 파지 게이트 면제(사용자 결정)",
- "restart": "09.14 epoch 273~304 에서 mimic 오차 79~483 rad·종속 qd 5e4 폭주(리프트 시작 구간) → mimic_dep_limit_margin_rad 1.5→3.0 으로 같은 iter 재기동. 이전 런 t2r_rh_i00 epoch 342 까지: grasp_src 2.1 %·rcv 0"
+ "restart": "09.14 epoch 273~304 에서 mimic 오차 79~483 rad·종속 qd 5e4 폭주(리프트 시작 구간) → mimic_dep_limit_margin_rad 1.5→3.0 으로 같은 iter 재기동. 이전 런 t2r_rh_i00 epoch 342 까지: grasp_src 2.1 %·rcv 0",
+ "pending_at_advance": [
+  "종료 조건에 손 종속관절 속도 폭주(ctrl/hand_dep_qd_max 기준, 예 >100 rad/s) 리셋 추가 — 사용자 승인 09.14 ('폭주 오면 리셋이 맞음'). 한계 여유 3.0 은 처방이 아니었음(epoch 74 재현)",
+  "손끝 촉각 obs 추가 여부는 파지 후 리프트 실패 유형 보고 결정"
+ ]
 }
