@@ -122,14 +122,14 @@ def read_tail(path: Path, limit: int = LOG_TAIL_BYTES) -> str:
 
 
 def list_checkpoints(nn_dir: Path) -> dict[int, str]:
-    """epoch -> absolute path of rl_games' ``last_<name>_ep_<E>_rew_<R>.pth`` files."""
+    """epoch -> absolute path of rl_games' ``last_<name>_ep_<E>_rew_<R>.pth`` files; on a shared epoch the first name in sorted order (the periodic save) wins."""
     if not nn_dir.is_dir():
         return {}
     found = {}
-    for path in nn_dir.iterdir():
+    for path in sorted(nn_dir.iterdir()):
         match = CHECKPOINT_RE.match(path.name)
         if match:
-            found[int(match.group(1))] = str(path.resolve())
+            found.setdefault(int(match.group(1)), str(path.resolve()))
     return found
 
 

@@ -20,10 +20,12 @@ def test_list_checkpoints_reads_saved_and_max_epoch_names(tmp_path):
     nn = tmp_path / "nn"
     nn.mkdir()
     for name in ("last_open-sens_l_iker_shoe_grasp_ep_50_rew_49.66499.pth", "last_open-sens_l_iker_shoe_ep_750_rew__582.5_.pth",
-                 "open-sens_l_iker_shoe_grasp.pth", "last_x_frame_100_rew_1.pth"):
+                 "open-sens_l_iker_shoe_grasp.pth", "last_x_frame_100_rew_1.pth",
+                 "last_open-sens_l_iker_shoe_grasp_ep_500_rew__229.35422_.pth", "last_open-sens_l_iker_shoe_grasp_ep_500_rew_229.35422.pth"):
         (nn / name).write_bytes(b"")
     found = lp.list_checkpoints(nn)
-    assert sorted(found) == [50, 750] and found[50].endswith("ep_50_rew_49.66499.pth") and os.path.isabs(found[50])
+    assert sorted(found) == [50, 500, 750] and found[50].endswith("ep_50_rew_49.66499.pth") and os.path.isabs(found[50])
+    assert found[500].endswith("ep_500_rew_229.35422.pth")
     assert lp.list_checkpoints(tmp_path / "missing") == {}
 
 
