@@ -10,7 +10,11 @@ text2reward 방식으로 생성한다: 환경 설명(RewardContext 소스)+과�
 | 트랙 (`reward_gen/<트랙>`) | gym id | 시작 | 컵 | 팔 | 에피소드 |
 |---|---|---|---|---|---|
 | `grasp_fj_envelope` (정지 — iter_01 미기동) | `open-short_r_grasp_fj_t2r-lstm-sapg` | B 홈 · 손바닥↔컵 0.16 m | shaker_sweep 반경 29–44 mm | 0.15 rad/s | 10 s |
-| `grasp_fj_reach` (최종 목표) | `open-short_r_grasp_fj_t2r_reach-lstm-sapg` | 테이블 앞 가장자리 밖 · 0.38 m (cfg `arm_reset_joint_pos_override`) | cup_family 반경 44–81 mm | 0.3 rad/s | 15 s |
+| `grasp_fj_reach` (최종 목표) | 루프 `open-short_r_grasp_fj_t2r_reach-lstm`(PPO-LSTM 4096) · 최종 정책 `-lstm-sapg`(12,288) | 테이블 앞 가장자리 밖 · 0.38 m (cfg `arm_reset_joint_pos_override`) | cup_family 반경 44–81 mm | 0.3 rad/s | 15 s |
+
+★09.14 사용자 "보상 구조가 확실하지 않은데 SAPG·env 수를 너무 늘린 게 아닌지" → 보상 설계 루프는 PPO-LSTM 4096 env
+(`grasp_fj/config/agents/rl_games_ppo_lstm_cfg.yaml` — SimToolReal 값 · horizon 16 · 미니배치 16,384), 파지·리프트가 되는 보상이
+나온 뒤 최종 정책만 SAPG 12,288. reach i00 은 SAPG 12,288 로 돌았다(부팅 ~15분 · e571 에서 라운드 끝). i00↔i01 은 알고리즘도 달라 1:1 비교 금지.
 
 프롬프트의 환경 사실은 `t2r/prompts.py` `VARIANTS`(`render --variant`, meta 로 다음 iter 에 승계) — reach 값이 등록 cfg 와 어긋나면 테스트가 막는다.
 루프 도구는 전부 `--track`. ★관측·actor 는 sim2real 가능한 구조로만 바꾼다(사용자 09.14) — 컵 종류·반경·접촉은 obs 에 없다.

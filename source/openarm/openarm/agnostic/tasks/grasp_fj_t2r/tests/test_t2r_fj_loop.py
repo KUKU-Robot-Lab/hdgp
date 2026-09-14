@@ -242,16 +242,44 @@ def test_reflect_refuses_events_without_generated_terms(tmp_path, monkeypatch):
 def test_tracks_map_to_their_own_gym_ids_and_log_dirs():
     env, reach = R.track("grasp_fj_envelope"), R.track("grasp_fj_reach")
     assert env["task"] == "open-short_r_grasp_fj_t2r-lstm-sapg" and env["logdir"] == "grasp-fj-t2r"
-    assert reach["task"] == "open-short_r_grasp_fj_t2r_reach-lstm-sapg" and reach["logdir"] == "grasp-fj-t2r-reach"
-    assert reach["play"] == "open-short_r_grasp_fj_t2r_reach-play-lstm-sapg"
+    assert env["sapg"] and env["num_envs"] == 12288
+    # ★09.14 사용자 "보상 구조가 확실하지 않은데 SAPG·env 수를 너무 늘린 게 아닌지" → reach 보상 루프는 PPO-LSTM 4096
+    assert reach["task"] == "open-short_r_grasp_fj_t2r_reach-lstm" and reach["logdir"] == "grasp-fj-t2r-reach"
+    assert reach["play"] == "open-short_r_grasp_fj_t2r_reach-play-lstm"
+    assert not reach["sapg"] and reach["num_envs"] == 4096
     assert reach["server_logdir"].endswith("/open-short/right/grasp-fj-t2r-reach")
-    cmd = R.launch_command("fj_reach_i00", "reward_gen/grasp_fj_reach/iter_00", 12288, 42, task=reach["task"])
-    assert "TASK=open-short_r_grasp_fj_t2r_reach-lstm-sapg" in cmd and "grasp_fj_reach/iter_00/compute_reward.py" in cmd
-    vid = R.video_command("/x/fj_reach_i00", "fj_reach_i00", 0.1, "0914_1500", task=reach["task"], play_task=reach["play"])
-    assert "--task open-short_r_grasp_fj_t2r_reach-play-lstm-sapg" in vid
-    assert "open-short_r_grasp_fj_t2r_reach-lstm-sapg.pth" in vid
+    cmd = R.launch_command("fj_reach_i01", "reward_gen/grasp_fj_reach/iter_01", reach["num_envs"], 42,
+                           task=reach["task"], sapg=reach["sapg"])
+    for tok in ("TASK=open-short_r_grasp_fj_t2r_reach-lstm ", "ENVS=4096", "GPU=0", "SERVER=1",
+                "EXTRA='env.reward_code_path=/home/oem/rl_ws/hdgp/reward_gen/grasp_fj_reach/iter_01/compute_reward.py'",
+                "scripts/experiments/run_fj.sh", "< /dev/null &"):
+        assert tok in cmd, tok
+    assert "expl_coef_block_size" not in cmd and "BLK=" not in cmd, "PPO-LSTM 설정에는 SAPG 블록 키가 없다"
+    with pytest.raises(ValueError):
+        R.launch_command("x", "reward_gen/grasp_fj_reach/iter_01", 4000, 42, task=reach["task"], sapg=False)
+    vid = R.video_command("/x/fj_reach_i01", "fj_reach_i01", 0.1, "0914_1500", task=reach["task"], play_task=reach["play"])
+    assert "--task open-short_r_grasp_fj_t2r_reach-play-lstm " in vid
+    assert "open-short_r_grasp_fj_t2r_reach-lstm.pth" in vid
     with pytest.raises(SystemExit):
         R.track("pour_bi")          # 붓기 트랙은 이 도구가 다루지 않는다
+
+
+def test_judge_ends_the_round_early_when_a_stage_is_stuck_behind_a_saturated_one():
+    # ★09.14 사용자: 앞 단계 ≥ 0.9 인데 다음 단계가 0 으로 200 epoch 이상 안 오르면 e1000 전이라도 라운드 끝
+    #   (reach i00 e571: 접근 0.98 · 파지 0 · 손바닥 접촉 0.61 · 손가락 0.03)
+    stuck = {**_summ(0.0), "stage/reach_ep": {"now": 0.98, "ago": 0.95}, "stage/grasp_ep": {"now": 0.0, "ago": 0.01}}
+    verdict, info = R.judge(stuck, {**ALIVE, "epoch": 700}, 2.2)
+    assert verdict == "advance(stuck:grasp)" and info["stage_stuck"] == "grasp", info
+    # 앞 단계가 창 안에서 막 포화됐으면(ago < 0.9) 아직 아니다 — 퍼널이 오르는 중이라 continue(stage)
+    rising = {**stuck, "stage/reach_ep": {"now": 0.98, "ago": 0.73}}
+    assert R.judge(rising, {**ALIVE, "epoch": 571}, 1.8)[0] == "continue(stage)"
+    # 뒤 단계(리프트)가 오르는 중이면 인벨롭이 0 이어도 막힌 것이 아니다(퍼널은 포함 관계를 강제하지 않는다)
+    lifting = {**_summ(0.0), "stage/grasp_ep": {"now": 0.95, "ago": 0.92}, "stage/envelope_ep": {"now": 0.0, "ago": 0.0},
+               "stage/lift_ep": {"now": 0.30, "ago": 0.10}}
+    assert R.judge(lifting, {**ALIVE, "epoch": 700}, 2.2)[0] == "continue(stage)"
+    # 창이 차기 전(epoch < TOL_WINDOW)에는 끊지 않는다 · 성공이 유지 중이면 성공 규칙이 먼저다
+    assert R.judge(stuck, {**ALIVE, "epoch": 150}, 0.6)[0] != "advance(stuck:grasp)"
+    assert R.judge({**stuck, R.SUCCESS_TAG: {"last": 2.5, "now": 2.5}}, {**ALIVE, "epoch": 700}, 2.2)[0] == "continue(success)"
 
 
 def test_reflect_carries_the_variant_into_the_next_prompt(tmp_path, fake_events):

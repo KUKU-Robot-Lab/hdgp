@@ -4,13 +4,14 @@
  "label": "fj_reach_i00",
  "label_prefix": "fj_reach_i",
  "round": 1,
- "status": "running",
- "awaiting": null,
+ "status": "round_end",
+ "awaiting": "draft_iter_00",
  "best": null,
  "success_ticks": 0,
  "started": 1789364573,
  "pid": 3382683,
  "commit": "8eb68150",
+ "algo": {"iter_00": "SAPG 12,288 (open-short_r_grasp_fj_t2r_reach-lstm-sapg)", "from_iter_01": "PPO-LSTM 4096 (open-short_r_grasp_fj_t2r_reach-lstm)"},
  "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY",
- "note": "09.14 사용자: '생성 완료 후 gpu0 학습 진행 · 컵에 접근, 파지, 리프트가 잘 되는지 틱을 확인하면서 t2r feedback reward design 구조 활성화'. zero-shot iter_00(ee16aeff) · 에피소드 퍼널 로그(1c0d775b) · abnormal 스텝 생성 보상 가림(8eb68150). 틱 요약 = 퍼널(접근→파지→인벨롭→리프트→성공)과 막힌 단계. 라운드 끝 = 영상 → 관찰·개선 초안 → 사용자 승인 → advance. 팔 0.3 rad/s 는 사용자 확인('제어 루프 주기로 속도를 낮출 것이라 괜찮음')."
+ "note": "09.14 사용자: '생성 완료 후 gpu0 학습 진행 · 컵에 접근, 파지, 리프트가 잘 되는지 틱을 확인하면서 t2r feedback reward design 구조 활성화'. zero-shot iter_00(ee16aeff) · 에피소드 퍼널 로그(1c0d775b) · abnormal 스텝 생성 보상 가림(8eb68150). 09.14 16:2x 사용자 'sapg 꼭 해야 하나 · 보상 구조가 확실하지 않은데 env 수를 너무 늘린 게 아닌지' → 결정: 보상 루프는 PPO-LSTM 4096 env · i00 을 e571 에서 라운드 끝으로 앞당김(접근 0.98 · 파지 0 · 손바닥 접촉 0.61 · 손가락 0.03) · 조기 라운드 끝 규칙(앞 단계 ≥0.9 인데 다음 단계 ≈0 이 200 epoch). i00 SIGTERM(PID 3382683, RUN_LABEL·CUDA0 대조). 영상 → 관찰·개선 초안 → 사용자 승인 대기."
 }
