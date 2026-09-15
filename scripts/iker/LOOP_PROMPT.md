@@ -33,7 +33,7 @@
 다른 트랙(t2r·pour_fabric)의 런·GPU·크론 접촉.
 
 크론: 세션 CronCreate `7,37 * * * *`, 프롬프트 "IKER 자동 루프 틱: ~/rl_ws/hdgp-iker/scripts/iker/LOOP_PROMPT.md 절차대로 한 틱을
-수행한다 (track iker_shoe_c00_r7)". 세션이 끝나면 루프도 멈춘다. 다음 세션은 `status` 로 이어가고, 커밋 트레일러는
+수행한다 (track iker_shoe_c00_r8)". 세션이 끝나면 루프도 멈춘다. 다음 세션은 `status` 로 이어가고, 커밋 트레일러는
 `python3 scripts/iker/loop.py --session-url <그 세션 URL> act ...` 로 그 세션 것을 쓴다.
 
 task-observer: 틱 보고(산출물 전달) 때 관측 기록을 확인한다.
