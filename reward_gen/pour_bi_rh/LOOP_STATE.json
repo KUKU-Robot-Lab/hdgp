@@ -58,6 +58,10 @@
    "이어 학습: pour_t2r_rh_train.sh t2r_rh_i03_a2 reward_gen/pour_bi_rh/iter_03 --num_envs 1024 --checkpoint <ep_300.pth> --no-reset_epoch",
    "이어 학습 첫 틱에서 task/{src,rcv}_near_rate · _thumb_over_rim_near · _thumb_above_rim_mm_near 가 TFEvents 에 찍히는지 확인, 이후 틱 보고에 포함"
   ],
-  "baseline_epoch_114": "rim_hook_pen −0.067(이전 런 −0.044) · src_palm_to_cup 17.2 cm(이전 17.3) · 접촉 0 — epoch 80 부터 palm<20 cm 에서 벌점 증가"
- }
+  "baseline_epoch_114": "rim_hook_pen −0.067(이전 런 −0.044) · src_palm_to_cup 17.2 cm(이전 17.3) · 접촉 0 — epoch 80 부터 palm<20 cm 에서 벌점 증가",
+  "status": "폐기 — epoch 300 전에 보상 재생성으로 전환(09.15 사용자)"
+ },
+ "round5_end_t2r_rh_i03_a2": "09.15 epoch 146(0.72 h) — 사용자 'T2r 다시 생성해서 재학습 필요 · Usd 문제도 없으니 보상함수 문제' → notes_round5 승인, 학습 PID 1414015/1414022/1414027 종료(RUN_LABEL 확인). 양손 palm↔컵 16~17 cm·접촉 0·파지 0, 이전 런과 동일 패턴",
+ "decisions_round5": "09.15 사용자 notes_round5 '승인·진행' — advance(iter_03/feedback.md, iter_04/prompt.md), iter_04 생성 시작",
+ "loop_stopped_round5": "cron fbf66aa0 삭제(생성 중 틱 오판정 방지) — iter_04 기동 후 재등록"
 }

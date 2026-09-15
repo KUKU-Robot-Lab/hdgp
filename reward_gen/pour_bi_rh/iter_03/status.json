@@ -1,354 +1,354 @@
 {
  "label": "t2r_rh_i03_a2",
  "verdict": "continue",
- "epoch": 115,
+ "epoch": 146,
  "alive": true,
  "pids": [
   1414015,
   1414022,
   1414027
  ],
- "hours": 0.57,
+ "hours": 0.72,
  "mirror": "/home/user/rl_ws/hdgp/log/pour_fabric_mimic/mirror/t2r_rh_i03_a2",
  "metrics": {
   "done/mimic_runaway": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0059,
    "first": 0.001
   },
   "done/mimic_err_runaway": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "reward/approach_src": {
-   "n": 115,
-   "last": 0.538,
-   "max": 0.6024,
+   "n": 146,
+   "last": 0.5981,
+   "max": 0.6361,
    "first": 0.479
   },
   "reward/approach_rcv": {
-   "n": 115,
-   "last": 0.5402,
-   "max": 0.6267,
+   "n": 146,
+   "last": 0.615,
+   "max": 0.6779,
    "first": 0.4518
   },
   "reward/orient_src": {
-   "n": 115,
-   "last": 0.1703,
+   "n": 146,
+   "last": 0.1753,
    "max": 0.1907,
    "first": 0.1355
   },
   "reward/orient_rcv": {
-   "n": 115,
-   "last": 0.1742,
-   "max": 0.1891,
+   "n": 146,
+   "last": 0.1882,
+   "max": 0.2016,
    "first": 0.1387
   },
   "reward/tips_src": {
-   "n": 115,
-   "last": 0.0859,
-   "max": 0.1109,
+   "n": 146,
+   "last": 0.1094,
+   "max": 0.1232,
    "first": 0.0519
   },
   "reward/tips_rcv": {
-   "n": 115,
-   "last": 0.0872,
-   "max": 0.1207,
+   "n": 146,
+   "last": 0.1181,
+   "max": 0.142,
    "first": 0.0504
   },
   "reward/close_src": {
-   "n": 115,
-   "last": 0.0558,
-   "max": 0.0803,
+   "n": 146,
+   "last": 0.0734,
+   "max": 0.093,
    "first": 0.0081
   },
   "reward/close_rcv": {
-   "n": 115,
-   "last": 0.0765,
-   "max": 0.1165,
+   "n": 146,
+   "last": 0.1072,
+   "max": 0.1401,
    "first": 0.0074
   },
   "reward/contact_src": {
-   "n": 115,
-   "last": 0.0001,
+   "n": 146,
+   "last": 0.0002,
    "max": 0.0081,
    "first": 0.0073
   },
   "reward/contact_rcv": {
-   "n": 115,
-   "last": 0.0001,
+   "n": 146,
+   "last": 0.0003,
    "max": 0.0058,
    "first": 0.0054
   },
   "reward/grasp_src": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "reward/grasp_rcv": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "reward/grasp_both": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "reward/curl_far_pen": {
-   "n": 115,
-   "last": -0.3232,
+   "n": 146,
+   "last": -0.2842,
    "max": 0.0,
    "first": 0.0
   },
   "reward/rim_hook_pen": {
-   "n": 115,
-   "last": -0.0479,
+   "n": 146,
+   "last": -0.0599,
    "max": -0.0024,
    "first": -0.1806
   },
   "reward/lift_src": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "reward/lift_rcv": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "reward/align": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "reward/tilt": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "reward/pour_delta": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0098,
    "first": 0.0
   },
   "reward/spill_delta": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0049,
    "first": 0.0
   },
   "reward/success": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "reward/pre_tilt_pen": {
-   "n": 115,
+   "n": 146,
    "last": -0.0001,
    "max": 0.0,
    "first": -0.0098
   },
   "reward/rcv_upright_pen": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "reward/knock_pen": {
-   "n": 115,
+   "n": 146,
    "last": -0.0005,
    "max": 0.0,
    "first": -0.0351
   },
   "reward/cup_push_pen": {
-   "n": 115,
-   "last": -0.0005,
+   "n": 146,
+   "last": -0.0004,
    "max": 0.0,
    "first": -0.0378
   },
   "reward/drop_pen": {
-   "n": 115,
+   "n": 146,
    "last": -0.0,
    "max": 0.0,
    "first": -0.0057
   },
   "reward/cup_speed_pen": {
-   "n": 115,
+   "n": 146,
    "last": -0.0,
    "max": 0.0,
    "first": -0.0079
   },
   "reward/nested_pen": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": -0.002
   },
   "reward/cup_collision_pen": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": -0.0001
   },
   "reward/hand_foreign_pen": {
-   "n": 115,
-   "last": -0.0012,
+   "n": 146,
+   "last": -0.0007,
    "max": 0.0,
    "first": -0.0142
   },
   "reward/palm_push_pen": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "reward/action_rate_pen": {
-   "n": 115,
-   "last": -0.0455,
-   "max": -0.0432,
+   "n": 146,
+   "last": -0.0435,
+   "max": -0.04,
    "first": -0.0515
   },
   "reward/arm_speed_pen": {
-   "n": 115,
-   "last": -0.0271,
-   "max": -0.0218,
+   "n": 146,
+   "last": -0.0216,
+   "max": -0.018,
    "first": -0.0573
   },
   "reward/total": {
-   "n": 115,
-   "last": 1.2425,
-   "max": 1.5404,
+   "n": 146,
+   "last": 1.5373,
+   "max": 1.7375,
    "first": 0.8829
   },
   "task/success_now": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "task/episode_success": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "task/src_grasped": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "task/rcv_grasped": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "task/src_cup_lift": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0104,
    "first": 0.0007
   },
   "task/rcv_cup_lift": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0669,
    "first": 0.0018
   },
   "task/src_tilt_deg": {
-   "n": 115,
-   "last": 0.0727,
+   "n": 146,
+   "last": 0.0775,
    "max": 4.6984,
    "first": 3.3341
   },
   "task/aim_dist": {
-   "n": 115,
-   "last": 0.3197,
+   "n": 146,
+   "last": 0.32,
    "max": 0.5566,
    "first": 0.3175
   },
   "task/cups_center_dist": {
-   "n": 115,
-   "last": 0.3197,
+   "n": 146,
+   "last": 0.32,
    "max": 0.5585,
    "first": 0.3201
   },
   "task/nested_rate": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0098,
    "first": 0.001
   },
   "task/cup_collision_rate": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0039,
    "first": 0.0
   },
   "task/src_hand_foreign_rate": {
-   "n": 115,
-   "last": 0.0001,
+   "n": 146,
+   "last": 0.0,
    "max": 0.0049,
    "first": 0.0049
   },
   "task/rcv_hand_foreign_rate": {
-   "n": 115,
-   "last": 0.0007,
+   "n": 146,
+   "last": 0.0005,
    "max": 0.0059,
    "first": 0.0039
   },
   "ctrl/mimic_err_max": {
-   "n": 115,
-   "last": 0.2291,
+   "n": 146,
+   "last": 0.192,
    "max": 2.1967,
    "first": 2.1511
   },
   "ctrl/hand_dep_qd_max": {
-   "n": 115,
-   "last": 15.1895,
+   "n": 146,
+   "last": 11.5087,
    "max": 682.2487,
    "first": 117.4318
   },
   "adr/progress": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "dr/wrench_force_scale": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0,
    "first": 0.0
   },
   "bead/in_target": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0001,
    "first": 0.0
   },
   "bead/spill": {
-   "n": 115,
+   "n": 146,
    "last": 0.0,
    "max": 0.0015,
    "first": 0.0002
   },
   "done/drop": {
-   "n": 115,
+   "n": 146,
    "last": 0.0001,
    "max": 0.0107,
    "first": 0.001
