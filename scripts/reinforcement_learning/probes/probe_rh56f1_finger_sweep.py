@@ -35,6 +35,8 @@ parser.add_argument("--rate", type=float, default=1.5, help="스윕 속도 [rad/
 parser.add_argument("--mimic_nf", type=float, default=None, help="PhysX mimic naturalFrequency 덮어쓰기(미지정=USD 값)")
 parser.add_argument("--mimic_dr", type=float, default=None, help="PhysX mimic dampingRatio 덮어쓰기(미지정=USD 값)")
 parser.add_argument("--contacts", action="store_true", help="오른손 전 링크 접촉 센서로 링크별 최대 접촉력 기록")
+parser.add_argument("--contact_partners", default="",
+                    help="쉼표 구분 상대 링크명. 상대마다 필터 1개짜리 센서(순서 모호성 없음)로 오른손 링크↔상대 최대 접촉력 기록")
 parser.add_argument("--label", default="")
 AppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(headless=True)
@@ -70,7 +72,7 @@ def build_robot() -> Articulation:
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 enabled_self_collisions=args.self_collision == "on",
                 solver_position_iteration_count=16, solver_velocity_iteration_count=1),
-            activate_contact_sensors=args.contacts,
+            activate_contact_sensors=args.contacts or bool(args.contact_partners),
         ),
         actuators=actuators,
     ))
@@ -109,15 +111,21 @@ def main() -> dict:
     mimic = override_mimic()
     sensor = ContactSensor(ContactSensorCfg(prim_path="/World/robot/r_hl_.*", update_period=0.0, history_length=1)) \
         if args.contacts else None
+    partners = [p for p in args.contact_partners.split(",") if p]
+    partner_sensors = {p: ContactSensor(ContactSensorCfg(prim_path="/World/robot/r_hl_.*", update_period=0.0, history_length=1,
+                                                         filter_prim_paths_expr=[f"/World/robot/{p}"])) for p in partners}
     sim.reset()
     robot.update(DT)
     names = robot.joint_names
     ji = names.index(args.joint)
     hand = [i for i, n in enumerate(names) if n.startswith("r_hj_")]
     suffix = args.joint[len("r_hj_"):]
-    follower = next((names.index(f"r_hj_{f}") for f, (lead, _) in MIMIC_OF.items() if lead == suffix), None)
+    chain, lead = [], suffix                               # 종속 연쇄 전체(thumb_2 → thumb_3 → thumb_4)는 흔들림이 아니라 추종
+    while (nxt := next((f for f, (ld, _) in MIMIC_OF.items() if ld == lead), None)) is not None:
+        chain.append(names.index(f"r_hj_{nxt}")); lead = nxt
+    follower = chain[0] if chain else None
     mult = next((m for f, (lead, m) in MIMIC_OF.items() if lead == suffix), None)
-    others = [i for i in hand if i not in (ji, follower)]
+    others = [i for i in hand if i != ji and i not in chain]
     palm = robot.body_names.index("r_hl_palm_2")
 
     target0 = robot.data.joint_pos.clone()
@@ -130,6 +138,7 @@ def main() -> dict:
     vel_sq = torch.zeros_like(dev); n_steps = 0
     track_err = 0.0; mimic_err = 0.0; palm_dev = 0.0; sat = 0.0
     contact_max = None
+    pair_max: dict[str, torch.Tensor] = {}
     effort = robot.data.joint_effort_limits[0, ji].item() if hasattr(robot.data, "joint_effort_limits") else float("nan")
     for tgt in schedule(60, n_ramp, args.hi):
         target = q0.clone(); target[:, ji] = tgt
@@ -141,6 +150,10 @@ def main() -> dict:
             sensor.update(DT)
             f = sensor.data.net_forces_w[0].norm(dim=-1)
             contact_max = f if contact_max is None else torch.maximum(contact_max, f)
+        for p, s in partner_sensors.items():
+            s.update(DT)
+            fp = s.data.force_matrix_w[0, :, 0].norm(dim=-1)
+            pair_max[p] = fp if p not in pair_max else torch.maximum(pair_max[p], fp)
         track_err = max(track_err, abs(q[ji].item() - tgt))
         if follower is not None:
             mimic_err = max(mimic_err, abs(q[follower].item() - mult * q[ji].item()))
@@ -161,6 +174,9 @@ def main() -> dict:
         "mimic": mimic,
         "contact_top_N": None if sensor is None else sorted(((round(contact_max[i].item(), 3), n) for i, n in enumerate(sensor.body_names)
                                                             if contact_max[i].item() > 1e-3), reverse=True)[:8],
+        "contact_pairs_top": sorted(((round(fp[i].item(), 3), n, p) for p, fp in pair_max.items()
+                                     for i, n in enumerate(partner_sensors[p].body_names)
+                                     if n != p and fp[i].item() > 1e-3), reverse=True)[:12],
     }
 
 
