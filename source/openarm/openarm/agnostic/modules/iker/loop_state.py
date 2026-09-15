@@ -8,31 +8,31 @@ a key of ``DEFAULT_POLICY`` and is stored in LOOP_STATE.json, so a run's rules t
 from __future__ import annotations
 
 import copy
-import math
 from dataclasses import dataclass, field, replace
 from typing import Mapping, Sequence
 
-from . import run_files
+from . import loop_t2r, run_files
 
 SCHEMA = run_files.SCHEMA_VERSION
 TRACK = "iker_shoe_c00"
 LEARNED_BANK_SOURCE = "learned_grasp"
-PHASES = (
-    "stage1_a", "calibrate", "stage1_b", "harvest", "vlm_target", "stage2_train", "observe_requery", "completion_review",
-    "done",
-)
+PHASES = ("stage1_t2r", "vlm_target", "stage2_train", "observe_requery", "completion_review", "done")
 STATUSES = ("running", "awaiting", "done")
-TRAINING_RUNS = ("stage1_a", "stage1_b", "stage2")
-SIDE_RUNS = ("calibrate", "harvest", "env_smoke", "eval", "observe_rollout", "observe_render", "video")
+TRAINING_RUNS = ("stage1_t2r", "stage2")
+SIDE_RUNS = ("t2r_smoke", "harvest", "env_smoke", "eval", "observe_rollout", "observe_render", "video")
 STALE_AFTER_RESULT_S = 120.0  # an Isaac process alive this long after writing its result is hung (§8)
 
 DEFAULT_POLICY: Mapping = {
-    "gate_epoch": 200,  # user decision 8 (2026-09-14): phase A judged again at epoch 200
-    "gate_latched": 0.02,
-    "calibrate_latched": 0.10,
     "bin_epochs": 10,
-    "b_g_min": 0.5,
-    "b_max_epochs": 1000,
+    "t2r_round_epochs": 500,  # stage-1 t2r spec §3.2 (user decision 5): one round's fresh training
+    "t2r_early_epoch": 250,
+    "t2r_early_latched": 0.005,
+    "t2r_harvest_success": 0.05,
+    "t2r_max_rounds": 6,
+    "t2r_max_requests": 3,
+    "t2r_num_envs": 4096,
+    "t2r_smoke_envs": 64,
+    "t2r_smoke_steps": 150,
     "harvest_min": 64,  # user decision 4
     "vlm_max_attempts": 3,  # the first response and two regenerations (base spec §6)
     "stage2_env_smoke": True,
@@ -43,14 +43,11 @@ DEFAULT_POLICY: Mapping = {
     "side_gpu_limit_mib": 20000,
     "minibatch_size": 0,  # 0 keeps the PPO yaml value
     "grasp_bank_path": "",  # "" = config_XX/grasp_bank.json
-    "labels": {"stage1_a": "iker_grasp_c00_a", "stage1_b": "iker_grasp_c00_b", "stage2": "iker_vlm_c00_s1"},
+    "labels": {"stage1_t2r": "iker_grasp_c00_t2r", "stage2": "iker_vlm_c00_s1"},
 }
 
 PHASE_RUNS: Mapping[str, tuple[str, ...]] = {  # runs whose crash stops the phase
-    "stage1_a": ("stage1_a",),
-    "calibrate": ("stage1_a", "calibrate"),
-    "stage1_b": ("stage1_b",),
-    "harvest": ("stage1_b", "harvest"),
+    "stage1_t2r": ("stage1_t2r", "t2r_smoke", "harvest"),
     "vlm_target": (),
     "stage2_train": ("env_smoke", "stage2", "eval"),
     "observe_requery": ("observe_rollout", "observe_render", "video"),
@@ -58,13 +55,14 @@ PHASE_RUNS: Mapping[str, tuple[str, ...]] = {  # runs whose crash stops the phas
     "done": (),
 }
 LAUNCH_RUNS: Mapping[str, str] = {
-    "run_calibrate": "calibrate", "launch_b": "stage1_b", "run_harvest": "harvest", "run_env_smoke": "env_smoke",
+    "run_t2r_smoke": "t2r_smoke", "launch_t2r": "stage1_t2r", "run_harvest": "harvest", "run_env_smoke": "env_smoke",
     "launch_stage2": "stage2", "run_eval": "eval", "run_observe_rollout": "observe_rollout",
     "run_observe_render": "observe_render", "run_video": "video",
 }
 SESSION_ACTIONS = ("wait",)  # nothing to record
 MANUAL_ACTIONS = ("approve", "resume")  # only on the user's word
-FILE_ACTIONS = ("write_prompt", "write_requery_prompt", "parse_requery", "store_video", "kill_stale")  # files are the record
+FILE_ACTIONS = ("write_prompt", "write_requery_prompt", "parse_requery", "store_video", "kill_stale",
+                "write_t2r_prompt", "ingest_reward")  # files are the record
 VLM_MAX_REQUESTS = 3  # generator requests for one response file before the loop pauses (a module constant: a new policy key
 #                       would make validate_state reject existing state files)
 LOOP_END_MARKS = ("stopping", "stopped", "cleared")  # a run record carrying one ended by the loop's hand, never by a crash
@@ -92,20 +90,29 @@ class AttemptStatus:
 
 
 @dataclass(frozen=True)
+class T2rIter:
+    iter: int = 0
+    prompt: bool = False
+    response: bool = False
+    validation: Mapping | None = None
+    failed_attempts: int = 0
+
+
+@dataclass(frozen=True)
 class Probe:
     gpu_used_mib: int = 0
     runs: Mapping[str, RunStatus] = field(default_factory=dict)
     latched: tuple[tuple[int, float], ...] = ()  # Episode/grasp_episode/latched of the phase's stage-1 run, by epoch
     over_rack: tuple[tuple[int, float], ...] = ()  # Episode/grasp/over_rack_raised_frac, by epoch
     checkpoints: Mapping[int, str] = field(default_factory=dict)  # the phase's training run: epoch -> checkpoint path
-    boot_reward: Mapping[str, float] | None = None  # phase B's printed reward: g_min, q_lo, q_hi
-    calibration: Mapping | None = None  # grasp_quality_calibration.json
+    success: tuple[tuple[int, float], ...] = ()  # Episode/grasp_episode/success of the round's run, by epoch
     bank_meta: Mapping | None = None  # metadata of the grasp bank stage 2 loads
     attempts: tuple[AttemptStatus, ...] = ()  # stage-1 VLM attempts holding a response, in order
     evals: Mapping[int, Mapping] = field(default_factory=dict)  # epoch -> eval_iker.py summary
     final_rows: tuple[Mapping, ...] | None = None  # noise-free rollout rows (env, success, end_dist); None before the file
     requery: Mapping | None = None  # observe/requery.json
     files: Mapping[str, bool] = field(default_factory=dict)  # see loop_probe.collect
+    t2r: T2rIter = field(default_factory=T2rIter)
 
 
 @dataclass(frozen=True)
@@ -129,17 +136,6 @@ def last_epoch(points: Sequence[tuple[int, float]]) -> int:
     return max((epoch for epoch, _ in points), default=0)
 
 
-def first_calibration_checkpoint(
-    latched: Sequence[tuple[int, float]], checkpoints: Mapping[int, str], threshold: float, width: int
-) -> int | None:
-    """The earliest saved epoch whose bin of latched episodes reaches ``threshold`` (§4 stage1_a)."""
-    for epoch in sorted(checkpoints):
-        mean = bin_mean(latched, epoch, width)
-        if mean is not None and mean >= threshold:
-            return epoch
-    return None
-
-
 def eval_epochs(policy: Mapping) -> tuple[int, ...]:
     return tuple(range(policy["eval_every"], policy["stage2_epochs"] + 1, policy["eval_every"]))
 
@@ -161,7 +157,7 @@ def pick_observe_env(rows: Sequence[Mapping]) -> int | None:
 # --------------------------------------------------------------------- state
 
 
-def new_state(now: str, *, track: str = TRACK, phase: str = "stage1_a", policy: Mapping | None = None) -> dict:
+def new_state(now: str, *, track: str = TRACK, phase: str = "stage1_t2r", policy: Mapping | None = None) -> dict:
     overrides = copy.deepcopy(dict(policy or {}))
     unknown = sorted(set(overrides) - set(DEFAULT_POLICY))
     if unknown:
@@ -170,7 +166,7 @@ def new_state(now: str, *, track: str = TRACK, phase: str = "stage1_a", policy: 
     state = {
         "schema": SCHEMA, "track": track, "phase": phase, "status": "running", "awaiting": None, "stage": 1,
         "policy": {**copy.deepcopy(dict(DEFAULT_POLICY)), **overrides, "labels": labels},
-        "runs": {}, "gate1": None, "calibration": None, "bank": None, "attempts": {"1": 0}, "eval": {}, "vlm_requests": {},
+        "runs": {}, "t2r": {"iter": 0, "requests": 0, "rounds": []}, "bank": None, "attempts": {"1": 0}, "eval": {}, "vlm_requests": {},
         "updated": now,
     }
     validate_state(state)
@@ -190,6 +186,9 @@ def validate_state(state: Mapping) -> None:
     missing = sorted(set(DEFAULT_POLICY) - set(policy)) + sorted(set(TRAINING_RUNS) - set(policy.get("labels", {})))
     if missing:
         raise ValueError(f"policy lacks {missing}")
+    t2r = state.get("t2r")
+    if not isinstance(t2r, Mapping) or set(t2r) != {"iter", "requests", "rounds"}:
+        raise ValueError(f"the t2r round state must hold iter, requests and rounds, got {t2r!r}")
     unknown = sorted(set(state.get("runs", {})) - set(TRAINING_RUNS) - set(SIDE_RUNS))
     if unknown:
         raise ValueError(f"unknown runs {unknown}")
@@ -215,6 +214,11 @@ def live_record(state: Mapping, run: str) -> Mapping | None:
 def ended_by_loop(state: Mapping, run: str) -> bool:
     """The loop stopped (or is stopping) the run, or ``resume`` cleared it: its end is never a crash."""
     return any(mark in state["runs"].get(run, {}) for mark in LOOP_END_MARKS)
+
+
+def t2r_label(state: Mapping) -> str:
+    """The RUN_LABEL of the current t2r round's training (policy label prefix + iteration)."""
+    return loop_t2r.run_label(state["policy"]["labels"]["stage1_t2r"], state["t2r"]["iter"])
 
 
 def runs_to_clear(state: Mapping, runs: Mapping[str, RunStatus]) -> tuple[str, ...]:
@@ -250,7 +254,7 @@ def decide(state: Mapping, probe: Probe) -> Decision:
         return _pause(f"{crashed} crashed: {probe.runs[crashed].marker or 'ended without a result'}",
                       "read the end of its log; the loop never edits code - fix the cause, then `loop.py act resume`")
     decision = _DECIDERS[phase](state, probe)
-    if phase in ("stage1_a", "calibrate", "stage1_b", "harvest"):
+    if phase == "stage1_t2r":
         decision = replace(decision, notes=decision.notes + _over_rack_note(probe, state["policy"]["bin_epochs"]))
     return decision
 
@@ -306,93 +310,77 @@ def _over_rack_note(probe: Probe, width: int) -> tuple[str, ...]:
     return (f"over-rack raised {_pct(over)} > 2 x latched {_pct(latched)} over epochs {end - width + 1}-{end}",)
 
 
-def _stage1_a(state: Mapping, probe: Probe) -> Decision:
-    policy, width = state["policy"], state["policy"]["bin_epochs"]
-    last = last_epoch(probe.latched)
-    if state["gate1"] is None:
-        if last < policy["gate_epoch"]:
-            return _wait(f"phase A at epoch {last}, gate at epoch {policy['gate_epoch']}")
-        value = bin_mean(probe.latched, policy["gate_epoch"], width)
-        passed = value is not None and value >= policy["gate_latched"]
-        return Decision("record_gate", f"epoch {policy['gate_epoch']} latched {_pct(value)} vs {_pct(policy['gate_latched'])}",
-                        {"epoch": policy["gate_epoch"], "latched": value, "passed": passed})
-    epoch = first_calibration_checkpoint(probe.latched, probe.checkpoints, policy["calibrate_latched"], width)
-    if epoch is not None:
-        return Decision("advance", f"checkpoint ep {epoch} latched {_pct(bin_mean(probe.latched, epoch, width))}",
-                        {"to": "calibrate", "epoch": epoch, "checkpoint": probe.checkpoints[epoch]})
-    if not probe.runs.get("stage1_a", IDLE).alive:
-        return _pause(f"phase A ended at epoch {last} with no checkpoint at latched >= {_pct(policy['calibrate_latched'])}",
-                      "decide whether to extend phase A or revise stage 1")
-    return _wait(f"phase A epoch {last}, latched {_pct(bin_mean(probe.latched, last, width))}")
+def _stage1_t2r(state: Mapping, probe: Probe) -> Decision:
+    policy, t2r = state["policy"], state["t2r"]
+    iteration, label, width = t2r["iter"], t2r_label(state), policy["bin_epochs"]
+    if len(t2r["rounds"]) >= policy["t2r_max_rounds"]:
+        return _pause(f"{len(t2r['rounds'])} t2r rounds ended without a handover",
+                      "read stage1_t2r/iter_*/feedback.md; resume with a higher t2r_max_rounds, or stop")
+    if not _launched(state, "stage1_t2r", label):
+        return _t2r_prepare(state, probe, iteration, label)
+    return _t2r_training(state, probe, iteration, label, width)
 
 
-def _calibrate(state: Mapping, probe: Probe) -> Decision:
-    calibration = state["calibration"]
-    checkpoint, epoch = calibration["checkpoint"], calibration["epoch"]
-    if not _launched(state, "calibrate", checkpoint):
-        return _side_launch(state, probe, "run_calibrate", {"key": checkpoint, "checkpoint": checkpoint, "epoch": epoch})
-    run = probe.runs.get("calibrate", IDLE)
-    if not run.finished:
-        return _wait(f"measuring grasp quality at ep {epoch}")
-    if run.passed:
-        doc = probe.calibration
-        if doc is None or doc.get("checkpoint") != checkpoint:
-            return _pause("QUALITY passed but the calibration file is missing or names another checkpoint",
-                          "inspect grasp_quality_calibration.json")
-        return Decision("commit_calibration", f"q_lo {doc['q_lo']:.4f} q_hi {doc['q_hi']:.4f} at ep {epoch}", {"checkpoint": checkpoint})
-    later = sorted(e for e in probe.checkpoints if e > epoch)
-    if later:
-        return Decision("next_calibration", f"ep {epoch}: {run.marker}", {"epoch": later[0], "checkpoint": probe.checkpoints[later[0]]})
-    if probe.runs.get("stage1_a", IDLE).alive:
-        return _wait(f"ep {epoch} could not calibrate; waiting for the next phase-A checkpoint")
-    return _pause("grasp quality calibration failed on every phase-A checkpoint", "decide on phase A before phase B")
+def _t2r_prepare(state: Mapping, probe: Probe, iteration: int, label: str) -> Decision:
+    policy, files = state["policy"], probe.t2r
+    if not files.prompt:
+        return Decision("write_t2r_prompt", f"iter {iteration:02d} prompt", {"iter": iteration})
+    if files.validation is None:
+        if files.response:
+            return Decision("ingest_reward", f"iter {iteration:02d} response", {"iter": iteration})
+        requests = state["t2r"]["requests"]
+        if requests >= policy["t2r_max_requests"]:
+            return _pause(f"{requests} generator requests gave no valid reward for iter {iteration:02d} ({files.failed_attempts} failed validations)",
+                          "read stage1_t2r/iter_NN/validation_attempt_*.json and generator.json; `loop.py act resume` allows new requests")
+        return Decision("t2r_generate", f"iter {iteration:02d} request {requests + 1}", {"iter": iteration})
+    if not files.validation.get("ok"):
+        return _pause(f"iter {iteration:02d} validation.json is not ok", "a failed ingest moves its files aside; inspect the iteration folder")
+    if not _launched(state, "t2r_smoke", label):
+        return _side_launch(state, probe, "run_t2r_smoke", {"key": label, "iter": iteration})
+    smoke = probe.runs.get("t2r_smoke", IDLE)
+    if not smoke.finished:
+        return _wait(f"t2r smoke of iter {iteration:02d} running")
+    if not smoke.passed:
+        return _pause(f"t2r smoke of iter {iteration:02d} failed: {smoke.marker}", "read its T2R SMOKE CHECK FAILED lines and smoke.json")
+    busy = _busy_side_run(probe)
+    if busy is not None:
+        return _wait(f"launch_t2r waits for the side run {busy}")
+    return Decision("launch_t2r", f"iter {iteration:02d}: {policy['t2r_round_epochs']} epochs x {policy['t2r_num_envs']} envs",
+                    {"key": label, "iter": iteration})
 
 
-def _stage1_b(state: Mapping, probe: Probe) -> Decision:
-    policy, calibration = state["policy"], state["calibration"]
-    if live_record(state, "stage1_b") is None:
-        busy = _busy_side_run(probe)
-        if busy is not None:
-            return _wait(f"launch_b waits for the side run {busy}")
-        return Decision("launch_b", f"resume ep {calibration['epoch']} with g_min {policy['b_g_min']}",
-                        {"key": calibration["checkpoint"], "checkpoint": calibration["checkpoint"]})
-    if probe.boot_reward is None:
-        return _wait("phase B has not printed its reward line yet")
-    if probe.calibration is None:
-        return _pause("phase B runs but the calibration file is gone", "restore grasp_quality_calibration.json from git")
-    expected = {"g_min": policy["b_g_min"], "q_lo": probe.calibration["q_lo"], "q_hi": probe.calibration["q_hi"]}
-    if any(not math.isclose(probe.boot_reward.get(key, math.nan), value, rel_tol=0.0, abs_tol=1e-9) for key, value in expected.items()):
-        return _pause(f"phase B booted with {dict(probe.boot_reward)}, expected {expected}",
-                      "stop phase B by PID and relaunch it with the calibration")
-    return Decision("advance", f"phase B reward g_min {expected['g_min']} q_lo {expected['q_lo']:.4f} q_hi {expected['q_hi']:.4f}",
-                    {"to": "harvest"})
-
-
-def _harvest(state: Mapping, probe: Probe) -> Decision:
+def _t2r_training(state: Mapping, probe: Probe, iteration: int, label: str, width: int) -> Decision:
+    policy = state["policy"]
     bank = state["bank"] or {"tried": [], "last_epoch": 0}
-    record, run = live_record(state, "harvest"), probe.runs.get("harvest", IDLE)
+    record, harvest = live_record(state, "harvest"), probe.runs.get("harvest", IDLE)
     if record is not None and record["key"] not in bank["tried"]:
-        if not run.finished:
-            return _wait(f"harvesting ep {record['epoch']}")
-        if run.passed:
+        if not harvest.finished:
+            return _wait(f"harvesting iter {iteration:02d} ep {record['epoch']}")
+        if harvest.passed:
             meta = probe.bank_meta or {}
             if meta.get("source") != LEARNED_BANK_SOURCE or meta.get("checkpoint") != record["key"]:
                 return _pause("HARVEST passed but the grasp bank is not the learned bank of that checkpoint", "inspect grasp_bank.json")
-            verified, needed = meta.get("verified", 0), state["policy"]["harvest_min"]
-            if verified < needed:
-                return _pause(f"HARVEST passed but the grasp bank holds {verified} verified grasps < harvest_min {needed}",
+            if meta.get("verified", 0) < policy["harvest_min"]:
+                return _pause(f"HARVEST passed but the grasp bank holds {meta.get('verified', 0)} verified grasps < harvest_min {policy['harvest_min']}",
                               "inspect grasp_bank.json and the harvest log")
-            return Decision("commit_bank", f"{meta['verified']} verified grasps at ep {record['epoch']}",
-                            {"checkpoint": record["key"], "verified": meta["verified"]})
-        return Decision("record_harvest_miss", f"ep {record['epoch']}: {run.marker}", {"checkpoint": record["key"], "epoch": record["epoch"]})
-    newer = [epoch for epoch in sorted(probe.checkpoints) if epoch > bank["last_epoch"]]
-    if newer:
-        epoch = newer[-1]
-        return _side_launch(state, probe, "run_harvest", {"key": probe.checkpoints[epoch], "checkpoint": probe.checkpoints[epoch], "epoch": epoch})
-    if not probe.runs.get("stage1_b", IDLE).alive:
-        return _pause(f"phase B ended before a checkpoint gave {state['policy']['harvest_min']} verified grasps",
-                      "decide on stage 1 before harvesting again")
-    return _wait("waiting for the next phase-B checkpoint")
+            return Decision("commit_bank", f"{meta['verified']} verified grasps at iter {iteration:02d} ep {record['epoch']}",
+                            {"checkpoint": record["key"], "verified": meta["verified"], "epoch": record["epoch"], "iter": iteration, "label": label})
+        return Decision("record_harvest_miss", f"iter {iteration:02d} ep {record['epoch']}: {harvest.marker}",
+                        {"checkpoint": record["key"], "epoch": record["epoch"]})
+    for epoch in sorted(probe.checkpoints, reverse=True):
+        value = bin_mean(probe.success, epoch, width)
+        if probe.checkpoints[epoch] not in bank["tried"] and value is not None and value >= policy["t2r_harvest_success"]:
+            return _side_launch(state, probe, "run_harvest", {"key": probe.checkpoints[epoch], "checkpoint": probe.checkpoints[epoch], "epoch": epoch})
+    last = last_epoch(probe.success)
+    success, latched = bin_mean(probe.success, last, width), bin_mean(probe.latched, last, width)
+    finished = probe.runs.get("stage1_t2r", IDLE).finished
+    early = last >= policy["t2r_early_epoch"] and (success or 0.0) == 0.0 and (latched or 0.0) < policy["t2r_early_latched"]
+    if finished or early:
+        return Decision("end_round", f"iter {iteration:02d} {'finished' if finished else 'ended early'} at epoch {last}, latched {_pct(latched)}", {
+            "iter": iteration, "label": label, "end_epoch": last, "ended": "round_epochs" if finished else "early",
+            "success_max": max((v for _, v in probe.success), default=0.0), "latched_max": max((v for _, v in probe.latched), default=0.0),
+        })
+    return _wait(f"t2r iter {iteration:02d} epoch {last}, success {_pct(success)}, latched {_pct(latched)}")
 
 
 def _vlm_target(state: Mapping, probe: Probe) -> Decision:
@@ -421,7 +409,7 @@ def _stage2_train(state: Mapping, probe: Probe) -> Decision:
         if not smoke.passed:
             return _pause(f"stage-2 environment smoke failed: {smoke.marker}", "read its SMOKE CHECK FAILED lines")
     if live_record(state, "stage2") is None:
-        if any(probe.runs.get(name, IDLE).alive for name in ("stage1_a", "stage1_b")):
+        if any(probe.runs.get(name, IDLE).alive for name in ("stage1_t2r",)):
             return _wait("a stage-1 training is still alive")
         return Decision("launch_stage2", f"{policy['stage2_epochs']} epochs x {policy['stage2_num_envs']} envs", {"key": policy["labels"]["stage2"]})
     new = sorted(epoch for epoch in probe.evals if str(epoch) not in state["eval"])
@@ -495,7 +483,7 @@ def _completion_review(state: Mapping, probe: Probe) -> Decision:
 
 
 _DECIDERS = {
-    "stage1_a": _stage1_a, "calibrate": _calibrate, "stage1_b": _stage1_b, "harvest": _harvest, "vlm_target": _vlm_target,
+    "stage1_t2r": _stage1_t2r, "vlm_target": _vlm_target,
     "stage2_train": _stage2_train, "observe_requery": _observe_requery, "completion_review": _completion_review,
     "done": lambda state, probe: _wait("done"),
 }
@@ -528,27 +516,8 @@ def _apply_pause(new: dict, decision: Decision, params: Mapping, outcome: Mappin
     new["status"], new["awaiting"] = "awaiting", {"reason": decision.reason, "needs": params["needs"], "phase": new["phase"]}
 
 
-def _apply_record_gate(new: dict, decision: Decision, params: Mapping, outcome: Mapping) -> None:
-    new["gate1"] = {"epoch": params["epoch"], "latched": params["latched"], "passed": params["passed"]}
-    if not params["passed"]:
-        _apply_pause(new, decision, {"needs": "phase A missed the gate: resume to go on (a new gate_epoch judges again), or stop it"}, outcome)
-
-
 def _apply_advance(new: dict, decision: Decision, params: Mapping, outcome: Mapping) -> None:
     new["phase"] = params["to"]
-    if params["to"] == "calibrate":
-        new["calibration"] = {"checkpoint": params["checkpoint"], "epoch": params["epoch"], "tried": [], "passed": False}
-
-
-def _apply_next_calibration(new: dict, decision: Decision, params: Mapping, outcome: Mapping) -> None:
-    calibration = new["calibration"]
-    calibration["tried"].append(calibration["checkpoint"])
-    calibration["checkpoint"], calibration["epoch"] = params["checkpoint"], params["epoch"]
-
-
-def _apply_commit_calibration(new: dict, decision: Decision, params: Mapping, outcome: Mapping) -> None:
-    new["calibration"]["passed"] = True
-    new["phase"] = "stage1_b"
 
 
 def _apply_record_harvest_miss(new: dict, decision: Decision, params: Mapping, outcome: Mapping) -> None:
@@ -561,7 +530,21 @@ def _apply_record_harvest_miss(new: dict, decision: Decision, params: Mapping, o
 def _apply_commit_bank(new: dict, decision: Decision, params: Mapping, outcome: Mapping) -> None:
     bank = new["bank"] or {"tried": [], "last_epoch": 0}
     new["bank"] = {**bank, "checkpoint": params["checkpoint"], "verified": params["verified"], "path": outcome.get("path")}
+    new["t2r"]["rounds"].append({"iter": params["iter"], "label": params["label"], "end_epoch": params["epoch"], "ended": "handover",
+                                 "run_dir": outcome.get("run_dir"), "reward_sha256": outcome.get("reward_sha256")})
     new["phase"] = "vlm_target"
+
+
+def _apply_end_round(new: dict, decision: Decision, params: Mapping, outcome: Mapping) -> None:
+    t2r = new["t2r"]
+    t2r["rounds"].append({"iter": params["iter"], "label": params["label"], "end_epoch": params["end_epoch"], "ended": params["ended"],
+                          "success_max": params["success_max"], "latched_max": params["latched_max"],
+                          "run_dir": outcome.get("run_dir"), "reward_sha256": outcome.get("reward_sha256")})
+    t2r["iter"], t2r["requests"] = params["iter"] + 1, 0
+
+
+def _apply_t2r_generate(new: dict, decision: Decision, params: Mapping, outcome: Mapping) -> None:
+    new["t2r"]["requests"] += 1
 
 
 def _apply_ingest(new: dict, decision: Decision, params: Mapping, outcome: Mapping) -> None:
@@ -590,8 +573,6 @@ def _apply_resume(new: dict, decision: Decision, params: Mapping, outcome: Mappi
     unknown = sorted(set(updates) - set(DEFAULT_POLICY))
     if unknown:
         raise ValueError(f"unknown policy keys {unknown}")
-    if updates.get("gate_epoch", new["policy"]["gate_epoch"]) != new["policy"]["gate_epoch"]:
-        new["gate1"] = None
     labels = {**new["policy"]["labels"], **updates.pop("labels", {})}
     new["policy"] = {**new["policy"], **updates, "labels": labels}
     new["status"], new["awaiting"] = "running", None
@@ -599,6 +580,7 @@ def _apply_resume(new: dict, decision: Decision, params: Mapping, outcome: Mappi
         if name in new["runs"]:
             new["runs"][name] = {**new["runs"][name], "cleared": new["updated"]}
     new["vlm_requests"] = {}
+    new["t2r"] = {**new["t2r"], "requests": 0}
 
 
 def _apply_vlm_generate(new: dict, decision: Decision, params: Mapping, outcome: Mapping) -> None:
@@ -607,9 +589,9 @@ def _apply_vlm_generate(new: dict, decision: Decision, params: Mapping, outcome:
 
 
 _APPLIERS = {
-    "pause": _apply_pause, "record_gate": _apply_record_gate, "advance": _apply_advance,
-    "next_calibration": _apply_next_calibration, "commit_calibration": _apply_commit_calibration,
+    "pause": _apply_pause, "advance": _apply_advance,
     "record_harvest_miss": _apply_record_harvest_miss, "commit_bank": _apply_commit_bank, "ingest": _apply_ingest,
     "commit_interaction": _apply_commit_interaction, "record_eval": _apply_record_eval, "approve": _apply_approve,
     "resume": _apply_resume, "vlm_generate": _apply_vlm_generate,
+    "end_round": _apply_end_round, "t2r_generate": _apply_t2r_generate,
 }
