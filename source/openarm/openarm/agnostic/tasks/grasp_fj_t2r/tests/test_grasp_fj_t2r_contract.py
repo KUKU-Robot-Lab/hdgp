@@ -121,9 +121,12 @@ def test_reward_gate_latches_follow_the_user_three_stages_of_0915():
         assert tok in init, tok
     bc = _fn_block(_ENV, "_build_context")
     # ★09.15 사용자 "컵에 다가가는 palm_ee_x · 손가락 방향(palm_ee_z)" — 접근 래치는 시작 자세의 손 방향(palm_ee 프레임 x·z)을 본다.
-    _ordered(bc, ["orient=hand_orientation(palm_center, R[:, :, 0], R[:, :, 2]", "update_gates(", "vals = dict(",
-                  "palm_finger_dir=R[:, :, 2]", "hand_default_q_norm=", "approach_done=self._t2r_gate_approach",
-                  "envelope_done=self._t2r_gate_envelope", "v.clone() if isinstance(v, torch.Tensor) else v"])
+    # ★09.15 23:2x 사용자 "C자 사전파지로 재정의" — 손바닥면·손가락 방향 오프셋·띠 높이는 palm_ee 프레임(법선 x · 손가락 z)으로 잰다.
+    _ordered(bc, ["c_pregrasp_geometry(palm_center, R[:, :, 0], R[:, :, 2], cup_local, axis, self._obj_grasp_r)",
+                  "approach_conditions(", "orient=hand_orientation(R[:, :, 0], R[:, :, 2])", "update_gates(",
+                  "vals = dict(", "palm_finger_dir=R[:, :, 2]", "hand_default_q_norm=",
+                  "approach_done=self._t2r_gate_approach", "envelope_done=self._t2r_gate_envelope",
+                  "v.clone() if isinstance(v, torch.Tensor) else v"])
     rs = _fn_block(_ENV, "_reset_idx")
     _ordered(rs, ["self._event_ema(self._t2r_gate_ema", "self._t2r_gate_approach[ids] = False",
                   "self._t2r_gate_envelope[ids] = False", "super()._reset_idx(env_ids)"])
@@ -131,6 +134,25 @@ def test_reward_gate_latches_follow_the_user_three_stages_of_0915():
     assert 'f"stage/{name}_gate_ep"' in log
     # 접근 래치가 0 일 때 네 조건 중 무엇이 막는지(09.15 틱: 퍼널 접근 0.56 인데 래치 0 — 로그로 구분 불가)
     assert 'f"stage/approach_ok_{name}_now"' in log and "APPROACH_CONDITIONS" in log
+
+
+def test_near_start_curriculum_moves_the_arm_after_the_track_b_reset_and_splits_the_logs():
+    # ★09.15 사용자 "시작 상태 커리큘럼 + env 고정": 두 번째 에피소드부터 절반을 컵 옆(C자 완료 조금 앞) IK 자세에서 시작한다.
+    #   · B 의 `_reset_idx`(홈 → 고정 시작 자세 → 손 기본 자세)가 끝난 **뒤** 팔 관절 상태와 목표(q*·이전 q*)를 함께 덮는다.
+    #   · 첫 스텝 부팅 가드(B `_log_fabric_metrics`, common_step_counter ≤ 4 에서 시작 거리 평균)는 먼 출발만 보게 한다.
+    #   · 끝난 에피소드의 출발 그룹으로 래치·퍼널 EMA 를 따로 민다 — 가까운 출발이 먼 출발 접근률을 부풀리지 않게.
+    init = _fn_block(_ENV, "__init__")
+    for tok in ("near_start_species", "self._species_names", "near_start_arm_q", "self._t2r_near =",
+                "self._t2r_gate_ema_grp", "self._t2r_stage_ema_grp"):
+        assert tok in init, tok
+    rs = _fn_block(_ENV, "_reset_idx")
+    _ordered(rs, ["self._event_ema(self._t2r_gate_ema_grp", "super()._reset_idx(env_ids)",
+                  "self.common_step_counter > int(self.cfg.near_start_after_common_steps)",
+                  "float(self.cfg.near_start_frac)", "self._species_ids[pick]", "self.robot.write_joint_state_to_sim(",
+                  "self._arm_q_target[pick] =", "self._prev_arm_q_target[pick] =", "self._t2r_near[pick] = True"])
+    log = _fn_block(_ENV, "_log_fabric_metrics")
+    for tok in ('f"stage/{grp}_{name}_gate_ep"', 'f"stage/{grp}_{name}_ep"', '"stage/near_start_frac_now"'):
+        assert tok in log, tok
 
 
 def test_reward_code_path_defaults_empty_and_leaf_is_the_short_tl_hand():
@@ -146,6 +168,12 @@ def test_reach_leaf_carries_the_user_decisions_of_0914():
                 "k_arm: float = 0.05", "arm_dof_speed_scale: float = 3.0", "arm_slew_rad_s: float = 0.3",
                 "episode_length_s: float = 15.0", 'object_bank: str = "cup_family"', "start_palm_dist_band_m"):
         assert tok in blk, tok
+    # ★09.15 사용자 "시작 상태 커리큘럼 50 %" — reach leaf 만 켠다(envelope 판은 0 = 기존 그대로)
+    for tok in ("near_start_frac: float = 0.5", "near_start_after_common_steps: int = 4",
+                'near_start_species: tuple = ("cup_big_s085"', "near_start_arm_q: tuple = ("):
+        assert tok in blk, tok
+    base = _CFG.split("class GraspFJT2RReachEnvCfg", 1)[0]
+    assert "near_start_frac: float = 0.0" in base and "near_start_arm_q: tuple = ()" in base
     assert '("short_r", "grasp_fj_t2r_reach"): GraspFJT2RReachEnvCfg' in _REG
 
 

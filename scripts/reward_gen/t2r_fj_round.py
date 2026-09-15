@@ -83,9 +83,11 @@ TRACKS: dict[str, dict] = {
                        "sapg": False, "num_envs": 4096, "video_length": 900},
     #   ★09.15 사용자 "보상함수를 다시 구성 — 기본 핸드 자세로 접근 → 접근한 상태에서 인벨롭 파지 → 리프트": 같은 reach env
     #   (보상 게이트 래치 추가)·같은 알고리즘을 **새 이력**으로 돈다(reach 6라운드 이력은 생성기에 넣지 않는다). 라벨 fj_stage_iNN.
+    #   ★09.15 23:0x 사용자 "T2R 제대로 적용하면서 진행되는건지?" → "시작 상태 커리큘럼 + env 고정": 라운드는 끝까지 학습한 뒤 영상으로
+    #   판정한다 — `early_stop: False` 가 체크포인트·막힘·단계 연장을 끈다(`track_policy`).
     "grasp_fj_stage": {"task": "open-short_r_grasp_fj_t2r_reach-lstm",
                        "play": "open-short_r_grasp_fj_t2r_reach-play-lstm", "logdir": "grasp-fj-t2r-reach",
-                       "sapg": False, "num_envs": 4096, "video_length": 900},
+                       "sapg": False, "num_envs": 4096, "video_length": 900, "early_stop": False},
 }
 SUCCESS_TAG = "ctrl/prev_ep_successes_mean"
 KEY_TAGS = (SUCCESS_TAG, "task/successes_mean", "task/lifted_frac", "task/tol", "task/tilt_deg",
@@ -113,10 +115,21 @@ REF_ENVS = 12288
 _EPOCH_KEYS = ("ROUND_EPOCHS", "TOL_WINDOW", "LAST_N", "CHECK_APPROACH_EPOCH", "CHECK_ENVELOPE_EPOCH")
 
 
+#: 조기 판정을 끈 트랙의 체크포인트 epoch — 도달하지 않는 값
+NEVER_EPOCH = 10 ** 9
+
+
 def track_policy(t: dict, policy: dict = ROUND_POLICY) -> dict:
-    """트랙의 판정 수치 — epoch 창만 env 수로 환산해 프레임 기준을 맞춘다."""
+    """트랙의 판정 수치 — epoch 창만 env 수로 환산해 프레임 기준을 맞춘다.
+
+    ★`early_stop: False`(09.15 grasp_fj_stage 시작 상태 커리큘럼) — 체크포인트·막힘·단계 연장을 끄고 ROUND_EPOCHS/HOURS 에서만 끝낸다.
+    """
     scale = REF_ENVS / float(t["num_envs"])
-    return {**policy, **{k: int(round(policy[k] * scale)) for k in _EPOCH_KEYS}}
+    pol = {**policy, **{k: int(round(policy[k] * scale)) for k in _EPOCH_KEYS}}
+    if t.get("early_stop", True):
+        return pol
+    return {**pol, "CHECK_APPROACH_EPOCH": NEVER_EPOCH, "CHECK_ENVELOPE_EPOCH": NEVER_EPOCH,
+            "STUCK_STOP": False, "STAGE_EXTEND": False}
 
 
 def _ssh(cmd: str, timeout: int = 60, allow_timeout: bool = False) -> str:
@@ -287,9 +300,10 @@ def judge(summary: dict, st: dict, hours: float | None, policy: dict = ROUND_POL
         if env_ok is False and epoch >= 2 * policy["ROUND_EPOCHS"]:
             return "advance(envelope)", info
         return ("continue(success)" if keep_succ else "continue(curriculum)"), info
-    if stuck and epoch >= policy["TOL_WINDOW"]:
+    if stuck and policy.get("STUCK_STOP", True) and epoch >= policy["TOL_WINDOW"]:
         return f"advance(stuck:{stuck})", info
-    if stage_up and epoch < 2 * policy["ROUND_EPOCHS"] and (hours or 0.0) < 2 * policy["ROUND_HOURS"]:
+    if (stage_up and policy.get("STAGE_EXTEND", True) and epoch < 2 * policy["ROUND_EPOCHS"]
+            and (hours or 0.0) < 2 * policy["ROUND_HOURS"]):
         return "continue(stage)", info
     if epoch >= policy["ROUND_EPOCHS"] or (hours or 0.0) >= policy["ROUND_HOURS"]:
         return "advance", info

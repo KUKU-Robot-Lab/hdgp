@@ -26,8 +26,8 @@ from ..grasp_fj.grasp_fj_env import GraspFJEnv
 from ..grasp_fj.robot_profiles import PROFILES
 from .grasp_fj_t2r_env_cfg import GraspFJT2RRightShortEnvCfg
 from .grasp_gates import TOUCH_N as _GATE_TOUCH_N
-from .grasp_gates import (APPROACH_CONDITIONS, approach_conditions, hand_orientation, palm_facing, pose_deviation,
-                          update_gates)
+from .grasp_gates import (APPROACH_CONDITIONS, approach_conditions, c_pregrasp_geometry, hand_orientation,
+                          pose_deviation, update_gates)
 from .palm_frame import palm_center_offset
 from .stage_funnel import STAGES, palm_band_gap, step_flags
 from .t2r.context import RewardContext
@@ -38,6 +38,8 @@ from .t2r.prompts import LOCKED_SPAN_RAD
 _TOUCH_LOG_N = 0.1
 #: 보상 게이트 래치 이름 — 로그 `stage/<이름>_gate_ep`, 순서 = `_t2r_gate_ema` 열.
 GATE_NAMES = ("approach", "envelope")
+#: 출발 그룹 — 로그 `stage/<그룹>_<래치|단계>_ep`, 순서 = `_t2r_gate_ema_grp`·`_t2r_stage_ema_grp` 행(09.15 시작 상태 커리큘럼).
+START_GROUPS = ("far", "near")
 
 
 class GraspFJT2REnv(GraspFJEnv):
@@ -61,6 +63,22 @@ class GraspFJT2REnv(GraspFJEnv):
         self._t2r_gate_ema = torch.full((len(GATE_NAMES),), -1.0, device=self.device)
         self._t2r_default_q_norm = ((self._hand_reset_q - self._act_lo) / self._act_span).clamp(0.0, 1.0)
         self._t2r_movable = (self._act_hi - self._act_lo) > LOCKED_SPAN_RAD
+        self._t2r_approach_ok = torch.zeros(len(APPROACH_CONDITIONS), device=self.device)
+        # ★09.15 사용자 "시작 상태 커리큘럼 + env 고정" — 이번 에피소드의 출발 그룹(가까운 출발 = True)과 그룹별 래치·퍼널 EMA,
+        #   컵 종류별 가까운 출발 팔 자세(reach leaf cfg 의 IK 표, 행 = 뱅크 순서 = env_id % N).
+        self._t2r_near = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._t2r_gate_ema_grp = torch.full((len(START_GROUPS), len(GATE_NAMES)), -1.0, device=self.device)
+        self._t2r_stage_ema_grp = torch.full((len(START_GROUPS), len(STAGES)), -1.0, device=self.device)
+        self._t2r_near_q = None
+        if float(self.cfg.near_start_frac) > 0.0:
+            if tuple(self.cfg.near_start_species) != tuple(self._species_names):
+                raise RuntimeError(f"[grasp_fj_t2r] 가까운 출발 IK 표의 컵 순서 {tuple(self.cfg.near_start_species)} ≠ 뱅크 "
+                                   f"{tuple(self._species_names)} — env_id % N 배정과 어긋난다")
+            _rows = tuple(self.cfg.near_start_arm_q)
+            if len(_rows) != len(self._species_names) or any(len(r) != len(self._arm_ids_t) for r in _rows):
+                raise RuntimeError(f"[grasp_fj_t2r] near_start_arm_q 는 컵 {len(self._species_names)}종 × 팔 "
+                                   f"{len(self._arm_ids_t)}관절이어야 한다: {[len(r) for r in _rows]}")
+            self._t2r_near_q = torch.tensor(_rows, device=self.device, dtype=torch.float32)
         # ★09.14 사용자 "손바닥의 중심쪽은 palm_ee xform" — palm_idx 는 프로필 palm_body(손바닥 링크 원점, 손목 쪽)다.
         #   ctx.palm_pos 는 자산 URDF 의 palm_ee fixed 조인트 오프셋만큼 옮긴 손바닥 중심을 넘긴다(회전은 같아 법선은 그대로).
         _prof = PROFILES[self.cfg.profile_name]
@@ -70,6 +88,9 @@ class GraspFJT2REnv(GraspFJEnv):
         print(f"[grasp_fj_t2r] 보상 = {self._reward_src} · 보상 전용 컵 접촉 센서 {_n}+1(손바닥) · "
               f"필터 {self._t2r_filter} · 손바닥 중심 = {_prof.palm_body} + {tuple(round(v, 4) for v in _off)} m(palm_ee) · "
               f"게이트 래치 {GATE_NAMES} · 기본 손 자세(움직이는 관절 {int(self._t2r_movable.sum())}개) · 관측 불변", flush=True)
+        print(f"[grasp_fj_t2r] 접근 래치 = C자 사전파지 {APPROACH_CONDITIONS} · 가까운 출발 "
+              + (f"{float(self.cfg.near_start_frac):.0%} (공통 스텝 > {int(self.cfg.near_start_after_common_steps)}, "
+                 f"컵 {len(self._species_names)}종 IK)" if self._t2r_near_q is not None else "끔"), flush=True)
 
     # ------------------------------------------------------------------
     def _setup_scene(self) -> None:
@@ -165,17 +186,20 @@ class GraspFJT2REnv(GraspFJEnv):
         axis = quat_apply(cup_quat, torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(n, 3))
         raw = getattr(self, "_act_raw", self.actions).clamp(-1.0, 1.0)
         # ★09.15 보상 게이트 래치 — 이 스텝 상태로 접근 완료·인벨롭 완료를 갱신한다(한 번 서면 리셋까지 유지).
-        #   접근 = 손바닥 중심↔파지 띠 · 손바닥 방향 · 손 방향 · 기본 손 자세, 인벨롭 = 접근 뒤 손바닥+엄지+손가락 수 연속. 수치는 grasp_gates.
-        #   ★09.15 사용자 "컵에 다가가는 palm_ee_x · 손가락 방향(palm_ee_z)" — 손 방향 = palm_ee 프레임 x(법선)·z(손가락)가 시작 자세 그대로.
-        gate_in = dict(
-            gap=palm_band_gap(palm_center, cup_local, axis, self._obj_grasp_r, self._obj_grasp_h),
-            facing=palm_facing(palm_center, R[:, :, 0], cup_local, axis),
-            orient=hand_orientation(palm_center, R[:, :, 0], R[:, :, 2], cup_local, axis),
-            pose_dev=pose_deviation(q_norm, self._t2r_default_q_norm, self._t2r_movable))
-        self._t2r_approach_ok = approach_conditions(**gate_in).float().mean(dim=0)
+        #   ★09.15 23:2x 사용자 "C자 사전파지로 재정의" — 기본 자세 엄지가 손바닥면 118 mm 앞으로 뻗어, 접근 완료는 컵이 엄지와 네
+        #   손가락 사이에 든 자리다: 손바닥면↔옆면 · 컵 축의 손가락 방향 오프셋 · 띠 높이 · 시작 방향(palm_ee 프레임 x 법선·z 손가락) ·
+        #   기본 손 자세 · 손가락·엄지 무접촉. 인벨롭 = 접근 뒤 손바닥+엄지+손가락 수 연속. 수치는 grasp_gates.
+        finger_touch = (links_f > _GATE_TOUCH_N).any(dim=2)
+        plane_gap, along_offset, height = c_pregrasp_geometry(palm_center, R[:, :, 0], R[:, :, 2], cup_local, axis, self._obj_grasp_r)
+        cond = approach_conditions(
+            plane_gap=plane_gap, along_offset=along_offset, height=height, half_height=self._obj_grasp_h,
+            orient=hand_orientation(R[:, :, 0], R[:, :, 2]),
+            pose_dev=pose_deviation(q_norm, self._t2r_default_q_norm, self._t2r_movable),
+            digit_touch=finger_touch.any(dim=1))
+        self._t2r_approach_ok = cond.float().mean(dim=0)
         self._t2r_gate_approach, self._t2r_gate_env_count, self._t2r_gate_envelope = update_gates(
-            self._t2r_gate_approach, self._t2r_gate_env_count, self._t2r_gate_envelope, **gate_in,
-            palm_touch=palm_f > _GATE_TOUCH_N, finger_touch=(links_f > _GATE_TOUCH_N).any(dim=2))
+            self._t2r_gate_approach, self._t2r_gate_env_count, self._t2r_gate_envelope, approach_ok=cond.all(dim=1),
+            palm_touch=palm_f > _GATE_TOUCH_N, finger_touch=finger_touch)
         vals = dict(
             table_z=float(self.cfg.table_surface_z),
             lift_latch_height=float(self._rw_cfg.lift_latch_height),
@@ -252,6 +276,13 @@ class GraspFJT2REnv(GraspFJEnv):
         # 접근 래치가 안 설 때 네 조건 중 무엇이 막는지 — 이 스텝에 조건별로 통과한 env 비율(09.15 틱: 퍼널 접근 0.56 · 래치 0).
         for k, name in enumerate(APPROACH_CONDITIONS):
             ex[f"stage/approach_ok_{name}_now"] = self._t2r_approach_ok[k]
+        # ★09.15 시작 상태 커리큘럼 — 끝난 에피소드의 출발 그룹별 래치·퍼널 비율(가까운 출발이 먼 출발 접근률을 부풀리지 않게).
+        for g, grp in enumerate(START_GROUPS):
+            for k, name in enumerate(GATE_NAMES):
+                ex[f"stage/{grp}_{name}_gate_ep"] = self._t2r_gate_ema_grp[g, k]
+            for k, name in enumerate(STAGES):
+                ex[f"stage/{grp}_{name}_ep"] = self._t2r_stage_ema_grp[g, k]
+        ex["stage/near_start_frac_now"] = self._t2r_near.to(touching.dtype).mean()
 
     def _reset_idx(self, env_ids) -> None:
         ids = self.robot._ALL_INDICES if env_ids is None else env_ids
@@ -263,6 +294,12 @@ class GraspFJT2REnv(GraspFJEnv):
             self._t2r_stage_ema = self._event_ema(self._t2r_stage_ema, latch.float(), ended)
             gates = torch.stack([self._t2r_gate_approach, self._t2r_gate_envelope], dim=1).float()
             self._t2r_gate_ema = self._event_ema(self._t2r_gate_ema, gates, ended)
+            # ★09.15 시작 상태 커리큘럼 — 끝난 에피소드를 그 출발 그룹(먼 · 가까운)으로 따로 민다(그룹은 아래에서 다시 뽑는다).
+            groups = (~self._t2r_near, self._t2r_near)
+            self._t2r_gate_ema_grp = torch.stack([self._event_ema(self._t2r_gate_ema_grp[g], gates, ended & m)
+                                                  for g, m in enumerate(groups)])
+            self._t2r_stage_ema_grp = torch.stack([self._event_ema(self._t2r_stage_ema_grp[g], latch.float(), ended & m)
+                                                   for g, m in enumerate(groups)])
             latch[ids] = False
             self._t2r_gate_approach[ids] = False
             self._t2r_gate_env_count[ids] = 0
@@ -271,3 +308,21 @@ class GraspFJT2REnv(GraspFJEnv):
         prev = getattr(self, "_t2r_prev_actions", None)
         if prev is not None:
             prev[ids] = 0.0
+        near_q = getattr(self, "_t2r_near_q", None)
+        if near_q is not None:
+            # ★09.15 사용자 "시작 상태 커리큘럼 + env 고정" — B 리셋(홈 → 고정 시작 자세 → 손 기본 자세)이 끝난 **뒤**, 두 번째 에피소드부터
+            #   (B 부팅 시작 거리 가드는 common_step_counter ≤ 4 에서 먼 출발 평균만 본다) `near_start_frac` 을 컵 종류별 IK 자세
+            #   (C자 완료 조금 앞 · 시작 방향 · 기본 손 자세)에서 시작한다. 팔 관절 상태와 q*·이전 q* 를 함께 덮어 실측 q = 지령 q* 다
+            #   (B 의 고정 시작 자세와 같은 규약). 컵 스폰 ±2 cm 는 그대로 — 자세 여유(손바닥면 3 cm · 컵 축 R+2.5 cm)가 겹침을 막는다.
+            idx = torch.as_tensor(ids, device=self.device, dtype=torch.long)
+            self._t2r_near[idx] = False
+            if self.common_step_counter > int(self.cfg.near_start_after_common_steps):
+                pick = idx[torch.rand(len(idx), device=self.device) < float(self.cfg.near_start_frac)]
+                if len(pick):
+                    q = self.robot.data.joint_pos[pick].clone()
+                    q[:, self._arm_ids_t] = torch.clamp(near_q[self._species_ids[pick]],
+                                                        self._arm_lo[pick], self._arm_hi[pick])
+                    self.robot.write_joint_state_to_sim(q, torch.zeros_like(q), env_ids=pick)
+                    self._arm_q_target[pick] = q[:, self._arm_ids_t]
+                    self._prev_arm_q_target[pick] = self._arm_q_target[pick]
+                    self._t2r_near[pick] = True

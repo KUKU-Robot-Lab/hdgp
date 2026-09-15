@@ -356,9 +356,28 @@ def test_stage_track_trains_the_reach_env_with_its_own_history():
         assert stage[k] == reach[k], k
 
 
+def test_stage_track_runs_every_round_to_the_end_without_early_stops():
+    # ★09.15 23:0x 사용자 "T2R 제대로 적용하면서 진행되는건지?" → 결정 "시작 상태 커리큘럼 + env 고정": 라운드는 끝까지
+    #   (4096 env 3000 epoch 또는 4 h) 학습한 뒤 영상으로 판정한다 — 체크포인트·막힘·단계 연장 규칙을 이 트랙에선 끈다.
+    pol = R.track_policy(R.track("grasp_fj_stage"))
+    assert pol["ROUND_EPOCHS"] == 3000 and pol["ROUND_HOURS"] == 4.0
+    no_gate = {**_summ(0.0), "stage/approach_gate_ep": {"last": 0.0, "now": 0.0},
+               "stage/envelope_gate_ep": {"last": 0.0, "now": 0.0}}
+    assert R.judge(no_gate, {**ALIVE, "epoch": 2000}, 2.5, pol)[0] == "continue"
+    stuck = {**no_gate, "stage/reach_ep": {"now": 0.98, "ago": 0.95}, "stage/grasp_ep": {"now": 0.0, "ago": 0.0}}
+    assert R.judge(stuck, {**ALIVE, "epoch": 2000}, 2.5, pol)[0] == "continue"
+    rising = {**no_gate, "stage/reach_ep": {"now": 0.5, "ago": 0.2}}
+    assert R.judge(rising, {**ALIVE, "epoch": 3000}, 3.4, pol)[0] == "advance"
+    assert R.judge(no_gate, {**ALIVE, "epoch": 1500}, 4.0, pol)[0] == "advance"
+    # 다른 트랙(기본 정책)은 그대로 조기 규칙을 쓴다 — 게이트 태그가 없는 요약으로 막힘 규칙만 본다
+    plain_stuck = {k: v for k, v in stuck.items() if "gate" not in k}
+    assert R.judge(plain_stuck, {**ALIVE, "epoch": 700}, 2.2)[0] == "advance(stuck:grasp)"
+
+
 def test_gate_checkpoints_stop_a_run_that_skips_the_intended_stages():
     # ★09.15 사용자: 의도한 동작이 안 나오면 학습을 계속하지 않는다 — 단계 체크포인트는 최근 창 평균(last)으로 본다(마지막 한 점 아님)
-    pol = R.track_policy(R.track("grasp_fj_stage"))
+    #   (09.15 23:0x 부터 grasp_fj_stage 는 끝까지 학습 — 판정 규칙 자체는 조기 규칙을 쓰는 트랙 정책으로 잠근다)
+    pol = R.track_policy(R.track("grasp_fj_reach"))
     assert pol["CHECK_APPROACH_EPOCH"] == 600 and pol["CHECK_ENVELOPE_EPOCH"] == 1500
     no_approach = {**_summ(0.0), "stage/approach_gate_ep": {"last": 0.1, "now": 0.4},
                    "stage/envelope_gate_ep": {"last": 0.0, "now": 0.0}}

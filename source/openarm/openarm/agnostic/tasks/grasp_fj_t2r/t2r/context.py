@@ -37,7 +37,7 @@ class RewardContext:
     hand_q: torch.Tensor           # (N,19) finger joint angles [rad], order = the hand joint table in the robot description
     hand_q_norm: torch.Tensor      # (N,19) joint angles normalised to each joint's commandable range: 0 = lower limit (straight), 1 = upper limit (most flexed)
     hand_target_norm: torch.Tensor  # (N,19) commanded finger joint targets (after filtering), same normalisation as hand_q_norm
-    hand_default_q_norm: torch.Tensor  # (N,19) the hand's default pose: the finger joint angles every episode starts with, same normalisation as hand_q_norm (the same in every environment)
+    hand_default_q_norm: torch.Tensor  # (N,19) the hand's default pose: the finger joint angles every episode starts with, same normalisation as hand_q_norm (the same in every environment); in this pose the four fingers are straight, and the thumb, rotated into opposition, is straight and points along palm_normal, reaching about 0.12 m out from the palm surface at the wrist end of the palm (behind palm_pos along palm_finger_dir)
     hand_qd: torch.Tensor          # (N,19) finger joint velocities [rad/s]
     hand_z_min: torch.Tensor       # (N,) height of the lowest hand link, palm excluded [m]; below table_z - 0.03 ends the episode wherever the hand is
 
@@ -66,7 +66,7 @@ class RewardContext:
     episode_progress: torch.Tensor  # (N,) elapsed fraction [0,1] of the step budget; the budget restarts after every success
 
     # ---- stage completion flags: kept by the environment, stay True until the episode ends ----
-    approach_done: torch.Tensor    # (N,) bool, set on the first step on which all of these held at once: the palm centre was within 2 cm of the surface of the cup's graspable band; the palm faced the cup axis (palm_normal within about 45 degrees of the direction from the palm to the axis); the palm was on the cup's -y side (the direction from the cup axis to the palm centre, perpendicular to the axis, within about 45 degrees of -y); the hand kept its start-pose orientation (palm_normal within about 45 degrees of +y and palm_finger_dir within about 45 degrees of +x); and every movable finger joint was within 0.15 of hand_default_q_norm (joints with a range of 0.05 rad or less are ignored)
+    approach_done: torch.Tensor    # (N,) bool, set on the first step on which all of these held at once, i.e. the cup sat between the extended thumb and the four fingers in front of the palm: the palm plane was within 2 cm of the cup's side (the distance from palm_pos to the cup axis along palm_normal, minus cup_radius, was at most 0.02 m); the cup axis was ahead of palm_pos along palm_finger_dir by between cup_radius - 0.005 m and cup_radius + 0.02 m; palm_pos was within the height of the graspable band (at most cup_half_height from cup_pos along cup_axis); the hand kept its start-pose orientation (palm_normal within about 45 degrees of +y and palm_finger_dir within about 45 degrees of +x); every movable finger joint was within 0.15 of hand_default_q_norm (joints with a range of 0.05 rad or less are ignored); and no finger or thumb link touched the cup (contact force above 0.1 N)
     envelope_done: torch.Tensor    # (N,) bool, set once, after approach_done, the palm, the thumb and at least 4 digits in total (the thumb included) touched the cup for 5 consecutive steps; the palm or a finger counts as touching when its contact force with the cup is above 0.1 N
 
     # ---- actions ---------------------------------------------------------------------------

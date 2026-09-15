@@ -16,6 +16,9 @@
 테이블 가장자리 시작·cup_family·0.3 rad/s·15 s — 09.14 최종 목표, PPO-LSTM 4096 · i00 만 SAPG 12,288 · i05 에서 정지) ·
 ★`grasp_fj_stage`(라벨 `fj_stage_iNN`, 09.15 사용자 3단계 재구성 — 같은 reach env + 보상 게이트 래치, **새 이력**, 과제 문장
 `tasks/grasp_fj_stage.txt`, 조임 적응은 이번 범위 밖). cron 프롬프트가 트랙을 지정한다.
+★09.15 23:0x 사용자 "T2R 제대로 적용하면서 진행되는건지?" → grasp_fj_stage 는 iter_02 부터 **시작 상태 커리큘럼(가까운 출발 50 %) ·
+C자 사전파지 접근 래치 · env/래치/과제 문장 고정 · 조기 판정 끔**(`TRACKS.early_stop False` — 체크포인트·막힘·단계 연장 없음, 라운드는
+3000 epoch 또는 4 h 끝까지 → 영상 판정). 틱 보고는 출발 그룹별(`stage/far_*`·`stage/near_*`)로 적는다. 라운드 사이에 env 를 바꾸지 않는다.
 ★판정 창은 **프레임 기준**(사용자 09.14): `track_policy` 가 ROUND_POLICY 의 epoch 값(라운드·창·평균)을 12,288/env 수 배로 늘린다 —
 아래의 "200 epoch" 은 기준값이고 reach(4096)는 **600 epoch**, 라운드 끝은 **3000 epoch**(≈3.3 h). 시간 상한 4 h 는 그대로.
 상태: `reward_gen/<track>/LOOP_STATE.json` = {"track","iter","label","round","awaiting","best","success_ticks",...}

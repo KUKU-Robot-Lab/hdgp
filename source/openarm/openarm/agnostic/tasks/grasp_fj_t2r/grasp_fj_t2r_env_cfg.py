@@ -20,6 +20,13 @@ class GraspFJT2RRightShortEnvCfg(GraspFJTesolloRightShortEnvCfg):
     #: 생성 보상 코드(`compute_reward(ctx)`) 절대경로. 비면 **영 보상** — 부팅·무작위 롤아웃 전용.
     #:   env 가 `__init__` 에서 읽는다(런타임) — hydra override 가 `__post_init__` 에 구워지는 함정이 없다.
     reward_code_path: str = ""
+    #: ★09.15 사용자 "시작 상태 커리큘럼 + env 고정" — 리셋 중 이 비율을 컵 옆 IK 자세에서 시작한다(0 = 끔). reach leaf 만 켠다.
+    near_start_frac: float = 0.0
+    #: 공통 스텝이 이 값 이하일 때는 가까운 출발을 쓰지 않는다 — B 부팅 시작 거리 가드(`common_step_counter <= 4`)가 먼 출발만 본다.
+    near_start_after_common_steps: int = 4
+    #: 가까운 출발 팔 관절(r_aj_1..7) 표 — 행 순서 = `near_start_species` = 물체 뱅크 순서(env_id % N). env 가 부팅에서 대조한다.
+    near_start_species: tuple = ()
+    near_start_arm_q: tuple = ()
 
 
 @configclass
@@ -46,3 +53,23 @@ class GraspFJT2RReachEnvCfg(GraspFJT2RRightShortEnvCfg):
     arm_slew_rad_s: float = 0.3
     episode_length_s: float = 15.0
     object_bank: str = "cup_family"
+    #: ★09.15 23:2x 사용자 "시작 상태 커리큘럼 + env 고정 · 50 % · C자 사전파지" — 두 번째 에피소드부터 절반을 컵 옆에서 시작한다.
+    #:   자세 = `urdf/tools/solve_arm_reset_pose.py`(short-tl URDF, 시작 자세와 같은 회전, rot-weight 0.3) 6D IK — 컵 8종 전부
+    #:   위치·회전 오차 0 · 관절한계 여유 15.7–42.6°. palm_ee 목표 = 스폰 중심 (0.362, −0.16) 에서 x −(R+0.025) · y −(R+0.03) ·
+    #:   z = 0.205 + 원점 오프셋 + 0.8·반높이 → C자 완료(손바닥면 ≤ 2 cm · 컵 축 R−0.5~R+2 cm)보다 3 cm · 2.5 cm 앞.
+    #:   컵 스폰 ±2 cm 에도 손바닥면 ≥ 1 cm · 컵 축 ≥ R+0.5 cm 라 손이 컵과 겹치지 않는다. 띠 중심 높이(0.5 H 이하)는 작은 컵에서
+    #:   팔꿈치 한계로 IK 미수렴(최대 29 mm)이라 0.8 H. `tests/test_grasp_gates.py` 가 FK 로 대조한다.
+    near_start_frac: float = 0.5
+    near_start_after_common_steps: int = 4
+    near_start_species: tuple = ("cup_big_s085", "cup_big_s100", "cup_big_s115", "cup_big_s130", "shaker_closed",
+                                 "cup_big_s090", "cup_big_s105", "cup_big_s120")
+    near_start_arm_q: tuple = (
+        (0.2721, 0.3501, -0.5729, 0.2741, 0.6373, 0.1909, 1.0545),      # cup_big_s085
+        (0.0933, 0.4461, -0.4102, 0.6141, 0.5813, 0.1431, 0.9039),      # cup_big_s100
+        (0.0043, 0.5752, -0.5059, 0.8202, 0.7443, 0.0710, 0.8600),      # cup_big_s115
+        (-0.0815, 0.6752, -0.5054, 0.9801, 0.8190, 0.0314, 0.8282),     # cup_big_s130
+        (0.1214, 0.5081, -0.6055, 0.7659, 0.7699, 0.0031, 0.8329),      # shaker_closed
+        (0.1950, 0.3850, -0.4638, 0.4207, 0.5715, 0.1717, 0.9857),      # cup_big_s090
+        (0.0684, 0.5050, -0.4985, 0.6907, 0.6879, 0.1038, 0.8946),      # cup_big_s105
+        (-0.0453, 0.5760, -0.4159, 0.8776, 0.6923, 0.0847, 0.8217),     # cup_big_s120
+    )

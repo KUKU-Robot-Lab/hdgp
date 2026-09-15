@@ -163,7 +163,9 @@ def test_prompt_env_facts_follow_the_variant():
         assert tok in env, tok
     reach = P.render_prompt(P.PromptSpec(task="T", variant="reach"))
     for tok in ("44 mm to 81 mm", "roughly 0.38 m", "0.05 * a", "0.3 rad/s", "900 steps (15 s)",
-                "+x points from the robot toward the table", "open cups of several sizes and a closed shaker"):
+                "+x points from the robot toward the table", "open cups of several sizes and a closed shaker",
+                # ★09.15 시작 상태 커리큘럼 — 생성기가 두 출발을 알아야 한다(환경 사실)
+                "From the second episode on", "with probability one half", "about 3 cm from the cup's side"):
         assert tok in reach, tok
     for tok in ("29 mm to 44 mm", "0.16 m", "600 steps"):
         assert tok not in reach, tok

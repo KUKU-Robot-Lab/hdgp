@@ -73,7 +73,13 @@ VARIANTS: dict[str, EnvFacts] = {
                "top, turned sideways, with the fingers pointing forward over the table edge; the palm is roughly "
                "0.38 m from the cup. A cup stands upright on the table; parallel environments use different cups "
                "(open cups of several sizes and a closed shaker), so the graspable radius (44 mm to 81 mm) and "
-               "half height (42 mm to 65 mm) differ between environments and are given per environment."),
+               "half height (42 mm to 65 mm) differ between environments and are given per environment. "
+               # ★09.15 시작 상태 커리큘럼(reach leaf `near_start_*`, IK·FK 대조 테스트) — 두 출발을 생성기가 알아야 한다
+               "From the second episode on, each episode starts with probability one half from a second pose "
+               "instead: the hand already beside the cup on its -y side, in the same orientation and default hand "
+               "pose as the raised start, with the palm about 3 cm from the cup's side, the cup axis about 2.5 cm "
+               "further along the fingers than in the position that sets approach_done, and the palm centre in the "
+               "upper part of the graspable band; the cup position still varies by up to 2 cm."),
         k_arm=0.05, arm_slew=0.3, episode_steps=900, episode_s=15.0),
 }
 
