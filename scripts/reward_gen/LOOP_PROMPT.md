@@ -7,6 +7,9 @@
    (09.14 사용자 지시 "이번엔 요청 전까지 계속 학습"). advance·kill·재생성 금지, 틱 보고만.
    status 는 이때 advance 대신 `continue(hold)` 를 낸다. crashed/dead 면 같은 iter 를 재기동한다.
    성공 조건에 닿아도 종료하지 않고 보고만 한다(영상 확인은 해도 된다). 해제는 사용자 요청으로만 `hold` 키를 지운다.
+   ★수렴 판정(09.15 사용자 "현재 학습 수렴할 때까지 진행"): 매 틱 `hold.convergence.history` 에
+   {epoch, recent10, adr} 를 추가하고, `adr/progress == 1.0` 이후 두 틱 연속 episode_success recent10 변화가
+   ±0.02 이내면 "수렴"으로 보고한다. 수렴해도 런은 유지하고 중단·eval 은 사용자 결정을 기다린다.
 1. `python3 scripts/reward_gen/t2r_round.py status --label <label> --iter reward_gen/pour_bi/iter_NN`
    → verdict 를 읽는다.
 2. verdict 별 행동
