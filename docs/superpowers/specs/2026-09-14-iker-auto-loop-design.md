@@ -183,3 +183,6 @@ API·Qwen 백엔드, 루프의 코드 자동 수정.
   `config_00/archive/2026-09-15_r7_short_lifts/loop/` 로 옮긴 뒤 트랙 `iker_shoe_c00_r8`, 라벨 `iker_grasp_c00_r8_a`·
   `iker_grasp_c00_r8_b`·`iker_vlm_c00_r8_s1` 로 다시 밟는다. A 는 `iker_grasp_c00_r6_a` 의 epoch 400 체크포인트에서
   `--checkpoint … --no-reset_epoch --max_iterations 800` 으로 이어학습하고, `loop.py init --policy` 에 `gate_epoch 550` 을 준다.
+- **1단계 t2r 전환(2026-09-15).** r8 A 는 게이트는 통과했지만 래치 뒤 버티지 못해 성공 0 이었다. 사용자 결정으로 1단계 A·
+  캘리브레이션·B·수확 단계를 `stage1_t2r`(t2r 보상 생성 라운드, 수확 시도 포함)로 바꾼다 — `2026-09-15-iker-stage1-t2r-design.md`.
+  VLM 목표 이후는 이 스펙 그대로다.
