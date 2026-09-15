@@ -69,7 +69,9 @@ PYTHONPATH=source/openarm python3 -m pytest source/openarm/openarm/agnostic/task
 - **손바닥:** palm_1·palm_2 hull 이 palm_sensor 패드 면을 1~5 mm 덮어 두 껍질만 convexDecomposition 으로 굽는다(`DECOMPOSITION_LINKS`). 20 mm 큐브를 패드에 대면 `palm_sensor` 에 잡힌다. 40 mm 평판은 CAD 껍질 테두리(+2 mm)에 먼저 닿는데, 이것은 정상이다.
 - **몸통:** body_link 도 decomposition 으로 굽는다. 팔 영자세에서 GPU hull 이 수십 mm 부풀어 중지 2.25 N·엄지 외전 25.6 mm 가짜 접촉이 났다. 사용자 원칙은 **가짜 형상 충돌을 필터로 가리지 않고 형상을 고치는 것**이다. 필터는 설계상 박힘인 thumb_2↔palm_2(allowlist `force_filter`)에만 쓴다.
 - **env 변경:** 트랙 프로필 `finger_sensor_bodies`=(`_1`, `_sensor`)(엄지 thumb_3, thumb_sensor). side_rig 2원소는 원위=팁=센서로 읽는다. 촉각 obs·접촉 동결·손가락 접촉력이 모두 `_sensor` 를 읽는다. **obs 의미가 바뀌었으니 이전 체크포인트는 이어 쓰지 않는다.**
-- **공유 자산 주의:** 모듈 `RH56F1_RIGHT`(Track B)는 (_1, _2, _tip) 그대로라 `_2`·`_tip` 접촉이 0 이다. 그 트랙을 재개할 때 고친다.
+- **모듈 프로필 수정(cb1fd8fe):** `RH56F1_RIGHT` 가 (_1, _sensor) 로 바뀌었다. Track B 도 이 값을 쓰고 grasp_fj 2원소 규약도 고쳤다. 이 트랙은 프로필을 상속한다.
+- **손 게인 30/0.3(사용자 결정 "30/0.3 으로 통일"):** 자산 USD 와 같은 값이다. 벤더 PD 는 없고 사양은 4지 >10 N·엄지 >15 N·전 범위 1 s 이다. 자기충돌 OFF 스윕에서 옛 5/2 는 추종이 0.51 rad 늦고 엄지가 중력에 7 mrad 처졌다. 30/0.3 은 0.01 rad·1.4 mrad 이다.
+- **t2r 재시작(사용자 결정):** 새 자산·obs·게인으로 iter_03 보상을 처음부터 학습한다. 라벨은 `t2r_rh_i03_a2` 이고, 옛 기록은 `iter_03/*_t2r_rh_i03.json` 에 있다. 자기충돌은 OFF 그대로 둔다.
 - **검증:** `probe_rh56f1_finger_sweep.py --contacts` 는 자기충돌 ON 에서 손 링크끼리 접촉이 0 이어야 한다. `--obstacle_mm`·`--contact_partners /World/obstacle` 로 외부 접촉이 `_sensor`/`palm_sensor` 에 잡히는지 본다.
 
 ### 09.15 보상 입력 손바닥 축 정정 (사용자 결정 "env 가 계약을 지키게")
