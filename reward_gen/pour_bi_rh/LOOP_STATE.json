@@ -1,12 +1,12 @@
 {
- "iter": 3,
- "label": "t2r_rh_i03_a2",
- "round": 4,
+ "iter": 4,
+ "label": "t2r_rh_i04",
+ "round": 6,
  "host": "vision-3090",
  "gpu": 0,
  "num_envs": 1024,
  "best": null,
- "started": 1789479306,
+ "started": 1789482850,
  "success_ticks": 0,
  "note": "09.14 RH56F1 pour_fabric_mimic · shaker_closed×0.65 · 손끝 파지 허용 · 대본 파지 게이트 면제(사용자 결정)",
  "restart": null,
@@ -29,7 +29,7 @@
   "iter": "reward_gen/pour_bi_rh/iter_03",
   "started": "22:35:06 (vision-3090, commit f7431e64)"
  },
- "prev_label": "t2r_rh_i03",
+ "prev_label": "t2r_rh_i03_a2",
  "loop_resumed_0915": "22:40 cron fbf66aa0 (13,43 * * * *, 세션 한정·7일 만료) — 재개 조건 충족: 자산 2판 자기충돌 ON 스윕 손 링크 접촉 0 (urdf 4a69859·hdgp 0e5ea6e7), 손 게인 30/0.3(cb1fd8fe), 게이트 PASS, t2r_rh_i03_a2 epoch 9 정상",
  "round_extension_t2r_rh_i03": {
   "decided": "09.15 사용자 '라운드 연장' — epoch 597 에서 오른손 파지 1.2%→7.9%(epoch 520→590) 상승 중",
@@ -63,5 +63,6 @@
  },
  "round5_end_t2r_rh_i03_a2": "09.15 epoch 146(0.72 h) — 사용자 'T2r 다시 생성해서 재학습 필요 · Usd 문제도 없으니 보상함수 문제' → notes_round5 승인, 학습 PID 1414015/1414022/1414027 종료(RUN_LABEL 확인). 양손 palm↔컵 16~17 cm·접촉 0·파지 0, 이전 런과 동일 패턴",
  "decisions_round5": "09.15 사용자 notes_round5 '승인·진행' — advance(iter_03/feedback.md, iter_04/prompt.md), iter_04 생성 시작",
- "loop_stopped_round5": "cron fbf66aa0 삭제(생성 중 틱 오판정 방지) — iter_04 기동 후 재등록"
+ "loop_stopped_round5": "cron fbf66aa0 삭제(생성 중 틱 오판정 방지) — iter_04 기동 후 재등록",
+ "loop_resumed_round6": "23:34 t2r_rh_i04 기동(e529df59) — cron 재등록, 틱 보고에 task/*_thumb_over_rim_near·_near_rate 포함"
 }

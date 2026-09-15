@@ -1,0 +1,8 @@
+{
+ "label": "t2r_rh_i04",
+ "num_envs": 1024,
+ "started": 1789482850,
+ "commit": "e529df59",
+ "host": "vision-3090",
+ "note": "notes_round5 반영 iter_04 — 접근=컵 옆 사전파지 영역·엄지 걸림 고정 벌점+thumb_low 곱·close 는 벽+엄지 낮을 때만"
+}
