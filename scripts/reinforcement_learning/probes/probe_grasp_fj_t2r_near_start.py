@@ -5,7 +5,7 @@
   같은 유지 액션으로 N 스텝. 가까운 출발 env 가
     · 비율 ≈ near_start_frac,
     · 첫 스텝에 C자 완료 조금 앞(손바닥면 4.5 cm · 컵 축 R+2.5 cm · 띠 0.8 H · 시작 방향)에 있고(컵 스폰 ±2 cm 포함),
-    · 손을 움직이지 않으면 접근 래치가 서지 않고(공짜 래치 없음),
+    · ★09.16 사용자 "가까운 출발 = 접근 완료로 시작" — 첫 스텝에 접근 래치가 서 있고(먼 출발은 안 서 있고),
     · 유지하는 동안 종료·abnormal 없이, 손가락·엄지가 컵에 닿지 않고, 컵이 밀리지 않고, 팔이 목표를 따라가는지.
   먼 출발 env 는 여전히 0.38 m 쪽에서 시작하는지.
 
@@ -90,6 +90,7 @@ for t in range(args.steps):
     geo = geometry(ctx)
     if t == 0:
         first = geo
+        latched_first = ctx.approach_done.clone()
     last = geo
     live = ~done_any                     # 한 번 끝난 env 는 새 에피소드라 이후 값을 섞지 않는다
     digit_max = torch.where(live, torch.maximum(digit_max, ctx.link_cup_force.amax(dim=(1, 2))), digit_max)
@@ -116,13 +117,16 @@ summary = {
     "far_arm_err_max_rad": round(float(arm_err_max[far].max()), 4) if bool(far.any()) else None,
     "near_done": int((done_any & near).sum()), "near_abnormal": int((abnormal_any & near).sum()),
     "near_approach_latched": int((approach_any & near).sum()),
+    "near_latched_first_step": int((latched_first & near).sum()),
+    "far_latched_first_step": int((latched_first & far).sum()),
     "species_near_counts": {nm: int((near & (env._species_ids == i)).sum()) for i, nm in enumerate(env._species_names)},
 }
 nf = summary["near_first_step"]
 gate = (0.3 <= summary["near_frac"] <= 0.7
-        # ★손바닥면 4.5 cm ± 컵 스폰 2 cm — 하한 2.1 cm 는 접근 창(≤ 2 cm) 밖이라 공짜 래치가 없다(3 cm 판 스모크: 32 중 4 래치)
+        # 손바닥면 4.5 cm ± 컵 스폰 2 cm — 손·컵 겹침 여유
         and bool(nf["plane_gap"]) and 0.021 <= nf["plane_gap"][0] and nf["plane_gap"][2] <= 0.07
-        and summary["near_approach_latched"] == 0
+        # ★09.16 가까운 출발은 접근 완료(래치)로 시작하고 먼 출발은 아니다
+        and summary["near_latched_first_step"] == int(near.sum()) and summary["far_latched_first_step"] == 0
         and 0.0 <= nf["along_offset"][0] and nf["along_offset"][2] <= 0.05
         and 0.5 <= nf["height_frac"][0] and nf["height_frac"][2] <= 1.0
         and nf["orient"][0] >= 0.95

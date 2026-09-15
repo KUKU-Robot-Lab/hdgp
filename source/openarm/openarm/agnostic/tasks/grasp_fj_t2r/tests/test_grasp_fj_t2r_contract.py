@@ -149,7 +149,9 @@ def test_near_start_curriculum_moves_the_arm_after_the_track_b_reset_and_splits_
     _ordered(rs, ["self._event_ema(self._t2r_gate_ema_grp", "super()._reset_idx(env_ids)",
                   "self.common_step_counter > int(self.cfg.near_start_after_common_steps)",
                   "float(self.cfg.near_start_frac)", "self._species_ids[pick]", "self.robot.write_joint_state_to_sim(",
-                  "self._arm_q_target[pick] =", "self._prev_arm_q_target[pick] =", "self._t2r_near[pick] = True"])
+                  "self._arm_q_target[pick] =", "self._prev_arm_q_target[pick] =", "self._t2r_near[pick] = True",
+                  # ★09.16 사용자 "가까운 출발 = 접근 완료로 시작" — 컵 옆 기본 자세에서 시작하는 에피소드는 2단계부터
+                  "self._t2r_gate_approach[pick] = True"])
     log = _fn_block(_ENV, "_log_fabric_metrics")
     for tok in ('f"stage/{grp}_{name}_gate_ep"', 'f"stage/{grp}_{name}_ep"', '"stage/near_start_frac_now"'):
         assert tok in log, tok

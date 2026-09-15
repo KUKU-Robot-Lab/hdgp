@@ -326,3 +326,6 @@ class GraspFJT2REnv(GraspFJEnv):
                     self._arm_q_target[pick] = q[:, self._arm_ids_t]
                     self._prev_arm_q_target[pick] = self._arm_q_target[pick]
                     self._t2r_near[pick] = True
+                    # ★09.16 사용자 "가까운 출발 = 접근 완료로 시작" — 컵 옆 기본 자세 출발은 접근이 끝난 것으로 보고 2단계(자리 맞추기·
+                    #   닫기·접촉)부터 시작한다. 4.5 cm 판을 1단계로 두자 컵이 손 앞인데도 닫기 보상이 켜지지 않았다(i02 e240 래치 0).
+                    self._t2r_gate_approach[pick] = True

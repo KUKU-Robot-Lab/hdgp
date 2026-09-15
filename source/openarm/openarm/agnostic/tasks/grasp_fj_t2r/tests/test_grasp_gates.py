@@ -101,7 +101,7 @@ def test_approach_conditions_name_each_check_for_the_log():
         along_offset=torch.tensor([0.0, 0.0, -0.01, 0.0, 0.0, 0.0, 0.0]),
         height=torch.tensor([0.0, 0.0, 0.0, -0.06, 0.0, 0.0, 0.0]),
         orient=torch.tensor([0.9, 0.9, 0.9, 0.9, 0.5, 0.9, 0.9]),
-        pose_dev=torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0]),
+        pose_dev=torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.35, 0.0]),
         digit_touch=torch.tensor([False, False, False, False, False, False, True])))
     assert c.shape == (7, 6) and c.dtype == torch.bool
     assert c[0].all()
@@ -218,11 +218,14 @@ def test_context_comments_state_the_same_gate_numbers():
     for tok in ("hand_default_q_norm", "approach_done", "envelope_done", "palm_finger_dir",
                 "within 2 cm of the cup's side", "between -0.01 m and 0.02 m", "cup_radius - 0.005 m",
                 "cup_radius + 0.02 m",
-                "within about 45 degrees of +y", "within about 45 degrees of +x", "within 0.15",
+                "within about 45 degrees of +y", "within about 45 degrees of +x", "within 0.3 of hand_default_q_norm",
+                # ★09.16 사용자 "가까운 출발 = 접근 완료로 시작" — 생성기가 래치가 첫 스텝부터 설 수 있음을 알아야 한다
+                "approach_done already set on the first step",
                 "no finger or thumb link touched the cup", "about 0.12 m", "at least 4", "5 consecutive steps", "0.1 N"):
         assert tok in _CTX, tok
     assert G.APPROACH_PLANE_GAP_M == 0.02 and G.APPROACH_PLANE_GAP_MIN_M == -0.01
-    assert G.APPROACH_POSE_TOL == 0.15 and G.APPROACH_ORIENT_MIN == 0.7
+    # ★09.16 사용자 "0.3 으로 완화" — 기본 자세가 액션 하한(a = −1)이고 탐색 σ = 1 이라 0.15 는 13관절 동시 통과 ≈ 0.8 %(i02 e240)
+    assert G.APPROACH_POSE_TOL == 0.3 and G.APPROACH_ORIENT_MIN == 0.7
     assert G.APPROACH_ALONG_MIN_OFFSET_M == -0.005 and G.APPROACH_ALONG_MAX_OFFSET_M == 0.02
     assert G.APPROACH_PALM_NORMAL_DIR == (0.0, 1.0, 0.0) and G.APPROACH_FINGER_DIR == (1.0, 0.0, 0.0)
     assert G.ENVELOPE_MIN_DIGITS == 4 and G.ENVELOPE_HOLD_STEPS == 5 and G.TOUCH_N == 0.1

@@ -61,6 +61,7 @@ class GraspFJT2RReachEnvCfg(GraspFJT2RRightShortEnvCfg):
     #:   ★09.15 서버 스모크: 손바닥면 3 cm 판은 컵 스폰 −2 cm 흔들림에 1 cm 가 돼 32 중 4 env 가 첫 스텝에 공짜 접근 래치 → 4.5 cm
     #:   (흔들려도 ≥ 2.5 cm, 창 밖). 컵 축 ≥ R+0.5 cm 라 엄지와 겹치지 않는다. 띠 중심 높이(0.5 H 이하)는 작은 컵에서 팔꿈치 한계로
     #:   IK 미수렴(최대 29 mm)이라 0.8 H. `tests/test_grasp_gates.py` 가 FK 로 대조한다.
+    #:   ★09.16 사용자 "가까운 출발 = 접근 완료로 시작" — env 가 리셋에서 접근 래치를 세운다(2단계부터). 창 밖 4.5 cm 는 겹침 여유로만 남는다.
     near_start_frac: float = 0.5
     near_start_after_common_steps: int = 4
     near_start_species: tuple = ("cup_big_s085", "cup_big_s100", "cup_big_s115", "cup_big_s130", "shaker_closed",

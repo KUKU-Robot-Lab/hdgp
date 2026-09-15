@@ -32,8 +32,10 @@ APPROACH_PALM_NORMAL_DIR = (0.0, 1.0, 0.0)
 APPROACH_FINGER_DIR = (1.0, 0.0, 0.0)
 #: 위 두 방향 각각의 cos 하한(≈ 45°)
 APPROACH_ORIENT_MIN = 0.7
-#: 접근 완료 — 움직이는 손 관절의 정규화 각(0 = 하한, 1 = 상한)이 기본 자세에서 벗어난 최대치
-APPROACH_POSE_TOL = 0.15
+#: 접근 완료 — 움직이는 손 관절의 정규화 각(0 = 하한, 1 = 상한)이 기본 자세에서 벗어난 최대치.
+#:   ★09.16 사용자 "0.3 으로 완화" — 기본 자세는 움직이는 손가락 관절 대부분이 하한(액션 a = −1)이고 탐색 σ = 1 이라 0.15 는
+#:   13관절 동시 통과가 i02 e240 에서 0.8 %(평균 −1 에서도 관절당 ≈ 62 % → 13관절 ≈ 0.2 %). "30 % 이상 오므리지 않았다" 로 본다.
+APPROACH_POSE_TOL = 0.3
 #: 접근 조건 이름 — `approach_conditions` 열 순서 = 로그 `stage/approach_ok_<이름>_now`
 APPROACH_CONDITIONS = ("gap", "along", "height", "orient", "pose", "no_touch")
 #: 인벨롭 완료 — 컵에 닿은 손가락 수(엄지 포함, 손가락마다 마디 하나라도) 하한
