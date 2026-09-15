@@ -1,0 +1,13 @@
+{
+ "track": "grasp_fj_stage",
+ "label": "fj_stage_i02",
+ "task": "open-short_r_grasp_fj_t2r_reach-lstm",
+ "sapg": false,
+ "num_envs": 4096,
+ "started": 1789484776.4694633,
+ "commit": "e3fcebb31713f9142505e0d188e11c094584896f",
+ "gpu": 0,
+ "pid": 1116159,
+ "console": "/home/oem/rl_ws/our_source/fj_t2r_runs/fj_stage_i02.out",
+ "killed": []
+}

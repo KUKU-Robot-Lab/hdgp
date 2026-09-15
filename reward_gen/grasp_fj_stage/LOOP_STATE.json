@@ -1,29 +1,25 @@
 {
  "track": "grasp_fj_stage",
- "iter": 1,
- "label": "fj_stage_i01",
+ "iter": 2,
+ "label": "fj_stage_i02",
  "label_prefix": "fj_stage_i",
- "round": 2,
- "status": "stopped",
- "stop_i01": "e1010 사용자 결정(커리큘럼 재설계)으로 중지. SIGTERM 23:15:25 멈춤 -> 승인 후 SIGKILL 23:23:23. 영상 our_source/fj_t2r_videos/fj_stage_i01_0915_2310.mp4. 기하 조사: 기본 자세 엄지가 손바닥면 118 mm 앞 -> 사용자 결정 C자 사전파지 재정의.",
- "awaiting": "iter_02_smoke_and_launch_approval",
- "iter_02": "09.15 23:4x C자 사전파지 래치 + 가까운 출발 50% (d9f95031). 제로샷 render(이력 미포함, variant reach). 서버 스모크(probe_grasp_fj_t2r_near_start + boot random) 후 생성·ingest, 기동은 사용자 승인 후. 이후 env/래치/과제 문장 고정, 라운드 3000 epoch/4 h 끝까지.",
- "decision_0915_2305": "사용자: 시작 상태 커리큘럼 + env 고정. 리셋 일부를 접근 완료 상태(컵 -y 쪽, 기본 손 자세)에서 시작하도록 env 를 한 번만 바꾸고 이후 env/래치/과제 문장 고정, 보상만 T2R, 라운드는 끝까지 학습 후 영상 판정(체크포인트 조기 중단 끔). i01 은 영상으로 래치 뒤 모습 확인 후 PID 로 중지.",
+ "round": 3,
+ "status": "running",
+ "awaiting": null,
  "best": null,
  "success_ticks": 0,
- "started": 1789476673,
- "pid": 940109,
- "commit": "ee3dbf5a",
+ "started": 1789484776,
+ "pid": 1116159,
+ "commit": "e3fcebb3",
  "algo": {
   "from_iter_00": "PPO-LSTM 4096 (open-short_r_grasp_fj_t2r_reach-lstm)"
  },
- "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY (+ gate checkpoints)",
- "checkpoints": {
-  "approach": "e600 approach_gate_ep >= 0.3 (one-shot tick 22:37)",
-  "envelope": "e1500 envelope_gate_ep >= 0.05 (one-shot tick 23:37)"
- },
+ "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY + TRACKS.grasp_fj_stage.early_stop False (체크포인트, 막힘, 단계 연장 없음 — 3000 epoch 또는 4 h 끝까지)",
+ "env_frozen_from": "e823e080 (C자 사전파지 접근 래치 + 가까운 출발 50%). 이후 env/래치/과제 문장 변경 금지.",
  "history": [
-  "i00 (c51b93b3): e~180 사용자 중지 — 방향 항이 시작부터 손을 ~68도 돌림, 손가락 오므림, 접근 래치 0. SIGKILL 21:33."
+  "i00 (c51b93b3): e~180 사용자 중지 — 방향 항이 시작부터 손을 ~68도 돌림, 손가락 오므림, 접근 래치 0. SIGKILL 21:33.",
+  "i01 (ee3dbf5a): e1010 사용자 결정(커리큘럼 재설계)으로 중지. 접근 래치 150ep 평균 0.48(최고 0.96)이나 엄지로 컵을 누르며 선 래치, e800~ 붕괴. SIGKILL 23:23. 기하 조사: 기본 자세 엄지가 손바닥면 118 mm 앞.",
+  "i02 (e3fcebb3): 제로샷(이력 미포함) — C자 사전파지 env. 9항. 위험: final_success_bonus 100x(2.5+r3) 가 value_bootstrap 과 이중 계산(3단계 성공 전 0)."
  ],
- "note": "09.15 사용자 재구성: 1) 기본 핸드 자세로 컵 접근 2) 접근한 상태에서 인벨롭 파지 3) 리프트(조임 적응은 이번 범위 밖). 21:2x 사용자: 접근 = 시작 방향 유지(법선 +y, 손가락 +x) 로 컵 -y 쪽 이동 → 접근 래치 손 방향 조건(a8c2701a) + 과제 문장 변경. iter_01 은 단계 기본값 3.5/7.5 가 래치만으로 지급 — 래치 뒤 들지 않고 버티는지 틱에서 볼 것. 조건별 통과율 stage/approach_ok_{gap,facing,orient,pose}_now. 콘솔 our_source/fj_t2r_runs/fj_stage_i01.out."
+ "note": "09.15 사용자 재구성: 1) 기본 핸드 자세로 컵 접근 2) 접근한 상태에서 인벨롭 파지 3) 리프트. 23:0x 사용자 'T2R 제대로?' -> 시작 상태 커리큘럼 + env 고정 + 라운드 끝까지. 틱 보고는 출발 그룹별(stage/far_*, stage/near_*)과 조건별 통과율(stage/approach_ok_{gap,along,height,orient,pose,no_touch}_now). 콘솔 our_source/fj_t2r_runs/fj_stage_i02.out."
 }
