@@ -1,25 +1,26 @@
 {
  "track": "grasp_fj_stage",
- "iter": 0,
- "label": "fj_stage_i00",
+ "iter": 1,
+ "label": "fj_stage_i01",
  "label_prefix": "fj_stage_i",
- "round": 1,
- "status": "stopped",
- "awaiting": "approval_iter_00",
+ "round": 2,
+ "status": "running",
+ "awaiting": null,
  "best": null,
  "success_ticks": 0,
- "started": 1789474315,
- "pid": null,
- "commit": "c51b93b3",
+ "started": 1789476673,
+ "pid": 940109,
+ "commit": "ee3dbf5a",
  "algo": {
   "from_iter_00": "PPO-LSTM 4096 (open-short_r_grasp_fj_t2r_reach-lstm)"
  },
  "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY (+ gate checkpoints)",
  "checkpoints": {
-  "approach": "e600 approach_gate_ep >= 0.3",
-  "envelope": "e1500 envelope_gate_ep >= 0.05"
+  "approach": "e600 approach_gate_ep >= 0.3 (one-shot tick 22:37)",
+  "envelope": "e1500 envelope_gate_ep >= 0.05 (one-shot tick 23:37)"
  },
- "stop": "09.15 21:2x 사용자 결정 '지금 중지' (e~180): 보상 방향 항이 시작부터 손을 ~68도 돌리게 함. SIGTERM 21:27:55 멈춤 -> 승인 후 SIGKILL 21:33:20. 영상 our_source/fj_t2r_videos/fj_stage_i00_0915_2133.mp4",
- "next": "iter_01: 접근 래치 손 방향(a8c2701a) + 과제 문장 변경 -> advance 에 --task-file scripts/reward_gen/tasks/grasp_fj_stage.txt. 기동 전 서버 부팅 스모크(stage/approach_ok_* 태그).",
- "note": "09.15 사용자 재구성: 1) 기본 핸드 자세로 컵 접근 2) 접근한 상태에서 인벨롭 파지 3) 리프트(조임 적응은 이번 범위 밖). env 보상 게이트 래치(grasp_gates.py, 371e8869) + 새 이력. reach 트랙(fj_reach_i00~i05)은 superseded. 콘솔 our_source/fj_t2r_runs/fj_stage_i00.out."
+ "history": [
+  "i00 (c51b93b3): e~180 사용자 중지 — 방향 항이 시작부터 손을 ~68도 돌림, 손가락 오므림, 접근 래치 0. SIGKILL 21:33."
+ ],
+ "note": "09.15 사용자 재구성: 1) 기본 핸드 자세로 컵 접근 2) 접근한 상태에서 인벨롭 파지 3) 리프트(조임 적응은 이번 범위 밖). 21:2x 사용자: 접근 = 시작 방향 유지(법선 +y, 손가락 +x) 로 컵 -y 쪽 이동 → 접근 래치 손 방향 조건(a8c2701a) + 과제 문장 변경. iter_01 은 단계 기본값 3.5/7.5 가 래치만으로 지급 — 래치 뒤 들지 않고 버티는지 틱에서 볼 것. 조건별 통과율 stage/approach_ok_{gap,facing,orient,pose}_now. 콘솔 our_source/fj_t2r_runs/fj_stage_i01.out."
 }
