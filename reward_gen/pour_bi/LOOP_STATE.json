@@ -175,5 +175,30 @@
    "t2r_i07 계속",
    "학습 종료"
   ]
+ },
+ "monitoring": {
+  "since": 1789515587.02707,
+  "interval": "2h (:23)",
+  "label": "t2r_i07",
+  "scope": "지표 보고만 — 라운드 상한 8 이라 보상 재생성·재기동·종료는 사용자 승인 후",
+  "state_at_resume": {
+   "epoch": 1071,
+   "hours": 8.39,
+   "episode_success": 0.7,
+   "in_target": 0.66,
+   "spill": 0.075,
+   "aim_dist": 0.11,
+   "src_tilt_deg": 96,
+   "rcv_tilt_deg": 8.0,
+   "cup_collision": 0.009,
+   "hand_foreign_src_rcv": [
+    0.016,
+    0.044
+   ],
+   "adr": 0.2,
+   "reward_total": 23.8
+  },
+  "breakout": "epoch 720 에 컵 거리 0.30 m 아래 → 799 첫 성공 → 836 성공률 0.5 (loop_ended 기록은 epoch 558 시점이라 낡음)",
+  "cron": "6da64236 (2h, :23)"
  }
 }
