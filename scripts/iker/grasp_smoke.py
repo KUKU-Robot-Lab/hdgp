@@ -14,6 +14,8 @@
    thumb_3 stays at its open-pose limit, and the simulator limit equals the boot metadata;
 8. with the default thumb condition, the forced hold of an open hand is never held (checks 4 and 6 run with the xy radius
    and the thumb condition switched off — their bounds are pure-test territory).
+9. with the thumb and xy conditions relaxed as in checks 4 and 6, a latched shoe written back to its start pose ends the episode
+   (``Stage1Step.lost``, revision 3-5).
 
 Usage:
     cd ~/rl_ws/hdgp && PYTHONPATH=source/openarm ../IsaacLab/isaaclab.sh -p scripts/iker/grasp_smoke.py --headless
@@ -207,6 +209,18 @@ def main() -> int:
           f"{joint_error:.2e}, hand target error {hand_error:.2e}, episode length {length}", flush=True)
     if not bool(capture.valid.all()) or pose_error > 1e-4 or joint_error > 1e-5 or hand_error > 1e-6 or length != 0:
         failures.append("the success capture or its restore does not reproduce the captured state")
+
+    env.reset()
+    start_pose = env._shoe.data.root_state_w[:, :7].clone()
+    latch_calls, _, _ = forced_hold(env, LATCH_CALL + 1)
+    env._shoe.write_root_pose_to_sim(start_pose)
+    env._shoe.write_root_velocity_to_sim(torch.zeros(n, 6, device=dev))
+    env.scene.update(env.physics_dt)
+    terminated, _ = env._get_dones()
+    print(f"SMOKE latched shoe back on the table: latch calls {latch_calls}, lost {bool(env._last.lost.all())}, "
+          f"terminated {bool(terminated.all())}", flush=True)
+    if latch_calls != [LATCH_CALL] or not bool(env._last.lost.all()) or not bool(terminated.all()):
+        failures.append("a latched shoe back on the table did not end the episode")
 
     name, past, sim_limit, meta_limit = backstop_check(env)
     print(f"SMOKE thumb backstop: {name} worst travel past the open pose {past:+.4f} rad, simulator limit "

@@ -58,8 +58,11 @@ class Stage1RewardCfg:
     thumb_curl_min_rad: float = 0.05
     hand_floor_scale: float = 10.0
     hand_floor_cap: float = 5.0
-    arm_vel_scale: float = 0.0
+    # revision 3-5: motion penalties act only while the shoe is lifted (free lift >= lift_deadband_m); arm joint speed sum and the
+    # hand command rate sum |a_hand(t) - a_hand(t-1)| (phase A r6: fingers and arm kept moving while lifted, user video 2026-09-15)
+    arm_vel_scale: float = 0.1
     hand_vel_scale: float = 0.0
+    hand_rate_scale: float = 0.1
     g_min: float = 1.0
     q_lo: float = 0.0  # placeholders, not a calibration: the whole q range, inert while g_min is 1
     q_hi: float = 1.0
@@ -83,11 +86,11 @@ class Stage1RewardCfg:
         if not 0.0 < self.hold_rel_speed <= self.progress_rel_speed:
             raise ValueError(f"need 0 < hold_rel_speed {self.hold_rel_speed} <= progress_rel_speed {self.progress_rel_speed}")
         if min(self.palm_scale, self.lift_progress_scale, self.lift_bonus, self.success_bonus, self.hand_floor_scale,
-               self.hand_floor_cap, self.arm_vel_scale, self.hand_vel_scale) < 0.0:
+               self.hand_floor_cap, self.arm_vel_scale, self.hand_vel_scale, self.hand_rate_scale) < 0.0:
             raise ValueError("reward scales and bonuses must be non-negative")
 
 
-REWARD_TERMS = ("palm_progress", "lift_progress", "lift_bonus", "success_bonus", "hand_floor", "arm_vel", "hand_vel")
+REWARD_TERMS = ("palm_progress", "lift_progress", "lift_bonus", "success_bonus", "hand_floor", "arm_vel", "hand_vel", "hand_rate")
 
 
 def hand_action_limits(
@@ -319,6 +322,7 @@ class Stage1Step:
     held: torch.Tensor
     just_latched: torch.Tensor
     success: torch.Tensor
+    lost: torch.Tensor  # revision 3-5: latched, not succeeded, shoe back below lift_deadband_m — the environment ends the episode
 
 
 def stage1_step(
@@ -336,12 +340,15 @@ def stage1_step(
     hand_floor_depth: torch.Tensor,
     arm_speed_sum: torch.Tensor,
     hand_speed_sum: torch.Tensor,
+    hand_command_rate: torch.Tensor,
 ) -> Stage1Step:
-    """One policy step of the stage-1 reward (design §6, held narrowed by §16). All inputs are (N,) tensors."""
+    """One policy step of the stage-1 reward (design §6, held narrowed by §16, motion penalties and lost grasps by revision 3-5).
+    All inputs are (N,) tensors."""
     n = state.closest_palm.shape[0]
     for name, value in dict(palm_gap=palm_gap, dz_free=dz_free, palm_shoe_dist=palm_shoe_dist, shoe_shift_xy=shoe_shift_xy,
                             thumb_curl=thumb_curl, rel_speed=rel_speed, shoe_speed=shoe_speed, q=q,
-                            hand_floor_depth=hand_floor_depth, arm_speed_sum=arm_speed_sum, hand_speed_sum=hand_speed_sum).items():
+                            hand_floor_depth=hand_floor_depth, arm_speed_sum=arm_speed_sum, hand_speed_sum=hand_speed_sum,
+                            hand_command_rate=hand_command_rate).items():
         if value.shape != (n,):
             raise ValueError(f"{name} must be ({n},), got {tuple(value.shape)}")
 
@@ -379,6 +386,7 @@ def stage1_step(
     lift_delta = (lift_level - state.best_lift).clamp(min=0.0)
     best_lift = torch.maximum(state.best_lift, lift_level)
     g = g_factor(q, cfg)
+    lifted = (dz_free >= cfg.lift_deadband_m).float()  # revision 3-5: motion penalties only while the shoe is off the table
 
     terms = {
         "palm_progress": cfg.palm_scale * palm_delta * before_latch,
@@ -386,15 +394,17 @@ def stage1_step(
         "lift_bonus": cfg.lift_bonus * g * just_latched.float(),
         "success_bonus": cfg.success_bonus * g * success.float(),
         "hand_floor": -(cfg.hand_floor_scale * hand_floor_depth.clamp(min=0.0)).clamp(max=cfg.hand_floor_cap),
-        "arm_vel": -cfg.arm_vel_scale * arm_speed_sum,
-        "hand_vel": -cfg.hand_vel_scale * hand_speed_sum,
+        "arm_vel": -cfg.arm_vel_scale * arm_speed_sum * lifted,
+        "hand_vel": -cfg.hand_vel_scale * hand_speed_sum * lifted,
+        "hand_rate": -cfg.hand_rate_scale * hand_command_rate * lifted,
     }
     if tuple(terms) != REWARD_TERMS:
         raise RuntimeError(f"term order drifted: {tuple(terms)}")
     reward = torch.nan_to_num(torch.stack(list(terms.values())).sum(dim=0), nan=0.0, posinf=0.0, neginf=0.0)
     new_state = replace(state, closest_palm=closest_palm, best_lift=best_lift, hold_count=hold_count,
                         latched=latched, succeeded=state.succeeded | success)
-    return Stage1Step(reward=reward, terms=terms, state=new_state, held=held, just_latched=just_latched, success=success)
+    lost = latched & ~success & (dz_free < cfg.lift_deadband_m)
+    return Stage1Step(reward=reward, terms=terms, state=new_state, held=held, just_latched=just_latched, success=success, lost=lost)
 
 
 def quality_calibration_document(q_lo: float, q_hi: float, **details) -> dict:

@@ -4,7 +4,8 @@ Episodes start from a pre-grasp arm pose 8-12 cm above the shoe with the hand op
 6-D delta pose through damped least-squares IK (as in stage 2) and commands all 20 hand joints through the grasp_fj
 full-joint law. The reward is ``grasp_stage.stage1_step``: approach and lift progress, a lift bonus and a success
 bonus scaled by the five-finger grasp quality. Success = the shoe held 5-15 cm above and within 10 cm of its start, the
-thumb closing, for 20 steps (§6, §16).
+thumb closing, for 20 steps (§6, §16), with motion penalties while lifted and a lost grasp ending the episode
+(revision 3-5).
 """
 
 from __future__ import annotations
@@ -131,7 +132,7 @@ class IkerShoeGraspEnv(DirectRLEnv):
         self._reward_cfg = reward_cfg
         idle = gs.stage1_step(gs.Stage1State.start(1, dev), reward_cfg, **{k: torch.zeros(1, device=dev) for k in (
             "palm_gap", "dz_free", "shoe_shift_xy", "thumb_curl", "rel_speed", "shoe_speed", "q", "hand_floor_depth",
-            "arm_speed_sum", "hand_speed_sum")},
+            "arm_speed_sum", "hand_speed_sum", "hand_command_rate")},
             palm_shoe_dist=torch.ones(1, device=dev))
         print(f"[iker_grasp] reward {reward_cfg} · idle income per step {float(idle.reward):.3f} · "
               f"calibration {calibration_path if calibration_path.is_file() else 'none'}", flush=True)
@@ -158,11 +159,21 @@ class IkerShoeGraspEnv(DirectRLEnv):
                                 prob_range=cfg.wrench_prob_range)
         self._last: gs.Stage1Step | None = None
         self.actions = torch.zeros(n, cfg.action_space, device=dev)
+        # revision 3-5: hand command rate |a_hand(t) - a_hand(t-1)| of the policy's own actions; 0 on the first step of an episode
+        self._prev_hand_action = torch.zeros(n, cfg.action_space - ARM_ACTION_DIM, device=dev)
+        self._prev_hand_valid = torch.zeros(n, dtype=torch.bool, device=dev)
+        self._hand_command_rate = torch.zeros(n, device=dev)
 
     # --------------------------------------------------------------- action
 
     def _pre_physics_step(self, actions: torch.Tensor):
         self.actions = actions.clone().clamp(-1.0, 1.0)
+        hand_command = self.actions[:, ARM_ACTION_DIM:]
+        self._hand_command_rate = torch.where(
+            self._prev_hand_valid, (hand_command - self._prev_hand_action).abs().sum(dim=-1), torch.zeros_like(self._hand_command_rate)
+        )
+        self._prev_hand_action = hand_command.clone()
+        self._prev_hand_valid = torch.ones_like(self._prev_hand_valid)
         command = self.actions
         if self.cfg.add_noise:
             command = (command + sample_uniform(-self.cfg.action_noise, self.cfg.action_noise, command.shape, self.device)).clamp(-1.0, 1.0)
@@ -256,6 +267,7 @@ class IkerShoeGraspEnv(DirectRLEnv):
             hand_floor_depth=(layout.TABLE_TOP_Z + self.cfg.hand_floor_offset - hand_z).clamp(min=0.0),
             arm_speed_sum=self._robot.data.joint_vel[:, self._arm_ids].abs().sum(dim=-1),
             hand_speed_sum=self._robot.data.joint_vel[:, self._hand_ids].abs().sum(dim=-1),
+            hand_command_rate=self._hand_command_rate,
         )
         self._q_at_latch = torch.where(step.just_latched, q, self._q_at_latch)
         self._q_at_success = torch.where(step.success, q, self._q_at_success)
@@ -284,13 +296,15 @@ class IkerShoeGraspEnv(DirectRLEnv):
             "grasp/over_rack_raised_frac": over_rack.float().mean().item(),
             "grasp/arm_speed_sum": self._robot.data.joint_vel[:, self._arm_ids].abs().sum(dim=-1).mean().item(),
             "grasp/hand_speed_sum": self._robot.data.joint_vel[:, self._hand_ids].abs().sum(dim=-1).mean().item(),
+            "grasp/hand_command_rate": self._hand_command_rate.mean().item(),
+            "grasp/lost_frac": step.lost.float().mean().item(),
             **{f"grasp/w_{finger}": w_f[:, i].mean().item() for i, finger in enumerate(gb.FINGERS)},
         })
         log.update(self._episode_log)
         self.extras["log"] = log
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         dropped = shoe_pos[:, 2] < self.cfg.drop_z
-        return (step.success | dropped) & ~truncated, truncated
+        return (step.success | dropped | step.lost) & ~truncated, truncated
 
     def _get_rewards(self) -> torch.Tensor:
         if self._last is None:
@@ -324,6 +338,7 @@ class IkerShoeGraspEnv(DirectRLEnv):
         self.episode_length_buf[env_ids] = 0
         self._wrench.reset(env_ids)
         self.actions[env_ids] = 0.0
+        self._prev_hand_valid[env_ids] = False
         self._ik.reset(env_ids)
 
     def _bottom_z(self, shoe_pose: torch.Tensor) -> torch.Tensor:
@@ -390,4 +405,5 @@ class IkerShoeGraspEnv(DirectRLEnv):
         self._q_at_success[env_ids] = 0.0
         self._wrench.reset(env_ids)
         self.actions[env_ids] = 0.0
+        self._prev_hand_valid[env_ids] = False
         self._ik.reset(env_ids)

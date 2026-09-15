@@ -25,6 +25,7 @@ def _step(state, **overrides):
         hand_floor_depth=torch.zeros(n),
         arm_speed_sum=torch.zeros(n),
         hand_speed_sum=torch.zeros(n),
+        hand_command_rate=torch.zeros(n),
         shoe_shift_xy=torch.zeros(n),
         thumb_curl=torch.full((n,), 0.5),
     )
@@ -347,6 +348,35 @@ def test_progress_stops_after_the_latch():
 def test_hand_floor_penalty_is_proportional_and_capped():
     step = _step(gs.Stage1State.start(3), hand_floor_depth=torch.tensor([0.0, 0.1, 2.0]))
     assert step.terms["hand_floor"].tolist() == pytest.approx([0.0, -1.0, -5.0])
+
+
+def test_motion_penalties_apply_only_while_the_shoe_is_lifted():
+    step = _step(gs.Stage1State.start(2), dz_free=torch.tensor([0.0, 0.02]), arm_speed_sum=torch.tensor([2.0, 2.0]),
+                 hand_speed_sum=torch.tensor([20.0, 20.0]), hand_command_rate=torch.tensor([3.0, 3.0]))
+    assert step.terms["arm_vel"].tolist() == pytest.approx([0.0, -CFG.arm_vel_scale * 2.0])
+    assert step.terms["hand_rate"].tolist() == pytest.approx([0.0, -CFG.hand_rate_scale * 3.0])
+    assert step.terms["hand_vel"].tolist() == pytest.approx([0.0, -CFG.hand_vel_scale * 20.0])
+
+
+def test_a_latched_shoe_back_on_the_table_is_lost():
+    state = gs.Stage1State.start(1)
+    for _ in range(3):
+        state = _step(state, **_held(1)).state
+    assert state.latched.item()
+    still_lifted = _step(state, dz_free=torch.tensor([0.03]))
+    assert not still_lifted.lost.item()
+    back_on_table = _step(still_lifted.state, dz_free=torch.tensor([0.005]))
+    assert back_on_table.lost.item()
+    never_latched = _step(gs.Stage1State.start(1), dz_free=torch.tensor([0.0]))
+    assert not never_latched.lost.item()
+
+
+def test_reward_cfg_revision_3_5_motion_penalty_defaults():
+    cfg = gs.Stage1RewardCfg()
+    assert (cfg.arm_vel_scale, cfg.hand_vel_scale, cfg.hand_rate_scale) == (0.1, 0.0, 0.1)
+    with pytest.raises(ValueError, match="non-negative"):
+        gs.Stage1RewardCfg(hand_rate_scale=-0.1)
+    assert gs.REWARD_TERMS[-1] == "hand_rate"
 
 
 def test_reset_rows_restores_only_the_given_envs():
