@@ -147,3 +147,18 @@ API·Qwen 백엔드, 루프의 코드 자동 수정.
 - VLM 목표가 게이트를 3 번 넘지 못할 수 있다.
 - 학습 뱅크 시작(신발을 든 채)은 시작 DR(질량 ×0.3~2.0)에서 떨어질 수 있다 — 평가 `dropped` 로 본다.
 - 세션 크론은 7 일에 만료되고, 세션이 끝나면 멈춘다.
+
+## 13. 개정 1 — 2단계 스모크 실패 뒤 재시작 (2026-09-15)
+
+첫 루프는 vlm_target 뒤 2단계 env 스모크에서 멈췄고 사용자가 루프를 끝냈다. 진단과 1단계 수정은 파지 스펙 §16 에 있다.
+
+- **2단계 env 스모크 검사 2.** 무행동 5 s 판정을 신발 z 에서 **손바닥 기준 신발 미끄럼**으로 바꾼다: 첫 스텝 뒤 손바닥 좌표계의
+  신발 위치를 기준으로 50 스텝 뒤 변화 > 3 cm 인 env 비율 ≤ 25 %. 손바닥 z 변화(팔 처짐)는 따로 찍기만 한다 — 상대 IK 영명령은
+  처짐을 되돌리지 않는다(진단: 손바닥 z q10 −40 cm 에서도 신발은 손에 있었다).
+- **보존.** 첫 루프 산출물을 `iker_runs/shoe_place/config_00/archive/2026-09-14_midair/` 로 옮겨 커밋한다: `loop/`,
+  `grasp_bank.json`, `grasp_quality_calibration.json`. 옛 파일이 남으면 새 루프가 옛 보정·뱅크 metadata 를 읽는다.
+  뱅크 파일 테스트는 뱅크가 없으면 skip 한다(수확 전). 옛 학습 런 디렉토리는 그대로 둔다.
+- **새 트랙.** `track = iker_shoe_c00_r2`, 라벨 `stage1_a = iker_grasp_c00_r2_a`·`stage1_b = iker_grasp_c00_r2_b`·
+  `stage2 = iker_vlm_c00_r2_s1`. A 는 전과 같이 사람이 띄우고(`RUN_LABEL` = A 라벨, 로그 `log/rl_games/open-sens/left/train_<라벨>.log`)
+  `loop.py init --track iker_shoe_c00_r2 --policy '{"labels": …}' --adopt stage1_a` 로 넘긴다. 이후 흐름·판정은 §4 그대로다.
+- **가동 시점.** 코드 수정·리뷰·스모크 통과 뒤 사용자에게 확인하고 A 를 띄운다.
