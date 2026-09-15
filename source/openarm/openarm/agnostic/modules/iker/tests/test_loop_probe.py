@@ -50,7 +50,7 @@ def test_training_status_finishes_on_the_marker_or_max_epoch_and_crashes_when_it
 
 
 def test_side_status_reads_the_last_result_marker_and_the_excepthook_marker():
-    failed = lp.side_status("calibrate", "QUALITY config 00 {'envs': 512} passed False: 12 latch/success moments < 64\n", False, False, 1.0)
+    failed = lp.side_status("t2r_smoke", "T2R SMOKE CHECK FAILED: reward_finite\nT2R SMOKE passed False\n", False, False, 1.0)
     assert failed.finished and failed.passed is False and not failed.crashed
     text = "HARVEST seed 0 envs 512 first-episode successes 40 verified 30\nHARVEST config 00 checkpoint x captured 90 verified 70 (min 64) passed True -> out\n"
     passed = lp.side_status("harvest", text, True, False, 130.0)
@@ -104,36 +104,37 @@ def test_a_checkpoint_younger_than_thirty_seconds_is_not_yet_a_candidate(tmp_pat
 
 def test_cleared_records_are_absent_and_runs_the_loop_stops_are_never_crashed(tmp_path):
     paths = lp.LoopPaths.of(tmp_path / "hdgp", 0, "iker_shoe_c00")
-    state = ls.new_state("t", phase="harvest")
-    label = state["policy"]["labels"]["stage1_b"]
-    checkpoint = paths.task_dir("stage1_b") / label / "nn" / "last_open-sens_l_iker_shoe_grasp_ep_350_rew_1.0.pth"
+    state = ls.new_state("t")
+    label = ls.t2r_label(state)
+    run_dir = paths.task_dir("stage1_t2r") / label
+    checkpoint = run_dir / "nn" / "last_open-sens_l_iker_shoe_grasp_t2r_ep_350_rew_1.0.pth"
     checkpoint.parent.mkdir(parents=True)
     checkpoint.write_bytes(b"")
     os.utime(checkpoint, (1000.0, 1000.0))
-    b_log, h_log = paths.train_log(label), paths.side_log("harvest", "ep350")
-    b_log.write_text("epoch 360\n")
+    (run_dir / "summaries").mkdir()
+    (run_dir / "summaries" / "events.out.tfevents.1").write_bytes(b"")
+    t_log, h_log = paths.train_log(label), paths.side_log("harvest", "ep350")
+    t_log.write_text("epoch 360\n")
     h_log.parent.mkdir(parents=True)
     h_log.write_text("HARVEST seed 0 envs 512\n")
-    stage1_b = {"label": label, "log": str(b_log), "started_s": 0.0, "key": label}
-    harvest = {"label": "iker_shoe_c00_harvest", "log": str(h_log), "started_s": 0.0, "key": str(checkpoint), "epoch": 350}
+    stage1_t2r = {"label": label, "log": str(t_log), "started_s": 0.0, "key": label}
+    harvest = {"label": "iker_shoe_c00_t2r_harvest", "log": str(h_log), "started_s": 0.0, "key": str(checkpoint), "epoch": 350}
     proc = tmp_path / "proc"
     proc.mkdir()
-    read = dict(now_s=5000.0, gpu_used_mib=0, load_events=lambda path: {}, proc_root=proc)
-    dead = lp.collect({**state, "runs": {"stage1_b": stage1_b, "harvest": harvest}}, paths, **read)
-    assert dead.runs["stage1_b"].crashed and dead.runs["harvest"].crashed
-    assert ls.decide({**state, "runs": {"stage1_b": stage1_b, "harvest": harvest}}, dead).reason.startswith("stage1_b crashed")
+    events = {lp.SUCCESS_TAG: [(350, 0.1)]}  # above t2r_harvest_success so the cleared harvest is re-launched for the same checkpoint
+    read = dict(now_s=5000.0, gpu_used_mib=0, load_events=lambda path: events, proc_root=proc)
+    dead = lp.collect({**state, "runs": {"stage1_t2r": stage1_t2r, "harvest": harvest}}, paths, **read)
+    assert dead.runs["stage1_t2r"].crashed and dead.runs["harvest"].crashed
+    assert ls.decide({**state, "runs": {"stage1_t2r": stage1_t2r, "harvest": harvest}}, dead).reason.startswith("stage1_t2r crashed")
     for mark in ("stopping", "stopped"):
-        marked = {**state, "runs": {"stage1_b": {**stage1_b, mark: "t"}, "harvest": {**harvest, "cleared": "t"}}}
+        marked = {**state, "runs": {"stage1_t2r": {**stage1_t2r, mark: "t"}, "harvest": {**harvest, "cleared": "t"}}}
         probe = lp.collect(marked, paths, **read)
-        assert set(probe.runs) == {"stage1_b"} and not probe.runs["stage1_b"].crashed and not probe.runs["stage1_b"].alive
-        assert set(lp.run_statuses(marked, paths, now_s=5000.0, proc_root=proc)) == {"stage1_b"}
+        assert set(probe.runs) == {"stage1_t2r"} and not probe.runs["stage1_t2r"].crashed and not probe.runs["stage1_t2r"].alive
+        assert set(lp.run_statuses(marked, paths, now_s=5000.0, proc_root=proc)) == {"stage1_t2r"}
         assert ls.decide(marked, probe).action == "run_harvest"
 
 
-def test_boot_reward_parses_the_last_reward_line_and_gpu_memory_reading():
-    line = "[iker_grasp] reward Stage1RewardCfg(palm_scale=50.0, latch_steps=3, g_min=0.5, q_lo=0.1234567890123, q_hi=0.4) · idle income 0\n"
-    assert lp.boot_reward("noise\n" + line) == {"g_min": 0.5, "q_lo": 0.1234567890123, "q_hi": 0.4}
-    assert lp.boot_reward("nothing") is None
+def test_gpu_memory_reading_takes_the_largest_value():
     assert lp.parse_gpu_used_mib("13041\n") == 13041
 
 
@@ -149,37 +150,63 @@ def test_find_run_dir_takes_the_newest_folder_made_since_the_launch(tmp_path):
     assert lp.find_run_dir(tmp_path / "missing", "iker_vlm_c00_s1", 0.0) is None
 
 
-def test_collect_reads_runs_events_checkpoints_and_the_calibration(tmp_path):
-    paths = lp.LoopPaths.of(tmp_path / "hdgp", 0, "iker_shoe_c00")
-    state = ls.new_state("t", phase="calibrate")
-    label = state["policy"]["labels"]["stage1_a"]
-    run_dir = paths.task_dir("stage1_a") / label
+def test_collect_reads_the_current_round_run_its_series_checkpoints_and_files(tmp_path):
+    paths = lp.LoopPaths.of(tmp_path / "hdgp", 0, "iker_shoe_c00_t2r")
+    state = ls.new_state("t")
+    label = ls.t2r_label(state)
+    run_dir = paths.task_dir("stage1_t2r") / label
     (run_dir / "nn").mkdir(parents=True)
     (run_dir / "summaries").mkdir()
     (run_dir / "summaries" / "events.out.tfevents.1").write_bytes(b"")
-    (run_dir / "nn" / "last_open-sens_l_iker_shoe_grasp_ep_250_rew_1.0.pth").write_bytes(b"")
+    checkpoint = run_dir / "nn" / "last_open-sens_l_iker_shoe_grasp_t2r_ep_50_rew_1.0.pth"
+    checkpoint.write_bytes(b"")
     train_log = paths.train_log(label)
     train_log.write_text("epoch\n")
     saved = train_log.stat().st_mtime - lp.CHECKPOINT_SETTLE_S
-    os.utime(run_dir / "nn" / "last_open-sens_l_iker_shoe_grasp_ep_250_rew_1.0.pth", (saved, saved))
-    side_log = paths.side_log("calibrate", "ep250")
-    side_log.parent.mkdir(parents=True)
-    side_log.write_text("QUALITY config 00 {} passed True -> x\n")
+    os.utime(checkpoint, (saved, saved))
+    smoke_log = paths.side_log("t2r_smoke", "iter00")
+    smoke_log.parent.mkdir(parents=True)
+    smoke_log.write_text("T2R SMOKE CHECK FAILED: reward_finite\nT2R SMOKE passed False\n")
     state["runs"] = {
-        "stage1_a": {"label": label, "log": str(train_log), "started_s": 0.0, "key": label},
-        "calibrate": {"label": "iker_shoe_c00_calibrate", "log": str(side_log), "started_s": 0.0, "key": "k"},
+        "stage1_t2r": {"label": label, "log": str(train_log), "started_s": 0.0, "key": label},
+        "t2r_smoke": {"label": "iker_shoe_c00_t2r_t2r_smoke", "log": str(smoke_log), "started_s": 0.0, "key": label},
     }
+    iteration = paths.t2r_iter_dir(0)
+    iteration.mkdir(parents=True)
+    (iteration / "prompt.md").write_text("p")
+    run_files.write_json(iteration / "validation_attempt_1.json", {"schema": 1, "ok": False})
     proc = tmp_path / "proc"
     _proc(proc, 7, label, ISAAC)
-    run_files.write_json(paths.calibration_file, {"schema": 1, "checkpoint": "k", "q_lo": 0.1, "q_hi": 0.3})
-    events = {lp.LATCHED_TAG: [(1, 0.1), (2, 0.2)], lp.OVER_RACK_TAG: [(1, 0.0)]}
-    probe = lp.collect(state, paths, now_s=train_log.stat().st_mtime + 3.0, gpu_used_mib=13000,
-                       load_events=lambda path: events, proc_root=proc)
-    assert probe.runs["stage1_a"].alive and not probe.runs["stage1_a"].crashed and probe.runs["stage1_a"].idle_s >= 3.0
-    assert probe.runs["calibrate"].finished and probe.runs["calibrate"].passed and not probe.runs["calibrate"].alive
-    assert probe.latched == ((1, 0.1), (2, 0.2)) and probe.over_rack == ((1, 0.0),) and list(probe.checkpoints) == [250]
-    assert probe.calibration["q_hi"] == 0.3 and probe.gpu_used_mib == 13000 and probe.boot_reward is None
-    assert probe.attempts == () and probe.final_rows is None and probe.files["stage_prompt"] is False
+    events = {lp.LATCHED_TAG: [(1, 0.1)], lp.OVER_RACK_TAG: [(1, 0.0)], lp.SUCCESS_TAG: [(1, 0.02), (2, 0.04)]}
+    probe = lp.collect(state, paths, now_s=train_log.stat().st_mtime + 3.0, gpu_used_mib=13000, load_events=lambda path: events, proc_root=proc)
+    assert probe.runs["stage1_t2r"].alive and not probe.runs["stage1_t2r"].crashed
+    assert probe.runs["t2r_smoke"].finished and probe.runs["t2r_smoke"].passed is False and probe.runs["t2r_smoke"].failed_checks == ("reward_finite",)
+    assert probe.success == ((1, 0.02), (2, 0.04)) and probe.latched == ((1, 0.1),) and list(probe.checkpoints) == [50]
+    assert probe.t2r == ls.T2rIter(iter=0, prompt=True, response=False, validation=None, failed_attempts=1)
+
+
+def test_a_new_round_before_its_launch_reads_no_run_folder(tmp_path):
+    paths = lp.LoopPaths.of(tmp_path, 0, "iker_shoe_c00_t2r")
+    state = ls.new_state("t")
+    state["t2r"] = {"iter": 1, "requests": 0, "rounds": [{"iter": 0}]}
+    old = paths.task_dir("stage1_t2r") / "iker_grasp_c00_t2r_i00" / "nn"
+    old.mkdir(parents=True)
+    (old / "last_x_ep_500_rew_1.0.pth").write_bytes(b"")
+    probe = lp.collect(state, paths, now_s=1e12, gpu_used_mib=0, load_events=lambda path: {}, proc_root=tmp_path / "no_proc")
+    assert probe.checkpoints == {} and probe.success == () and probe.t2r == ls.T2rIter(iter=1)
+
+
+def test_t2r_files_read_the_validation_and_count_failed_attempts(tmp_path):
+    folder = tmp_path / "iter_02"
+    folder.mkdir()
+    for name in ("prompt.md", "response.md"):
+        (folder / name).write_text("x")
+    run_files.write_json(folder / "validation.json", {"schema": 1, "ok": True})
+    for k in (1, 2):
+        run_files.write_json(folder / f"validation_attempt_{k}.json", {"schema": 1, "ok": False})
+    files = lp.t2r_files(folder, 2)
+    assert (files.iter, files.prompt, files.response, files.validation["ok"], files.failed_attempts) == (2, True, True, True, 2)
+    assert lp.t2r_files(tmp_path / "missing", 0) == ls.T2rIter()
 
 
 def test_attempts_evals_final_rows_and_files_come_from_the_stage_directory(tmp_path):

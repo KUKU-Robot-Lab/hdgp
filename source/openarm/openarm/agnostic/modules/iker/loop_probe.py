@@ -6,29 +6,29 @@ in, so the tests run on temporary trees. A process belongs to a run only through
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Mapping
 
 from . import loop_state as ls
+from . import loop_t2r
 from . import run_files
 
 RL_LOG_PARTS = ("log", "rl_games", "open-sens", "left")
-TASK_DIRS = {"stage1_a": "iker-shoe-grasp", "stage1_b": "iker-shoe-grasp", "stage2": "iker-shoe"}
-PHASE_TRAINING = {
-    "stage1_a": "stage1_a", "calibrate": "stage1_a", "stage1_b": "stage1_b", "harvest": "stage1_b",
-    "stage2_train": "stage2", "observe_requery": "stage2",
-}
+TASK_DIRS = {"stage1_t2r": "iker-shoe-grasp-t2r", "stage2": "iker-shoe"}
+PHASE_TRAINING = {"stage1_t2r": "stage1_t2r", "stage2_train": "stage2", "observe_requery": "stage2"}
 LATCHED_TAG = "Episode/grasp_episode/latched"
 OVER_RACK_TAG = "Episode/grasp/over_rack_raised_frac"
+SUCCESS_TAG = "Episode/grasp_episode/success"
 CHECKPOINT_RE = re.compile(r"^last_.+_ep_(\d+)_rew_.*\.pth$")
 ATTEMPT_RE = re.compile(r"^attempt_(\d{2})$")
 EVAL_RE = re.compile(r"^eval_ep(\d+)\.json$")
 TRAIN_FINISHED = "MAX EPOCHS NUM!"
 TRAIN_CRASH = ("Traceback (most recent call last)", "CUDA out of memory", "Error executing job")
 SIDE_MARKERS: Mapping[str, tuple[str, str]] = {  # run -> (result line prefix, crash marker printed by its excepthook)
-    "calibrate": ("QUALITY config", "QUALITY FAILED"),
+    "t2r_smoke": ("T2R SMOKE passed", "T2R SMOKE FAILED"),
     "harvest": ("HARVEST config", "HARVEST FAILED"),
     "env_smoke": ("SMOKE passed", "SMOKE FAILED"),
     "eval": ("EVAL {", "EVAL FAILED"),
@@ -36,11 +36,11 @@ SIDE_MARKERS: Mapping[str, tuple[str, str]] = {  # run -> (result line prefix, c
     "observe_render": ("OBSERVE config", "OBSERVE FAILED"),
     "video": ("", ""),  # play.py prints no result line: the video file is the result
 }
-CHECK_FAILED_PREFIX: Mapping[str, str] = {"observe_render": "OBSERVE CHECK FAILED: "}  # blocking checks; REPORTED lines are not
+CHECK_FAILED_PREFIX: Mapping[str, str] = {
+    "observe_render": "OBSERVE CHECK FAILED: ", "t2r_smoke": "T2R SMOKE CHECK FAILED: ",
+}  # blocking checks; REPORTED lines are not
 CHECKPOINT_SETTLE_S = 30.0  # a checkpoint file younger than this may still be written: not yet a candidate
 PASSED_RE = re.compile(r"\bpassed (True|False)\b")
-REWARD_LINE_RE = re.compile(r"\[iker_grasp\] reward Stage1RewardCfg\(([^)]*)\)")
-FIELD_RE = re.compile(r"(\w+)=([-+0-9.eE]+)")
 ISAAC_PYTHON_MARK = b"kit/python/bin/python3"
 LOG_TAIL_BYTES = 4 << 20
 VIDEO_NAME = "rl-video-step-0.mp4"
@@ -83,8 +83,11 @@ class LoopPaths:
         return self.stage_dir / "video.txt"
 
     @property
-    def calibration_file(self) -> Path:
-        return self.config_dir / "grasp_quality_calibration.json"  # iker_shoe_grasp_env.QUALITY_CALIBRATION_FILE
+    def t2r_dir(self) -> Path:
+        return self.state_dir / loop_t2r.STAGE_DIR
+
+    def t2r_iter_dir(self, iteration: int) -> Path:
+        return self.t2r_dir / loop_t2r.iter_dir_name(iteration)
 
     @property
     def final_states_file(self) -> Path:
@@ -167,15 +170,6 @@ def parse_gpu_used_mib(text: str) -> int:
     return max(values)
 
 
-def boot_reward(text: str) -> dict[str, float] | None:
-    """g_min, q_lo and q_hi of the last ``[iker_grasp] reward Stage1RewardCfg(...)`` line."""
-    lines = REWARD_LINE_RE.findall(text)
-    if not lines:
-        return None
-    fields = dict(FIELD_RE.findall(lines[-1]))
-    return {key: float(fields[key]) for key in ("g_min", "q_lo", "q_hi")}
-
-
 def training_status(text: str, alive: bool, checkpoints: Mapping[int, str], max_epochs: int | None, idle_s: float) -> ls.RunStatus:
     finished = TRAIN_FINISHED in text or (max_epochs is not None and max_epochs in checkpoints)
     crash = next((marker for marker in TRAIN_CRASH if marker in text), "")
@@ -210,6 +204,18 @@ def attempts(stage_dir: Path) -> tuple[ls.AttemptStatus, ...]:
     return tuple(found)
 
 
+def t2r_files(iter_dir: Path, iteration: int) -> ls.T2rIter:
+    """The round's files: prompt and response present, the validation report (read as plain JSON), failed validations moved aside."""
+    if not iter_dir.is_dir():
+        return ls.T2rIter(iter=iteration)
+    validation = iter_dir / loop_t2r.VALIDATION
+    return ls.T2rIter(
+        iter=iteration, prompt=(iter_dir / loop_t2r.PROMPT).is_file(), response=(iter_dir / loop_t2r.RESPONSE).is_file(),
+        validation=json.loads(validation.read_text(encoding="utf-8")) if validation.is_file() else None,
+        failed_attempts=len(list(iter_dir.glob("validation_attempt_*.json"))),
+    )
+
+
 def evals(stage_dir: Path) -> dict[int, dict]:
     if not stage_dir.is_dir():
         return {}
@@ -235,24 +241,24 @@ def collect(state: Mapping, paths: LoopPaths, *, now_s: float, gpu_used_mib: int
             load_events: Callable[[str], Mapping[str, list]], proc_root: Path = Path("/proc")) -> ls.Probe:
     policy = state["policy"]
     runs = run_statuses(state, paths, now_s=now_s, proc_root=proc_root)
-    latched, over_rack, checkpoints, boot = (), (), {}, None
+    latched, over_rack, success, checkpoints = (), (), (), {}
     training = PHASE_TRAINING.get(state["phase"])
     if training is not None:
+        label = ls.t2r_label(state) if training == "stage1_t2r" else policy["labels"][training]
         record = state["runs"].get(training, {})  # a cleared record still locates the run folder of its checkpoints
-        run_dir = find_run_dir(paths.task_dir(training), policy["labels"][training], record.get("started_s", 0.0))
+        started = record.get("started_s", 0.0) if record.get("key") == label or training == "stage2" else now_s
+        run_dir = find_run_dir(paths.task_dir(training), label, started)
         if run_dir is not None:
             checkpoints = list_checkpoints(run_dir / "nn", settled_before_s=now_s - CHECKPOINT_SETTLE_S)
             if training != "stage2":
                 series = _events(run_dir, load_events)
-                latched, over_rack = _series(series, LATCHED_TAG), _series(series, OVER_RACK_TAG)
-        live = ls.live_record(state, training)
-        if training == "stage1_b" and live:
-            boot = boot_reward(read_tail(Path(live["log"])))
+                latched, over_rack, success = _series(series, LATCHED_TAG), _series(series, OVER_RACK_TAG), _series(series, SUCCESS_TAG)
+    t2r = t2r_files(paths.t2r_iter_dir(state["t2r"]["iter"]), state["t2r"]["iter"]) if state["phase"] == "stage1_t2r" else ls.T2rIter()
     return ls.Probe(
-        gpu_used_mib=gpu_used_mib, runs=runs, latched=latched, over_rack=over_rack, checkpoints=checkpoints, boot_reward=boot,
-        calibration=_optional_json(paths.calibration_file), bank_meta=(_optional_json(paths.harvest_bank_file) or {}).get("metadata"),
-        attempts=attempts(paths.stage_dir), evals=evals(paths.stage_dir), final_rows=final_rows(paths.final_states_file),
-        requery=_optional_json(paths.observe_dir / "requery.json"), files=_files(state, paths),
+        gpu_used_mib=gpu_used_mib, runs=runs, latched=latched, over_rack=over_rack, success=success, checkpoints=checkpoints,
+        bank_meta=(_optional_json(paths.harvest_bank_file) or {}).get("metadata"), attempts=attempts(paths.stage_dir),
+        evals=evals(paths.stage_dir), final_rows=final_rows(paths.final_states_file), requery=_optional_json(paths.observe_dir / "requery.json"),
+        files=_files(state, paths), t2r=t2r,
     )
 
 
@@ -283,7 +289,7 @@ def _run_status(name: str, record: Mapping, state: Mapping, paths: LoopPaths, no
     if name in ls.TRAINING_RUNS:
         run_dir = find_run_dir(paths.task_dir(name), record["label"], record.get("started_s", 0.0))
         checkpoints = list_checkpoints(run_dir / "nn") if run_dir is not None else {}
-        max_epochs = {"stage1_a": None, "stage1_b": state["policy"]["b_max_epochs"], "stage2": state["policy"]["stage2_epochs"]}[name]
+        max_epochs = {"stage1_t2r": state["policy"]["t2r_round_epochs"], "stage2": state["policy"]["stage2_epochs"]}[name]
         status = training_status(text, alive, checkpoints, max_epochs, idle_s)  # every checkpoint: a young final save still finishes
     else:
         status = side_status(name, text, alive, name == "video" and _video_ready(state, paths), idle_s)
