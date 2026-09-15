@@ -179,3 +179,7 @@ API·Qwen 백엔드, 루프의 코드 자동 수정.
   `config_00/archive/2026-09-15_r6_jitter_no_regrasp/loop/` 로 옮기고 트랙 `iker_shoe_c00_r7`, 라벨 `iker_grasp_c00_r7_a`·
   `iker_grasp_c00_r7_b`·`iker_vlm_c00_r7_s1` 로 다시 밟는다. A 는 `iker_grasp_c00_r6_a` 의 epoch 400 체크포인트에서
   `--checkpoint … --no-reset_epoch --max_iterations 800` 으로 이어학습하고, `loop.py init --policy` 에 `gate_epoch 550` 을 준다.
+- **r8 재시작(2026-09-15).** r7 루프는 A epoch 550 게이트 미달로 멈췄다(파지 스펙 §16 개정 3-6). r7 A 를 PID 로 끝내고 r7 상태를
+  `config_00/archive/2026-09-15_r7_short_lifts/loop/` 로 옮긴 뒤 트랙 `iker_shoe_c00_r8`, 라벨 `iker_grasp_c00_r8_a`·
+  `iker_grasp_c00_r8_b`·`iker_vlm_c00_r8_s1` 로 다시 밟는다. A 는 `iker_grasp_c00_r6_a` 의 epoch 400 체크포인트에서
+  `--checkpoint … --no-reset_epoch --max_iterations 800` 으로 이어학습하고, `loop.py init --policy` 에 `gate_epoch 550` 을 준다.
