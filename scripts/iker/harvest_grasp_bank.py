@@ -9,6 +9,7 @@ action component clamped at full scale: +z at 0.02 m per step for 5 steps, then 
 delta would let the arm sag). A state is kept when ``grasp_bank.lift_held`` holds, with the shoe's position measured in the
 palm frame, and its env did not reset.
 grasp_bank.json is written only with ``--min-entries`` verified grasps.
+The harvest runs the parent stage-1 task — observations, actions, terminations and the success capture equal the t2r env's (§14).
 
 Usage:
     cd ~/rl_ws/hdgp-iker && TERM=xterm OMNI_KIT_ACCEPT_EULA=YES PYTHONPATH=$PWD/source/openarm ../IsaacLab/_isaac_sim/python.sh \
@@ -31,8 +32,9 @@ parser.add_argument("--config-index", type=int, default=0)
 parser.add_argument("--num-envs", type=int, default=512)
 parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3])
 parser.add_argument("--min-entries", type=int, default=64)
-parser.add_argument("--g-min", type=float, default=0.5, help="grasp factor floor the checkpoint trained with (phase A 1.0, B 0.5)")
 parser.add_argument("--out", default="", help="bank file (default: iker_runs/shoe_place/config_XX/grasp_bank.json)")
+parser.add_argument("--t2r-iter", type=int, default=-1, help="t2r round of the checkpoint (with --reward-code)")
+parser.add_argument("--reward-code", default="", help="generated reward the checkpoint trained with; recorded as stage1_reward")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 sys.argv = [sys.argv[0]]
@@ -73,7 +75,6 @@ def make_env():
     cfg.scene.num_envs = args.num_envs
     cfg.config_index = args.config_index
     cfg.seed = args.seeds[0]
-    cfg.grasp_reward.g_min = args.g_min
     cfg.wrench_prob_range = (1e-9, 1e-9)
     cfg.capture_success_states = True
     cfg.events.shoe_mass = None  # nominal physics, as make_grasp_bank.py
@@ -165,6 +166,14 @@ def verify(u, rows: torch.Tensor) -> dict[str, torch.Tensor]:
     }
 
 
+def stage1_reward_record() -> dict:
+    """The reward the checkpoint trained with: the generated t2r reward (spec 2026-09-15-iker-stage1-t2r §10) or the hand-written config."""
+    if not args.reward_code:
+        return asdict(IkerShoeGraspPlayEnvCfg().grasp_reward)
+    code = Path(args.reward_code).resolve()
+    return {"source": "t2r", "iter": args.t2r_iter, "reward_code_path": str(code), "reward_code_sha256": hashlib.sha256(code.read_bytes()).hexdigest()}
+
+
 def main() -> int:
     checkpoint = Path(args.checkpoint).resolve()
     if not checkpoint.is_file():
@@ -198,7 +207,7 @@ def main() -> int:
         columns, names = gb.sort_joint_columns(entries, list(u._robot.data.joint_names))
         metadata = gb.learned_bank_metadata(
             u._boot_metadata, side_sign=gb.side_sign(robot.profile().hand_joint_names), checkpoint=str(checkpoint),
-            checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(), stage1_reward=asdict(u._reward_cfg),
+            checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(), stage1_reward=stage1_reward_record(),
             seeds=args.seeds, captured=captured, verified=verified,
         )
         run_files.write_json(out, gb.bank_document(columns, names, metadata))

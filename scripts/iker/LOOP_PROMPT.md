@@ -14,12 +14,18 @@
      설명·힌트·사람 기준선·이전 응답·이 대화의 맥락을 덧붙이지 않는다(생성기 격리, 설계 §6).
      에이전트가 끝나면 `result.vlm.response` 파일이 생겼는지만 확인해 보고에 적고, **틱을 끝낸다**(1 로 돌아가지 않는다).
      같은 응답 파일에 요청이 3 번 쌓이도록 파일이 없으면 다음 틱의 판정이 `pause` 가 된다.
+   - `t2r_generate`: `python3 scripts/iker/loop.py act t2r_generate` — 요청 횟수를 기록하고 응답 옆에 `generator.json` 을 쓴다.
+     그 출력의 `result.t2r.brief` 를 **그대로** 프롬프트로 하여 Agent 를 `subagent_type: iker-t2r-generator`(`.claude/agents/iker-t2r-generator.md`,
+     도구 Read·Write)로 띄운다. 설명·힌트·이전 보상·학습 결과·이 대화의 맥락을 덧붙이지 않는다(생성기 격리, t2r 스펙 §3.4).
+     에이전트가 끝나면 `result.t2r.response` 파일이 생겼는지만 확인해 보고에 적고 **틱을 끝낸다**.
    - 그 밖(`pause` 포함): `python3 scripts/iker/loop.py act <action>`.
-3. 한 틱은 Isaac 을 띄우는 동작(`run_*`·`launch_*`), `vlm_generate`, `pause`, `wait` 중 하나를 마치면 끝낸다.
-   그 전의 기록·파일 동작(`record_*`·`advance`·`commit_*`·`write_*`·`ingest`·`parse_requery`·`next_calibration`·`store_video`·`kill_stale`)은
+3. 한 틱은 Isaac 을 띄우는 동작(`run_*`·`launch_*`), `vlm_generate`·`t2r_generate`, `pause`, `wait` 중 하나를 마치면 끝낸다.
+   그 전의 기록·파일 동작(`record_*`·`advance`·`commit_*`·`write_*`·`ingest`·`parse_requery`·`write_t2r_prompt`·`ingest_reward`
+   (Isaac python 으로 ~1 분 동기 실행)·`end_round`·`record_harvest_miss`·`store_video`·`kill_stale`)은
    끝나는 대로 1 로 돌아가 이어서 한다. 한 틱에 `act` 는 최대 8 번.
    `act` 가 0 이 아닌 코드로 끝나거나 RuntimeError 를 내면 재시도하지 않고 그 틱을 끝내며, stderr 의 마지막 줄들을 사용자에게 그대로 알린다.
 4. 틱 보고는 1~2 줄: `summary` + 추세 해석 + 다음 틱에 볼 것. `notes` 가 있으면 함께 적는다.
+   `stage1_t2r` 틱 보고에 `t2r iter`·성공·래치 bin 을 적는다.
    `pause` 를 기록했으면 `reason` 과 `params.needs` 를 사용자에게 그대로 알린다. 그 뒤 틱은 `wait` 만 낸다.
 5. 추가 확인
    - `commit_bank` 뒤: `PYTHONPATH=source/openarm python3 -m pytest source/openarm/openarm/agnostic/tasks/iker_shoe/tests/test_grasp_bank_file.py -q -p no:cacheprovider`
@@ -33,7 +39,7 @@
 다른 트랙(t2r·pour_fabric)의 런·GPU·크론 접촉.
 
 크론: 세션 CronCreate `7,37 * * * *`, 프롬프트 "IKER 자동 루프 틱: ~/rl_ws/hdgp-iker/scripts/iker/LOOP_PROMPT.md 절차대로 한 틱을
-수행한다 (track iker_shoe_c00_r8)". 세션이 끝나면 루프도 멈춘다. 다음 세션은 `status` 로 이어가고, 커밋 트레일러는
+수행한다 (track iker_shoe_c00_t2r)". 세션이 끝나면 루프도 멈춘다. 다음 세션은 `status` 로 이어가고, 커밋 트레일러는
 `python3 scripts/iker/loop.py --session-url <그 세션 URL> act ...` 로 그 세션 것을 쓴다.
 
 task-observer: 틱 보고(산출물 전달) 때 관측 기록을 확인한다.

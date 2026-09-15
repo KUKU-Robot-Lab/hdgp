@@ -14,6 +14,7 @@ System python3; Isaac runs only in child processes started here, identified by R
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -32,21 +33,21 @@ from parse_tfevents import load_tfevents  # noqa: E402
 
 from openarm.agnostic.modules.iker import loop_probe as lp  # noqa: E402
 from openarm.agnostic.modules.iker import loop_state as ls  # noqa: E402
-from openarm.agnostic.modules.iker import loop_vlm, prompts, run_files  # noqa: E402
+from openarm.agnostic.modules.iker import loop_t2r, loop_vlm, prompts, run_files  # noqa: E402
 from openarm.agnostic.tasks.iker_shoe import layout  # noqa: E402
 
 CONFIG_INDEX = 0
 ISAAC_PYTHON = ROOT.parent / "IsaacLab" / "_isaac_sim" / "python.sh"
 TRAIN_SCRIPT = "scripts/reinforcement_learning/rl_games/train.py"
 PLAY_SCRIPT = "scripts/reinforcement_learning/rl_games/play.py"
-STAGE1_TASK, STAGE2_TASK = "open-sens_l_iker_shoe_grasp", "open-sens_l_iker_shoe"
-STAGE1_NUM_ENVS = 4096
+T2R_SCRIPT = "scripts/iker/t2r_reward.py"
+STAGE1_T2R_TASK, STAGE2_TASK = "open-sens_l_iker_shoe_grasp_t2r", "open-sens_l_iker_shoe"
 VIDEO_ENVS, VIDEO_STEPS = 16, 200
 VIDEO_DIR = ROOT.parent / "our_source"
 STOP_TIMEOUT_S, PID_WAIT_S = 300.0, 120.0
 SESSION_URL = "https://claude.ai/code/session_01Hqg9n53yi9x4qtfFzXRMi4"
 COMMIT_ACTIONS = (
-    "record_gate", "advance", "commit_calibration", "commit_bank", "commit_interaction", "record_eval", "store_video", "pause",
+    "record_gate", "advance", "launch_t2r", "end_round", "commit_bank", "commit_interaction", "record_eval", "store_video", "pause",
     "approve", "resume",
 )
 OBSERVE_FILES = ("prompt.md", "response.md", "generator.json", "requery.json", "snapshot.png", "snapshot_raw.png", "keypoints.json",
@@ -122,11 +123,13 @@ def side_label(state: dict, run: str) -> str:
 def stop_run(state: dict, paths: lp.LoopPaths, run: str) -> list[str]:
     """Stop a training run by PID after marking its record ``stopping`` in the state file, so a probe meanwhile (or after a
     failed act) never reads the dying run as crashed; returns the ``stopped_runs`` for apply."""
-    if run in state["runs"]:
-        marked = {**state, "runs": {**state["runs"], run: {**state["runs"][run], "stopping": now_iso()}}}
-        ls.save_state(paths.state_file, marked)
-    stop(state["policy"]["labels"][run])
-    return [run] if run in state["runs"] else []
+    record = state["runs"].get(run)
+    if record is None:
+        return []
+    marked = {**state, "runs": {**state["runs"], run: {**record, "stopping": now_iso()}}}
+    ls.save_state(paths.state_file, marked)
+    stop(record["label"])
+    return [run]
 
 
 def stage2_inputs(state: dict, paths: lp.LoopPaths) -> list[str]:
@@ -140,30 +143,99 @@ def stage2_overrides(state: dict, paths: lp.LoopPaths) -> list[str]:
     return [f"env.interaction_path='{paths.interaction_file}'", *([f"env.grasp_bank_path='{bank}'"] if bank else [])]
 
 
-def run_calibrate(state, paths, decision):
-    epoch = decision.params["epoch"]
-    argv = ["scripts/iker/measure_grasp_quality.py", "--checkpoint", decision.params["checkpoint"], "--config-index", str(CONFIG_INDEX), "--headless"]
-    return {"run": launch(side_label(state, "calibrate"), argv, paths.side_log("calibrate", f"ep{epoch}"), f"IKER loop q calibration ep {epoch}")}
+def _t2r_env() -> dict:
+    return {**os.environ, "PYTHONPATH": os.pathsep.join([str(ROOT / "source" / "openarm"), str(ROOT / "scripts" / "tools")])}
 
 
-def commit_calibration(state, paths, decision):
-    return {"commit_paths": [paths.calibration_file], "message": f"iker(loop): 1단계 q 보정 파일 — {Path(decision.params['checkpoint']).name}"}
+def _round_outputs(state: dict, paths: lp.LoopPaths, iteration: int) -> dict:
+    record = state["runs"].get("stage1_t2r")
+    run_dir = lp.find_run_dir(paths.task_dir("stage1_t2r"), record["label"], record.get("started_s", 0.0)) if record else None
+    code = paths.t2r_iter_dir(iteration) / loop_t2r.CODE
+    return {"run_dir": str(run_dir) if run_dir else None, "reward_sha256": hashlib.sha256(code.read_bytes()).hexdigest() if code.is_file() else None}
 
 
-def launch_b(state, paths, decision):
-    policy, labels = state["policy"], state["policy"]["labels"]
-    stopped = stop_run(state, paths, "stage1_a")
-    argv = [TRAIN_SCRIPT, "--task", STAGE1_TASK, "--num_envs", str(STAGE1_NUM_ENVS), "--headless", "--checkpoint", decision.params["checkpoint"],
-            "--no-reset_epoch", "--max_iterations", str(policy["b_max_epochs"]), f"env.grasp_reward.g_min={policy['b_g_min']}"]
-    note = f"IKER 1단계 B(g_min {policy['b_g_min']}, 보정 파일) {Path(decision.params['checkpoint']).name} 이어학습, 자동 루프"
-    return {"run": launch(labels["stage1_b"], argv, paths.train_log(labels["stage1_b"]), note), "stopped_runs": stopped}
+def write_t2r_prompt(state, paths, decision):
+    iteration = decision.params["iter"]
+    target = paths.t2r_iter_dir(iteration)
+    if iteration == 0:
+        argv = [sys.executable, T2R_SCRIPT, "render", "--iter-dir", str(target)]
+    else:
+        previous = state["t2r"]["rounds"][-1]
+        events = sorted((Path(previous["run_dir"]) / "summaries").glob("events.out.tfevents.*")) if previous.get("run_dir") else []
+        if not events:
+            raise RuntimeError(f"round iter {previous['iter']:02d} left no TFEvents to reflect on (run_dir {previous.get('run_dir')})")
+        argv = [sys.executable, T2R_SCRIPT, "reflect", "--prev-dir", str(paths.t2r_iter_dir(previous["iter"])), "--next-dir", str(target),
+                "--events", str(events[-1])]
+    done = subprocess.run(argv, cwd=ROOT, env=_t2r_env(), capture_output=True, text=True)
+    if done.returncode != 0 or not (target / loop_t2r.PROMPT).is_file():
+        raise RuntimeError(f"t2r_reward.py {argv[2]} failed (exit {done.returncode}):\n{done.stdout}{done.stderr}")
+    return {"prompt": str(target / loop_t2r.PROMPT)}
+
+
+def t2r_request(paths: lp.LoopPaths, decision: ls.Decision) -> dict:
+    folder = paths.t2r_iter_dir(decision.params["iter"])
+    prompt, response = folder / loop_t2r.PROMPT, folder / loop_t2r.RESPONSE
+    return {"prompt": str(prompt), "response": str(response), "brief": loop_t2r.generator_brief(prompt, response)}
+
+
+def t2r_generate(state, paths, decision):
+    """Record one generator request: generator.json next to the response; the tick then dispatches the agent with ``t2r.brief``."""
+    request = t2r_request(paths, decision)
+    Path(request["response"]).parent.mkdir(parents=True, exist_ok=True)
+    record = run_files.write_json(Path(request["response"]).with_name(loop_t2r.GENERATOR),
+                                  loop_t2r.generator_record(request, state["t2r"]["requests"] + 1, now_iso()))
+    return {"t2r": request, "generator": str(record)}
+
+
+def ingest_reward(state, paths, decision):
+    """Validate the response with Isaac python (the cuda dry run needs it); a failed attempt is moved aside (spec §14)."""
+    folder = paths.t2r_iter_dir(decision.params["iter"])
+    env = {**_t2r_env(), "TERM": "xterm", "OMNI_KIT_ACCEPT_EULA": "YES"}
+    done = subprocess.run([str(ISAAC_PYTHON), T2R_SCRIPT, "ingest", "--iter-dir", str(folder)], cwd=ROOT, env=env, capture_output=True, text=True)
+    validation = folder / loop_t2r.VALIDATION
+    if not validation.is_file():
+        raise RuntimeError(f"t2r ingest wrote no {validation} (exit {done.returncode}):\n{done.stdout[-2000:]}{done.stderr[-2000:]}")
+    report = json.loads(validation.read_text(encoding="utf-8"))
+    if report["ok"]:
+        return {"passed": True}
+    attempt = len(list(folder.glob("validation_attempt_*.json"))) + 1
+    for name, moved in loop_t2r.failed_attempt_names(attempt).items():
+        if (folder / name).exists():
+            (folder / name).rename(folder / moved)
+    return {"passed": False, "errors": report["errors"], "attempt": attempt}
+
+
+def run_t2r_smoke(state, paths, decision):
+    policy, iteration = state["policy"], decision.params["iter"]
+    folder = paths.t2r_iter_dir(iteration)
+    argv = ["scripts/iker/t2r_smoke.py", "--mode", "round", "--reward-code", str(folder / loop_t2r.CODE), "--out", str(folder / loop_t2r.SMOKE),
+            "--num-envs", str(policy["t2r_smoke_envs"]), "--steps", str(policy["t2r_smoke_steps"]), "--config-index", str(CONFIG_INDEX), "--headless"]
+    log = paths.side_log("t2r_smoke", f"iter{iteration:02d}")
+    return {"run": launch(side_label(state, "t2r_smoke"), argv, log, f"IKER loop t2r smoke iter {iteration:02d}")}
+
+
+def launch_t2r(state, paths, decision):
+    policy, label, iteration = state["policy"], decision.params["key"], decision.params["iter"]
+    folder = paths.t2r_iter_dir(iteration)
+    argv = [TRAIN_SCRIPT, "--task", STAGE1_T2R_TASK, "--num_envs", str(policy["t2r_num_envs"]), "--max_iterations", str(policy["t2r_round_epochs"]),
+            "--headless", f"env.reward_code_path='{folder / loop_t2r.CODE}'"]
+    if policy["minibatch_size"]:
+        argv.append(f"agent.params.config.minibatch_size={policy['minibatch_size']}")
+    run = launch(label, argv, paths.train_log(label), f"IKER 1단계 t2r iter {iteration:02d} 새 학습, 자동 루프")
+    files = sorted(path for path in folder.iterdir() if path.is_file())
+    if iteration > 0:
+        feedback = paths.t2r_iter_dir(iteration - 1) / loop_t2r.FEEDBACK
+        files += [feedback] if feedback.is_file() else []
+    return {"run": run, "commit_paths": files, "message": f"iker(loop): 1단계 t2r iter {iteration:02d} 보상·검증·스모크 — {label} 기동"}
 
 
 def run_harvest(state, paths, decision):
-    policy, epoch = state["policy"], decision.params["epoch"]
+    policy, epoch, iteration = state["policy"], decision.params["epoch"], state["t2r"]["iter"]
     argv = ["scripts/iker/harvest_grasp_bank.py", "--checkpoint", decision.params["checkpoint"], "--config-index", str(CONFIG_INDEX),
-            "--g-min", str(policy["b_g_min"]), "--min-entries", str(policy["harvest_min"]), "--out", str(paths.harvest_bank_file), "--headless"]
-    return {"run": launch(side_label(state, "harvest"), argv, paths.side_log("harvest", f"ep{epoch}"), f"IKER loop harvest ep {epoch}")}
+            "--min-entries", str(policy["harvest_min"]), "--out", str(paths.harvest_bank_file), "--t2r-iter", str(iteration),
+            "--reward-code", str(paths.t2r_iter_dir(iteration) / loop_t2r.CODE), "--headless"]
+    log = paths.side_log("harvest", f"iter{iteration:02d}_ep{epoch}")
+    return {"run": launch(side_label(state, "harvest"), argv, log, f"IKER loop harvest t2r iter {iteration:02d} ep {epoch}")}
 
 
 def advance(state, paths, decision):
@@ -172,9 +244,22 @@ def advance(state, paths, decision):
 
 
 def commit_bank(state, paths, decision):
-    stopped = stop_run(state, paths, "stage1_b")
-    return {"path": str(paths.harvest_bank_file), "stopped_runs": stopped, "commit_paths": [paths.harvest_bank_file],
-            "message": f"iker(loop): 학습 파지 뱅크 {decision.params['verified']} 개 — {Path(decision.params['checkpoint']).name}"}
+    outputs = _round_outputs(state, paths, decision.params["iter"])
+    stopped = stop_run(state, paths, "stage1_t2r")
+    return {"path": str(paths.harvest_bank_file), "stopped_runs": stopped, **outputs, "commit_paths": [paths.harvest_bank_file],
+            "message": f"iker(loop): 학습 파지 뱅크 {decision.params['verified']} 개 — t2r iter {decision.params['iter']:02d} "
+                       f"{Path(decision.params['checkpoint']).name}"}
+
+
+def end_round(state, paths, decision):
+    iteration = decision.params["iter"]
+    outputs = _round_outputs(state, paths, iteration)
+    record = state["runs"].get("stage1_t2r")
+    stopped = stop_run(state, paths, "stage1_t2r") if record is not None and lp.label_pids(record["label"]) else []
+    folder = paths.t2r_iter_dir(iteration)
+    files = sorted(path for path in folder.iterdir() if path.is_file()) if folder.is_dir() else []
+    return {"stopped_runs": stopped, **outputs, "commit_paths": files,
+            "message": f"iker(loop): 1단계 t2r iter {iteration:02d} 라운드 끝({decision.params['ended']}) — 성공 최대 {decision.params['success_max']:.3f}"}
 
 
 def write_prompt(state, paths, decision):
@@ -290,7 +375,8 @@ def pause(state, paths, decision):
 
 
 EXECUTORS = {
-    "run_calibrate": run_calibrate, "commit_calibration": commit_calibration, "launch_b": launch_b, "run_harvest": run_harvest,
+    "write_t2r_prompt": write_t2r_prompt, "t2r_generate": t2r_generate, "ingest_reward": ingest_reward, "run_t2r_smoke": run_t2r_smoke,
+    "launch_t2r": launch_t2r, "end_round": end_round, "run_harvest": run_harvest,
     "advance": advance, "commit_bank": commit_bank, "write_prompt": write_prompt, "vlm_generate": vlm_generate, "ingest": ingest,
     "commit_interaction": commit_interaction,
     "run_env_smoke": run_env_smoke, "launch_stage2": launch_stage2, "run_eval": run_eval, "record_eval": record_eval,
@@ -316,9 +402,13 @@ def vlm_request(paths: lp.LoopPaths, decision: ls.Decision) -> dict:
 
 def summary_line(state: dict, probe: ls.Probe, decision: ls.Decision) -> str:
     parts = [f"phase {state['phase']}", f"GPU {probe.gpu_used_mib} MiB"]
+    if state["phase"] == "stage1_t2r":
+        parts.insert(1, f"t2r iter {state['t2r']['iter']:02d}")
     if probe.latched:
         end = ls.last_epoch(probe.latched)
         parts.append(f"epoch {end} latched {100.0 * (ls.bin_mean(probe.latched, end, state['policy']['bin_epochs']) or 0.0):.2f} %")
+    if probe.success:
+        parts.append(f"success {100.0 * (ls.bin_mean(probe.success, ls.last_epoch(probe.success), state['policy']['bin_epochs']) or 0.0):.2f} %")
     if probe.checkpoints:
         parts.append(f"last checkpoint ep {max(probe.checkpoints)}")
     if state["eval"]:
@@ -336,6 +426,8 @@ def adopt(state: dict, paths: lp.LoopPaths, run: str) -> dict:
     """The launch record of a training run started before the loop, found by its policy label."""
     if run not in ls.TRAINING_RUNS:
         raise SystemExit(f"only training runs can be adopted, not {run!r}")
+    if run == "stage1_t2r":
+        raise SystemExit("t2r rounds are launched by the loop, not adopted")
     label = state["policy"]["labels"][run]
     run_dir, log = paths.task_dir(run) / label, paths.train_log(label)
     if not run_dir.is_dir() or not log.is_file():
@@ -374,6 +466,8 @@ def cmd_status(args) -> int:
            "reason": decision.reason, "params": decision.params, "notes": list(decision.notes), "summary": summary_line(state, probe, decision)}
     if decision.action == "vlm_generate":
         out["vlm"] = vlm_request(paths, decision)
+    if decision.action == "t2r_generate":
+        out["t2r"] = t2r_request(paths, decision)
     print(json.dumps(out, ensure_ascii=False, indent=1))
     return 0
 
@@ -414,7 +508,7 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init")
     init.add_argument("--track", default=ls.TRACK)
-    init.add_argument("--phase", default="stage1_a", choices=ls.PHASES)
+    init.add_argument("--phase", default="stage1_t2r", choices=ls.PHASES)
     init.add_argument("--policy", default="{}", help="JSON overrides of loop_state.DEFAULT_POLICY")
     init.add_argument("--adopt", nargs="*", default=[], help="training runs already running under their policy labels")
     commands.add_parser("status")
