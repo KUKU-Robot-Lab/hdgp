@@ -211,6 +211,7 @@ def t2r_files(iter_dir: Path, iteration: int) -> ls.T2rIter:
     validation = iter_dir / loop_t2r.VALIDATION
     return ls.T2rIter(
         iter=iteration, prompt=(iter_dir / loop_t2r.PROMPT).is_file(), response=(iter_dir / loop_t2r.RESPONSE).is_file(),
+        # plain json.loads, not run_files.read_json: pipeline.ingest writes validation.json without the run-file schema key
         validation=json.loads(validation.read_text(encoding="utf-8")) if validation.is_file() else None,
         failed_attempts=len(list(iter_dir.glob("validation_attempt_*.json"))),
     )

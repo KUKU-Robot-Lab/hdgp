@@ -185,6 +185,32 @@ def test_collect_reads_the_current_round_run_its_series_checkpoints_and_files(tm
     assert probe.t2r == ls.T2rIter(iter=0, prompt=True, response=False, validation=None, failed_attempts=1)
 
 
+def test_a_launched_round_reads_only_its_own_run_folder_when_an_earlier_round_folder_exists(tmp_path):
+    paths = lp.LoopPaths.of(tmp_path / "hdgp", 0, "iker_shoe_c00_t2r")
+    state = ls.new_state("t")
+    state["t2r"] = {"iter": 1, "requests": 0, "rounds": [{"iter": 0}]}
+    prefix, label = state["policy"]["labels"]["stage1_t2r"], ls.t2r_label(state)
+    old_dir, new_dir = paths.task_dir("stage1_t2r") / f"{prefix}_i00", paths.task_dir("stage1_t2r") / label
+    for run_dir, epoch in ((old_dir, 500), (new_dir, 50)):
+        (run_dir / "nn").mkdir(parents=True)
+        (run_dir / "summaries").mkdir()
+        (run_dir / "summaries" / "events.out.tfevents.1").write_bytes(b"")
+        checkpoint = run_dir / "nn" / f"last_open-sens_l_iker_shoe_grasp_t2r_ep_{epoch}_rew_1.0.pth"
+        checkpoint.write_bytes(b"")
+        os.utime(checkpoint, (1000.0, 1000.0))
+    train_log = paths.train_log(label)
+    train_log.write_text("epoch\n")
+    state["runs"] = {"stage1_t2r": {"label": label, "log": str(train_log), "started_s": 0.0, "key": label}}
+
+    def load_events(path):
+        return {lp.SUCCESS_TAG: [(1, 0.9)]} if "i00" in path else {lp.SUCCESS_TAG: [(1, 0.02)]}
+
+    proc = tmp_path / "no_proc"
+    proc.mkdir()
+    probe = lp.collect(state, paths, now_s=2000.0, gpu_used_mib=0, load_events=load_events, proc_root=proc)
+    assert list(probe.checkpoints) == [50] and probe.success == ((1, 0.02),)
+
+
 def test_a_new_round_before_its_launch_reads_no_run_folder(tmp_path):
     paths = lp.LoopPaths.of(tmp_path, 0, "iker_shoe_c00_t2r")
     state = ls.new_state("t")
