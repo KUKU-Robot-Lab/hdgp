@@ -160,4 +160,8 @@ API·Qwen 백엔드, 루프의 코드 자동 수정.
 - **새 트랙.** `track = iker_shoe_c00_r2`, 라벨 `stage1_a = iker_grasp_c00_r2_a`·`stage1_b = iker_grasp_c00_r2_b`·
   `stage2 = iker_vlm_c00_r2_s1`. A 는 전과 같이 사람이 띄우고(`RUN_LABEL` = A 라벨, 로그 `log/rl_games/open-sens/left/train_<라벨>.log`)
   `loop.py init --track iker_shoe_c00_r2 --policy '{"labels": …}' --adopt stage1_a` 로 넘긴다. 이후 흐름·판정은 §4 그대로다.
+
+- **r3 재시작(2026-09-15).** r2 루프는 A epoch 200 게이트 미달로 멈췄다(파지 스펙 §16 개정 3-1). r2 상태를
+  `config_00/archive/2026-09-15_r2_lift_anywhere/loop/` 로 옮기고 트랙 `iker_shoe_c00_r3`, 라벨 `iker_grasp_c00_r3_a`·
+  `iker_grasp_c00_r3_b`·`iker_vlm_c00_r3_s1` 로 같은 절차를 다시 밟는다.
 - **가동 시점.** 코드 수정·리뷰·스모크 통과 뒤 사용자에게 확인하고 A 를 띄운다.

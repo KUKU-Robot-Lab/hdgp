@@ -279,7 +279,7 @@ def free_lift_height(
 @dataclass(frozen=True)
 class Stage1State:
     closest_palm: torch.Tensor  # (N,) best palm-to-surface gap so far, -1 before the first step
-    best_lift: torch.Tensor  # (N,) best clamp(dz_free, 0, lift_height) so far
+    best_lift: torch.Tensor  # (N,) best clamp(dz_free - deadband, 0, lift_height - deadband) inside the hold zone so far
     hold_count: torch.Tensor  # (N,) consecutive held steps
     latched: torch.Tensor  # (N,) bool, the lift bonus has been paid
     succeeded: torch.Tensor  # (N,) bool, the success bonus has been paid
@@ -357,7 +357,12 @@ def stage1_step(
     first = state.closest_palm < 0.0
     palm_delta = torch.where(first, torch.zeros_like(palm_gap), (state.closest_palm - palm_gap).clamp(min=0.0))
     closest_palm = torch.where(first, palm_gap, torch.minimum(state.closest_palm, palm_gap))
-    lift_level = (dz_free - cfg.lift_deadband_m).clamp(0.0, cfg.lift_height_m - cfg.lift_deadband_m)
+    # revision 3-1: lift progress counts only where a hold could — near the start and below the lift ceiling — so carrying the
+    # shoe away earns nothing (phase A r2 lifted and carried it 61 cm with progress paid anywhere)
+    in_hold_zone = (shoe_shift_xy <= cfg.hold_xy_radius_m) & (dz_free <= cfg.lift_max_m)
+    lift_level = torch.where(
+        in_hold_zone, (dz_free - cfg.lift_deadband_m).clamp(0.0, cfg.lift_height_m - cfg.lift_deadband_m), torch.zeros_like(dz_free)
+    )
     lift_delta = (lift_level - state.best_lift).clamp(min=0.0)
     best_lift = torch.maximum(state.best_lift, lift_level)
     g = g_factor(q, cfg)

@@ -208,6 +208,17 @@ def test_a_reset_bounce_inside_the_dead_band_pays_nothing():
     assert lifted.terms["lift_progress"].item() == pytest.approx(2000 * (0.05 - CFG.lift_deadband_m))
 
 
+def test_lift_progress_is_paid_only_inside_the_hold_zone():
+    state = gs.Stage1State.start(1)
+    far = _step(state, dz_free=torch.tensor([0.03]), shoe_shift_xy=torch.tensor([0.2]))
+    assert far.terms["lift_progress"].item() == 0.0
+    too_high = _step(far.state, dz_free=torch.tensor([0.2]))
+    assert too_high.terms["lift_progress"].item() == 0.0
+    back = _step(too_high.state, dz_free=torch.tensor([0.03]))
+    assert back.terms["lift_progress"].item() == pytest.approx(2000 * (0.03 - CFG.lift_deadband_m))
+    assert back.state.best_lift.item() == pytest.approx(0.03 - CFG.lift_deadband_m)
+
+
 def test_lift_bonus_needs_three_consecutive_held_steps_and_pays_once():
     state = gs.Stage1State.start(1)
     paid = []
