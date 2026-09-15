@@ -107,7 +107,25 @@ def test_stage_funnel_is_latched_per_episode_for_the_loop_ticks():
     rs = _fn_block(_ENV, "_reset_idx")
     _ordered(rs, ["self._event_ema(self._t2r_stage_ema", "latch[ids] = False", "super()._reset_idx(env_ids)"])
     assert "self.episode_length_buf[ids] > 0" in rs, "첫 reset()(길이 0)은 에피소드 끝이 아니다"
-    assert "stage" not in _fn_block(_ENV, "_build_context"), "퍼널은 보상 ctx 에 들어가지 않는다"
+    bc = _fn_block(_ENV, "_build_context")
+    for tok in ("_t2r_stage_latch", "step_flags(", "_t2r_stage_ema"):
+        assert tok not in bc, f"로그 퍼널({tok})은 보상 ctx 에 들어가지 않는다 — 보상 순서는 게이트 래치가 맡는다"
+
+
+def test_reward_gate_latches_follow_the_user_three_stages_of_0915():
+    # ★09.15 사용자 "기본 핸드 자세에서 컵으로 접근 → 접근한 상태에서 인벨롭 파지 → 리프트": 보상 함수는 매 스텝 상태만 보므로
+    #   단계 순서(과거)는 env 가 에피소드 래치로 기억해 ctx 로 넘긴다. 로그 퍼널(관찰용)과 정의·버퍼를 따로 둔다.
+    init = _fn_block(_ENV, "__init__")
+    for tok in ("self._hand_reset_q", "self._act_lo", "LOCKED_SPAN_RAD", "self._t2r_gate_approach",
+                "self._t2r_gate_envelope", "self._t2r_gate_ema"):
+        assert tok in init, tok
+    bc = _fn_block(_ENV, "_build_context")
+    _ordered(bc, ["update_gates(", "vals = dict(", "hand_default_q_norm=", "approach_done=self._t2r_gate_approach",
+                  "envelope_done=self._t2r_gate_envelope", "v.clone() if isinstance(v, torch.Tensor) else v"])
+    rs = _fn_block(_ENV, "_reset_idx")
+    _ordered(rs, ["self._event_ema(self._t2r_gate_ema", "self._t2r_gate_approach[ids] = False",
+                  "self._t2r_gate_envelope[ids] = False", "super()._reset_idx(env_ids)"])
+    assert 'f"stage/{name}_gate_ep"' in _fn_block(_ENV, "_log_fabric_metrics")
 
 
 def test_reward_code_path_defaults_empty_and_leaf_is_the_short_tl_hand():

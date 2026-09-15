@@ -123,6 +123,7 @@ def make_fake_context(n: int = 16, *, device: str = "cpu", seed: int = 0) -> Rew
         link_cup_force=r(n, NUM_FINGERS, NUM_LINKS, lo=0.0, hi=5.0), palm_cup_force=r(n, lo=0.0, hi=5.0),
         hand_q=r(n, NUM_HAND, lo=0.0, hi=1.6), hand_q_norm=r(n, NUM_HAND, lo=0.0, hi=1.0),
         hand_target_norm=r(n, NUM_HAND, lo=0.0, hi=1.0), hand_qd=r(n, NUM_HAND),
+        hand_default_q_norm=r(1, NUM_HAND, lo=0.0, hi=1.0).expand(n, NUM_HAND).clone(),
         hand_z_min=r(n, lo=0.15, hi=0.5),
         arm_q=r(n, NUM_ARM), arm_qd=r(n, NUM_ARM),
         cup_pos=r(n, 3, lo=0.0, hi=0.6), cup_quat=unit(n, 4), cup_axis=axis,
@@ -132,6 +133,7 @@ def make_fake_context(n: int = 16, *, device: str = "cpu", seed: int = 0) -> Rew
         goal_pos=r(n, 3, lo=0.0, hi=0.6), goal_dist=r(n, lo=0.0, hi=0.3), success_tol=r(n, lo=0.015, hi=0.1125),
         lifted=r(n) > 0.0, success=r(n) > 0.8, num_successes=torch.floor(r(n, lo=0.0, hi=5.99)),
         episode_progress=r(n, lo=0.0, hi=1.0),
+        approach_done=r(n) > -0.2, envelope_done=r(n) > 0.4,
         actions=r(n, NUM_ACTIONS), prev_actions=r(n, NUM_ACTIONS),
     )
 

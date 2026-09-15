@@ -13,7 +13,9 @@
   되는 보상이 나온 뒤 최종 정책만 SAPG 12,288. 막힌 단계가 200 epoch 정체하면 e1000 전이라도 라운드 끝.
 
 트랙(`t2r_fj_round.py` `TRACKS`): `grasp_fj_envelope`(라벨 `fj_t2r_iNN`, B leaf, SAPG 12,288 — 정지) · `grasp_fj_reach`(라벨 `fj_reach_iNN`,
-테이블 가장자리 시작·cup_family·0.3 rad/s·15 s — 09.14 최종 목표, PPO-LSTM 4096 · i00 만 SAPG 12,288). cron 프롬프트가 트랙을 지정한다.
+테이블 가장자리 시작·cup_family·0.3 rad/s·15 s — 09.14 최종 목표, PPO-LSTM 4096 · i00 만 SAPG 12,288 · i05 에서 정지) ·
+★`grasp_fj_stage`(라벨 `fj_stage_iNN`, 09.15 사용자 3단계 재구성 — 같은 reach env + 보상 게이트 래치, **새 이력**, 과제 문장
+`tasks/grasp_fj_stage.txt`, 조임 적응은 이번 범위 밖). cron 프롬프트가 트랙을 지정한다.
 ★판정 창은 **프레임 기준**(사용자 09.14): `track_policy` 가 ROUND_POLICY 의 epoch 값(라운드·창·평균)을 12,288/env 수 배로 늘린다 —
 아래의 "200 epoch" 은 기준값이고 reach(4096)는 **600 epoch**, 라운드 끝은 **3000 epoch**(≈3.3 h). 시간 상한 4 h 는 그대로.
 상태: `reward_gen/<track>/LOOP_STATE.json` = {"track","iter","label","round","awaiting","best","success_ticks",...}
@@ -37,6 +39,10 @@
    - `done_candidate`: success_ticks += 1. 2 틱 연속이면 4(라운드 끝 — 영상으로 종료 여부를 올린다).
    - `advance` / `advance(envelope)` / `advance(stuck:<단계>)`: 4.
      (`advance(stuck:<단계>)` = 앞 단계가 200 epoch 내내 ≥0.9 인데 그 단계가 ≈0 이고 뒤 단계도 안 오른다 — e1000 전이라도 라운드 끝.)
+   - `stop(checkpoint:approach)` / `stop(checkpoint:envelope)`: 4. ★09.15 사용자 "의도한 동작이 전혀 안 나오는데 학습이 진행되는 게 잘못".
+     보상 게이트 래치(`grasp_gates.py`: 기본 손 자세로 접근 완료 → 그 뒤 인벨롭 완료)의 에피소드 비율(최근 창 평균)이
+     12,288 env 기준 e200 까지 접근 ≥ 0.3 · e500 까지 인벨롭 ≥ 0.05 에 못 미치면 곧바로 라운드 끝(reach·stage 4096 = e600 · e1500).
+     ★기동할 때 체크포인트 시각(학습 시작 + epoch × 약 4 s)에 1회 틱 cron 을 건다 — 3 h 틱을 기다리지 않는다.
 4. 라운드 끝 — 영상 → 초안 → 승인 요청
    a. `python3 scripts/reward_gen/t2r_fj_round.py video --track <track> --label <label> --iter reward_gen/<track>/iter_NN`
       (백그라운드, 수 분 · 런이 쓴 태스크는 launch.json 에서 읽는다) → 로컬 `~/rl_ws/our_source/fj_t2r_videos/<label>_<ts>.mp4` ·

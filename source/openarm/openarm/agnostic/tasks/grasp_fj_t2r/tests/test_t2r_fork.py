@@ -62,6 +62,10 @@ def test_fake_context_matches_the_documented_layout():
     assert ctx.hand_q_norm.shape == (8, 19) and ctx.hand_target_norm.shape == (8, 19)
     assert ctx.actions.shape == (8, 26) and ctx.prev_actions.shape == (8, 26)
     assert ctx.success.dtype == torch.bool and ctx.lifted.dtype == torch.bool
+    # ★09.15 사용자 3단계 — 기본 손 자세 · 게이트 래치(접근 완료·인벨롭 완료)
+    assert ctx.hand_default_q_norm.shape == (8, 19)
+    assert ctx.approach_done.shape == (8,) and ctx.approach_done.dtype == torch.bool
+    assert ctx.envelope_done.shape == (8,) and ctx.envelope_done.dtype == torch.bool
     assert ctx.num_envs == 8
 
 

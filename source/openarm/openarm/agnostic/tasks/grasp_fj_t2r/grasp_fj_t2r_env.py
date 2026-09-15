@@ -10,6 +10,8 @@
                           로그 · 직전 액션 버퍼 리셋.
 
 ★관측·액션·종료·성공 판정·공차 커리큘럼은 B 그대로다 — 보상만 바뀐 같은 과제다.
+★09.15 사용자 3단계("기본 핸드 자세에서 컵으로 접근 → 접근한 상태에서 인벨롭 파지 → 리프트"): 보상 게이트용 에피소드 래치
+  (`grasp_gates.py`: 접근 완료·인벨롭 완료)를 `_build_context` 가 매 스텝 갱신해 ctx 로 넘긴다. 보상 입력일 뿐 관측이 아니다.
 """
 
 from __future__ import annotations
@@ -23,13 +25,18 @@ from isaaclab.utils.math import quat_apply
 from ..grasp_fj.grasp_fj_env import GraspFJEnv
 from ..grasp_fj.robot_profiles import PROFILES
 from .grasp_fj_t2r_env_cfg import GraspFJT2RRightShortEnvCfg
+from .grasp_gates import TOUCH_N as _GATE_TOUCH_N
+from .grasp_gates import palm_facing, pose_deviation, update_gates
 from .palm_frame import palm_center_offset
 from .stage_funnel import STAGES, palm_band_gap, step_flags
 from .t2r.context import RewardContext
 from .t2r.loader import call_reward_fn, load_reward_fn
+from .t2r.prompts import LOCKED_SPAN_RAD
 
 #: 진단 로그에서 "닿았다"로 셀 컵 접촉력 [N]. 보상에는 쓰지 않는다(보상의 임계는 생성 코드 몫).
 _TOUCH_LOG_N = 0.1
+#: 보상 게이트 래치 이름 — 로그 `stage/<이름>_gate_ep`, 순서 = `_t2r_gate_ema` 열.
+GATE_NAMES = ("approach", "envelope")
 
 
 class GraspFJT2REnv(GraspFJEnv):
@@ -46,6 +53,13 @@ class GraspFJT2REnv(GraspFJEnv):
         # 에피소드 단계 퍼널 — 에피소드 동안 한 번이라도 닿았나(래치) → 에피소드가 끝날 때 이벤트 EMA. 음수 = 끝난 에피소드 없음.
         self._t2r_stage_latch = torch.zeros(self.num_envs, len(STAGES), dtype=torch.bool, device=self.device)
         self._t2r_stage_ema = torch.full((len(STAGES),), -1.0, device=self.device)
+        # ★09.15 보상 게이트 래치(`grasp_gates.py`) — ctx.approach_done·envelope_done. 기본 손 자세 = B 리셋이 심는 자세.
+        self._t2r_gate_approach = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._t2r_gate_env_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._t2r_gate_envelope = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self._t2r_gate_ema = torch.full((len(GATE_NAMES),), -1.0, device=self.device)
+        self._t2r_default_q_norm = ((self._hand_reset_q - self._act_lo) / self._act_span).clamp(0.0, 1.0)
+        self._t2r_movable = (self._act_hi - self._act_lo) > LOCKED_SPAN_RAD
         # ★09.14 사용자 "손바닥의 중심쪽은 palm_ee xform" — palm_idx 는 프로필 palm_body(손바닥 링크 원점, 손목 쪽)다.
         #   ctx.palm_pos 는 자산 URDF 의 palm_ee fixed 조인트 오프셋만큼 옮긴 손바닥 중심을 넘긴다(회전은 같아 법선은 그대로).
         _prof = PROFILES[self.cfg.profile_name]
@@ -54,7 +68,7 @@ class GraspFJT2REnv(GraspFJEnv):
         _n = sum(len(v) for v in self._t2r_link_sensors.values())
         print(f"[grasp_fj_t2r] 보상 = {self._reward_src} · 보상 전용 컵 접촉 센서 {_n}+1(손바닥) · "
               f"필터 {self._t2r_filter} · 손바닥 중심 = {_prof.palm_body} + {tuple(round(v, 4) for v in _off)} m(palm_ee) · "
-              f"관측 불변", flush=True)
+              f"게이트 래치 {GATE_NAMES} · 기본 손 자세(움직이는 관절 {int(self._t2r_movable.sum())}개) · 관측 불변", flush=True)
 
     # ------------------------------------------------------------------
     def _setup_scene(self) -> None:
@@ -144,9 +158,19 @@ class GraspFJT2REnv(GraspFJEnv):
                     - self.scene.env_origins[:, None, :]).view(n, len(self._finger_names), -1, 3)
         q = self.robot.data.joint_pos[:, self._syn_ids]
         lo, span = self._act_lo.unsqueeze(0), self._act_span.unsqueeze(0)
+        q_norm = ((q - lo) / span).clamp(0.0, 1.0)
         cup_quat = self.object.data.root_quat_w
+        cup_local = self._env_local(self.object.data.root_pos_w)
         axis = quat_apply(cup_quat, torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(n, 3))
         raw = getattr(self, "_act_raw", self.actions).clamp(-1.0, 1.0)
+        # ★09.15 보상 게이트 래치 — 이 스텝 상태로 접근 완료·인벨롭 완료를 갱신한다(한 번 서면 리셋까지 유지).
+        #   접근 = 손바닥 중심↔파지 띠 · 손바닥 방향 · 기본 손 자세, 인벨롭 = 접근 뒤 손바닥+엄지+손가락 수 연속. 수치는 grasp_gates.
+        self._t2r_gate_approach, self._t2r_gate_env_count, self._t2r_gate_envelope = update_gates(
+            self._t2r_gate_approach, self._t2r_gate_env_count, self._t2r_gate_envelope,
+            gap=palm_band_gap(palm_center, cup_local, axis, self._obj_grasp_r, self._obj_grasp_h),
+            facing=palm_facing(palm_center, R[:, :, 0], cup_local, axis),
+            pose_dev=pose_deviation(q_norm, self._t2r_default_q_norm, self._t2r_movable),
+            palm_touch=palm_f > _GATE_TOUCH_N, finger_touch=(links_f > _GATE_TOUCH_N).any(dim=2))
         vals = dict(
             table_z=float(self.cfg.table_surface_z),
             lift_latch_height=float(self._rw_cfg.lift_latch_height),
@@ -156,13 +180,14 @@ class GraspFJT2REnv(GraspFJEnv):
             palm_normal=R[:, :, 0], palm_side=R[:, :, 1],
             link_pos=link_pos, link_cup_force=links_f, palm_cup_force=palm_f,
             hand_q=q,
-            hand_q_norm=((q - lo) / span).clamp(0.0, 1.0),
+            hand_q_norm=q_norm,
             hand_target_norm=((self._syn_target - lo) / span).clamp(0.0, 1.0),
+            hand_default_q_norm=self._t2r_default_q_norm.unsqueeze(0).expand(n, -1),
             hand_qd=self.robot.data.joint_vel[:, self._syn_ids],
             hand_z_min=self._hand_z_min,
             arm_q=self.robot.data.joint_pos[:, self._arm_ids_t],
             arm_qd=self.robot.data.joint_vel[:, self._arm_ids_t],
-            cup_pos=self._env_local(self.object.data.root_pos_w), cup_quat=cup_quat, cup_axis=axis,
+            cup_pos=cup_local, cup_quat=cup_quat, cup_axis=axis,
             cup_tilt=torch.acos(axis[:, 2].clamp(-1.0, 1.0)),
             cup_lin_vel=self.object.data.root_lin_vel_w, cup_ang_vel=self.object.data.root_ang_vel_w,
             cup_spawn_pos=self.object_spawn_pos,
@@ -172,6 +197,7 @@ class GraspFJT2REnv(GraspFJEnv):
             lifted=out["lifted"], success=kw["is_success"],
             num_successes=self._trk.successes.float(),
             episode_progress=self.episode_length_buf.float() / float(self.max_episode_length),
+            approach_done=self._t2r_gate_approach, envelope_done=self._t2r_gate_envelope,
             actions=raw, prev_actions=self._t2r_prev_actions,
         )
         # ★09.14 리뷰: goal_pos·lifted(→_latched)·is_success(→_advance_goals)·kp_dist(→_log_step)·_obj_grasp_r/h·
@@ -213,6 +239,11 @@ class GraspFJT2REnv(GraspFJEnv):
         ex["stage/palm_cup_gap"] = gap.mean()
         for k, name in enumerate(STAGES):
             ex[f"stage/{name}_ep"] = self._t2r_stage_ema[k]
+        # ★09.15 보상 게이트 래치 — 끝난 에피소드 중 그 래치가 선 비율(루프 체크포인트 판정 재료) + 지금 서 있는 env 비율.
+        for k, name in enumerate(GATE_NAMES):
+            ex[f"stage/{name}_gate_ep"] = self._t2r_gate_ema[k]
+        ex["stage/approach_gate_now"] = ctx.approach_done.to(touching.dtype).mean()
+        ex["stage/envelope_gate_now"] = ctx.envelope_done.to(touching.dtype).mean()
 
     def _reset_idx(self, env_ids) -> None:
         ids = self.robot._ALL_INDICES if env_ids is None else env_ids
@@ -222,7 +253,12 @@ class GraspFJT2REnv(GraspFJEnv):
             ended = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
             ended[ids] = self.episode_length_buf[ids] > 0
             self._t2r_stage_ema = self._event_ema(self._t2r_stage_ema, latch.float(), ended)
+            gates = torch.stack([self._t2r_gate_approach, self._t2r_gate_envelope], dim=1).float()
+            self._t2r_gate_ema = self._event_ema(self._t2r_gate_ema, gates, ended)
             latch[ids] = False
+            self._t2r_gate_approach[ids] = False
+            self._t2r_gate_env_count[ids] = 0
+            self._t2r_gate_envelope[ids] = False
         super()._reset_idx(env_ids)
         prev = getattr(self, "_t2r_prev_actions", None)
         if prev is not None:

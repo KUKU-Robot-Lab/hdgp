@@ -36,6 +36,7 @@ class RewardContext:
     hand_q: torch.Tensor           # (N,19) finger joint angles [rad], order = the hand joint table in the robot description
     hand_q_norm: torch.Tensor      # (N,19) joint angles normalised to each joint's commandable range: 0 = lower limit (straight), 1 = upper limit (most flexed)
     hand_target_norm: torch.Tensor  # (N,19) commanded finger joint targets (after filtering), same normalisation as hand_q_norm
+    hand_default_q_norm: torch.Tensor  # (N,19) the hand's default pose: the finger joint angles every episode starts with, same normalisation as hand_q_norm (the same in every environment)
     hand_qd: torch.Tensor          # (N,19) finger joint velocities [rad/s]
     hand_z_min: torch.Tensor       # (N,) height of the lowest hand link, palm excluded [m]; below table_z - 0.03 ends the episode wherever the hand is
 
@@ -62,6 +63,10 @@ class RewardContext:
     success: torch.Tensor          # (N,) bool, True on the step a success is counted
     num_successes: torch.Tensor    # (N,) number of successes counted so far in this episode
     episode_progress: torch.Tensor  # (N,) elapsed fraction [0,1] of the step budget; the budget restarts after every success
+
+    # ---- stage completion flags: kept by the environment, stay True until the episode ends ----
+    approach_done: torch.Tensor    # (N,) bool, set on the first step on which all three held at once: the palm centre was within 2 cm of the surface of the cup's graspable band, the palm faced the cup axis (palm_normal within about 45 degrees of the direction from the palm to the axis), and every movable finger joint was within 0.15 of hand_default_q_norm (joints with a range of 0.05 rad or less are ignored)
+    envelope_done: torch.Tensor    # (N,) bool, set once, after approach_done, the palm, the thumb and at least 4 digits in total (the thumb included) touched the cup for 5 consecutive steps; the palm or a finger counts as touching when its contact force with the cup is above 0.1 N
 
     # ---- actions ---------------------------------------------------------------------------
     actions: torch.Tensor          # (N,26) policy action of this step, clipped to [-1,1]; each step the joints receive one of the last 3 policy actions picked at random (a 0-2 step delay)

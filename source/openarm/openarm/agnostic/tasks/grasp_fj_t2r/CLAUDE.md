@@ -28,6 +28,7 @@ text2reward 방식으로 생성한다: 환경 설명(RewardContext 소스)+과�
 | 보상 전용 컵 접촉 센서: 마디(`_3`·`_4`·tip) body 하나당 센서 하나 + 손바닥 | 다중 body 를 한 센서에 묶으면 `force_matrix_w` 가 조용히 0. 관측에는 넣지 않는다(09.14 사용자 결정) |
 | 컵 필터는 env_0 스테이지의 RigidBodyAPI 프림으로 만든다(`_cup_contact_filter`) — cfg `object_contact_filter` 금지 | ★09.14 스모크: cfg 값이 shaker_sweep 에서 `Object/ShakerFDM5mm`(없는 경로, 0개 매칭)라 PhysX 에러 로그만 남고 힘이 전부 0 이었다. 셰이커 USD 루트가 참조로 `Object` 자체가 된다 |
 | `ctx.palm_pos` = 손바닥 중심 **palm_ee**(collision 없는 가상 점) = 손바닥 링크 원점 + R·URDF `r_hj_palm_ee` 오프셋 (28, 0, 40) mm — `palm_frame.py`, rpy ≠ 0 이면 부팅 거부 | ★09.14 사용자 "손바닥의 중심쪽은 palm_ee xform · collision 없는 가상의 점". `palm_idx`(프로필 `r_hl_palm`)는 손목 쪽이라 reach i00 보상이 손목 끝을 컵에 붙였다. 접촉 센서는 collider 가 있는 `r_hl_palm` 그대로(손등·손목 접촉도 센다 — 방향은 보상이 `palm_normal` 로 가려야 한다) |
+| 보상 게이트 래치 `ctx.approach_done`·`envelope_done`·`hand_default_q_norm`(`grasp_gates.py`) — `_build_context` 가 매 스텝 갱신 · `_reset_idx` 가 에피소드 EMA(`stage/{approach,envelope}_gate_ep`) 후 리셋 | ★09.15 사용자 3단계 "기본 핸드 자세에서 컵으로 접근 → 접근한 상태에서 인벨롭 파지 → 리프트". 보상 함수는 매 스텝 상태만 봐 순서(과거)를 모른다 — reach 6라운드 동안 단계를 건너뛴 자세가 점수를 받았다. 접근 = 손바닥 중심↔파지 띠 ≤ 2 cm · 손바닥 cos ≥ 0.7 · 움직이는 손 관절 기본 자세 ±0.15, 인벨롭 = 접근 뒤 손바닥+엄지+닿은 손가락 ≥ 4 가 5 스텝 연속. 로그 퍼널(관찰용, 접근 ≤ 5 cm)과 따로 둔다. 트랙 `grasp_fj_stage`(새 이력) · 판정 `stop(checkpoint:<단계>)` |
 | `reward_code_path` 기본 "" = 영 보상 · env `__init__` 에서 읽는다 | 부팅 스모크용. hydra 가 `__post_init__` 에 구워지는 함정 없음 |
 | t2r 포크(`t2r/`): 컨텍스트 소스 = 프롬프트 환경 설명 · 검증기(정적+드라이런) · 프롬프트는 **환경 사실만** | 생성기에 이 세션의 설계 의견을 흘리지 않는다(09.14 사용자 결정: 새 에이전트 · 지난 결과 미포함) |
 

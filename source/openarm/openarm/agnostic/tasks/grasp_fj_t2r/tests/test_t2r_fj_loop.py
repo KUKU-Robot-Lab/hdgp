@@ -320,3 +320,32 @@ def test_judge_windows_follow_frames_not_epochs():
     s = {**_summ(0.0), "stage/reach_ep": {"now": 0.5, "ago": 0.5}}
     assert R.judge(s, {**ALIVE, "epoch": 1500}, 1.7)[0] == "advance"
     assert R.judge(s, {**ALIVE, "epoch": 1500}, 1.7, reach)[0] == "continue"
+
+
+def test_stage_track_trains_the_reach_env_with_its_own_history():
+    # ★09.15 사용자 "보상함수를 다시 구성" — 같은 reach env(게이트 래치 추가)·같은 알고리즘, 이력만 새로(reward_gen/grasp_fj_stage)
+    stage, reach = R.track("grasp_fj_stage"), R.track("grasp_fj_reach")
+    for k in ("task", "play", "logdir", "sapg", "num_envs", "video_length"):
+        assert stage[k] == reach[k], k
+
+
+def test_gate_checkpoints_stop_a_run_that_skips_the_intended_stages():
+    # ★09.15 사용자: 의도한 동작이 안 나오면 학습을 계속하지 않는다 — 단계 체크포인트는 최근 창 평균(last)으로 본다(마지막 한 점 아님)
+    pol = R.track_policy(R.track("grasp_fj_stage"))
+    assert pol["CHECK_APPROACH_EPOCH"] == 600 and pol["CHECK_ENVELOPE_EPOCH"] == 1500
+    no_approach = {**_summ(0.0), "stage/approach_gate_ep": {"last": 0.1, "now": 0.4},
+                   "stage/envelope_gate_ep": {"last": 0.0, "now": 0.0}}
+    assert R.judge(no_approach, {**ALIVE, "epoch": 599}, 0.7, pol)[0] == "continue"
+    verdict, info = R.judge(no_approach, {**ALIVE, "epoch": 600}, 0.7, pol)
+    assert verdict == "stop(checkpoint:approach)" and info["checkpoint"] == "approach", info
+    approached = {**no_approach, "stage/approach_gate_ep": {"last": 0.6, "now": 0.6}}
+    assert R.judge(approached, {**ALIVE, "epoch": 1200}, 1.4, pol)[0] == "continue"
+    assert R.judge(approached, {**ALIVE, "epoch": 1500}, 1.7, pol)[0] == "stop(checkpoint:envelope)"
+    wrapped = {**approached, "stage/envelope_gate_ep": {"last": 0.08, "now": 0.1}}
+    assert R.judge(wrapped, {**ALIVE, "epoch": 1500}, 1.7, pol)[0] == "continue"
+    # 게이트 태그가 없는 옛 트랙은 체크포인트를 받지 않는다 · −1(끝난 에피소드 없음)은 0 으로 본다
+    assert R.judge(_summ(0.0), {**ALIVE, "epoch": 900}, 1.0, pol)[0] == "continue"
+    none_yet = {**_summ(0.0), "stage/approach_gate_ep": {"last": -1.0, "now": -1.0}}
+    assert R.judge(none_yet, {**ALIVE, "epoch": 600}, 0.7, pol)[0] == "stop(checkpoint:approach)"
+    # 크래시·죽은 런 판정이 먼저다
+    assert R.judge(no_approach, {"alive": False, "crashed": True, "epoch": 700}, 0.8, pol)[0] == "crashed"

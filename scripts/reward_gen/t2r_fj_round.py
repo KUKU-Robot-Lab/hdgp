@@ -55,9 +55,15 @@ from parse_tfevents import load_tfevents   # noqa: E402
 #:   DONE_TOL 0.03 = 느슨한 공차(시작 0.1125)의 성공은 종료 근거가 아니다. 인벨롭 = 사용자 09.13 "5손가락 개입".
 #:   STAGE_EPS 0.02 = 퍼널 에피소드 비율이 200 epoch 에 2%p 이상 오르면 "오르는 중"(이벤트 EMA 흔들림보다 크게).
 #:   STUCK_PREV 0.9 · STUCK_NEXT 0.02 = 사용자 09.14 "앞 단계 ≥ 0.9 인데 다음 단계가 0 으로 200 epoch 안 오르면 라운드 끝".
+#:   ★09.15 사용자 "의도한 동작이 전혀 안 나오는데 학습이 진행되는 게 잘못" → 단계 체크포인트(사용자 선택): 보상 게이트 래치
+#:   (env `grasp_gates.py`)의 에피소드 비율을 최근 창 평균으로 본다 — CHECK_APPROACH_EPOCH 까지 접근 래치 ≥ CHECK_APPROACH_MIN,
+#:   CHECK_ENVELOPE_EPOCH 까지 인벨롭 래치 ≥ CHECK_ENVELOPE_MIN. 못 미치면 stop(checkpoint:<단계>) → 라운드 끝(영상 → 초안 → 승인).
+#:   epoch 값은 12,288 env 기준(reach 4096 → e600 · e1500).
 ROUND_POLICY = {"ROUND_EPOCHS": 1000, "ROUND_HOURS": 4.0, "KEEP_SUCCESSES": 2.0, "TOL_WINDOW": 200, "TOL_EPS": 1e-4,
                 "DONE_SUCCESSES": 4.0, "DONE_TOL": 0.03, "DONE_FINGERS": 4.0, "DONE_PALM": 0.5,
-                "STAGE_EPS": 0.02, "STUCK_PREV": 0.9, "STUCK_NEXT": 0.02, "MAX_ROUNDS": 8, "LAST_N": 50}
+                "STAGE_EPS": 0.02, "STUCK_PREV": 0.9, "STUCK_NEXT": 0.02, "MAX_ROUNDS": 8, "LAST_N": 50,
+                "CHECK_APPROACH_EPOCH": 200, "CHECK_APPROACH_MIN": 0.3,
+                "CHECK_ENVELOPE_EPOCH": 500, "CHECK_ENVELOPE_MIN": 0.05}
 SERVER = "server"
 SERVER_HDGP = "/home/oem/rl_ws/hdgp"
 SERVER_CONSOLE = "/home/oem/rl_ws/our_source/fj_t2r_runs"
@@ -73,6 +79,11 @@ TRACKS: dict[str, dict] = {
                           "play": "open-short_r_grasp_fj_t2r-play-lstm-sapg", "logdir": "grasp-fj-t2r",
                           "sapg": True, "num_envs": 12288, "video_length": 700},
     "grasp_fj_reach": {"task": "open-short_r_grasp_fj_t2r_reach-lstm",
+                       "play": "open-short_r_grasp_fj_t2r_reach-play-lstm", "logdir": "grasp-fj-t2r-reach",
+                       "sapg": False, "num_envs": 4096, "video_length": 900},
+    #   ★09.15 사용자 "보상함수를 다시 구성 — 기본 핸드 자세로 접근 → 접근한 상태에서 인벨롭 파지 → 리프트": 같은 reach env
+    #   (보상 게이트 래치 추가)·같은 알고리즘을 **새 이력**으로 돈다(reach 6라운드 이력은 생성기에 넣지 않는다). 라벨 fj_stage_iNN.
+    "grasp_fj_stage": {"task": "open-short_r_grasp_fj_t2r_reach-lstm",
                        "play": "open-short_r_grasp_fj_t2r_reach-play-lstm", "logdir": "grasp-fj-t2r-reach",
                        "sapg": False, "num_envs": 4096, "video_length": 900},
 }
@@ -99,7 +110,7 @@ def track(name: str) -> dict:
 #: ★09.14 사용자 "프레임 기준으로 맞춤" — env 수가 다른 트랙은 같은 프레임이 되게 epoch 창을 env 수에 반비례로 늘린다
 #:   (reach PPO-LSTM 4096 → ×3: 라운드 3000 · 창 600 · 평균 150 epoch). 시간 상한 ROUND_HOURS 는 그대로.
 REF_ENVS = 12288
-_EPOCH_KEYS = ("ROUND_EPOCHS", "TOL_WINDOW", "LAST_N")
+_EPOCH_KEYS = ("ROUND_EPOCHS", "TOL_WINDOW", "LAST_N", "CHECK_APPROACH_EPOCH", "CHECK_ENVELOPE_EPOCH")
 
 
 def track_policy(t: dict, policy: dict = ROUND_POLICY) -> dict:
@@ -231,6 +242,25 @@ def stage_stuck(summary: dict, policy: dict = ROUND_POLICY) -> str | None:
     return None
 
 
+#: 보상 게이트 래치 에피소드 비율 태그 — env `grasp_fj_t2r_env.GATE_NAMES` 순서(`stage/<이름>_gate_ep`).
+GATE_CHECKS = (("approach", "CHECK_APPROACH_EPOCH", "CHECK_APPROACH_MIN"),
+               ("envelope", "CHECK_ENVELOPE_EPOCH", "CHECK_ENVELOPE_MIN"))
+
+
+def gate_checkpoint(summary: dict, epoch: int, policy: dict = ROUND_POLICY) -> str | None:
+    """체크포인트를 못 넘은 첫 단계 이름 — 게이트 태그가 없으면(옛 트랙) None.
+
+    ★최근 창 평균(last)으로 본다 — 마지막 한 점은 모드가 오가는 정책에서 제멋대로다(09.15 i02·i04 판정). −1(끝난 에피소드 없음)은 0.
+    """
+    for name, epoch_key, min_key in GATE_CHECKS:
+        m = summary.get(f"stage/{name}_gate_ep")
+        if not m or epoch < policy[epoch_key]:
+            continue
+        if max(m.get("last", m.get("now", 0.0)), 0.0) < policy[min_key]:
+            return name
+    return None
+
+
 def judge(summary: dict, st: dict, hours: float | None, policy: dict = ROUND_POLICY) -> tuple[str, dict]:
     epoch = st.get("epoch") or 0
     succ = summary.get(SUCCESS_TAG, {}).get("last", 0.0)
@@ -239,8 +269,9 @@ def judge(summary: dict, st: dict, hours: float | None, policy: dict = ROUND_POL
     moving = curriculum_moving(summary, policy)
     stage_up = stage_moving(summary, policy)
     stuck = stage_stuck(summary, policy)
+    checkpoint = gate_checkpoint(summary, epoch, policy)
     info = {"epoch": epoch, "successes": succ, "tol": tol, "curriculum_moving": moving, "stage_moving": stage_up,
-            "stage_stuck": stuck, "envelope_ok": env_ok}
+            "stage_stuck": stuck, "envelope_ok": env_ok, "checkpoint": checkpoint}
     if st.get("crashed") or (not st.get("alive") and epoch < 10):
         return "crashed", info
     if not st.get("alive"):
@@ -248,6 +279,9 @@ def judge(summary: dict, st: dict, hours: float | None, policy: dict = ROUND_POL
     if (succ >= policy["DONE_SUCCESSES"] and tol is not None and tol <= policy["DONE_TOL"]
             and env_ok is not False):
         return "done_candidate", info
+    # ★09.15 사용자 "의도한 동작이 안 나오는데 학습이 진행되는 게 잘못" — 단계를 건너뛴 성공도 여기서 멈춘다(성공 유지 규칙보다 먼저).
+    if checkpoint:
+        return f"stop(checkpoint:{checkpoint})", info
     keep_succ = succ >= policy["KEEP_SUCCESSES"]
     if keep_succ or moving:
         if env_ok is False and epoch >= 2 * policy["ROUND_EPOCHS"]:
