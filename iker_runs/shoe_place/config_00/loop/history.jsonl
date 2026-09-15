@@ -1,1 +1,2 @@
 {"time": "2026-09-15T18:58:55+09:00", "phase": "stage1_a", "action": "init", "adopted": ["stage1_a"]}
+{"time": "2026-09-15T20:12:40+09:00", "phase": "stage1_a", "action": "pause", "reason": "stage1_a crashed: ended without a result", "params": {"needs": "read the end of its log; the loop never edits code - fix the cause, then `loop.py act resume`"}, "result": {}}

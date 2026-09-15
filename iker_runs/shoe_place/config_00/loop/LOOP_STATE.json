@@ -2,8 +2,12 @@
  "schema": 1,
  "track": "iker_shoe_c00_r6",
  "phase": "stage1_a",
- "status": "running",
- "awaiting": null,
+ "status": "awaiting",
+ "awaiting": {
+  "reason": "stage1_a crashed: ended without a result",
+  "needs": "read the end of its log; the loop never edits code - fix the cause, then `loop.py act resume`",
+  "phase": "stage1_a"
+ },
  "stage": 1,
  "policy": {
   "gate_epoch": 350,
@@ -48,5 +52,5 @@
  },
  "eval": {},
  "vlm_requests": {},
- "updated": "2026-09-15T18:58:55+09:00"
+ "updated": "2026-09-15T20:12:40+09:00"
 }
