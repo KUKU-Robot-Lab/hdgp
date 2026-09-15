@@ -1,0 +1,363 @@
+{
+ "label": "t2r_rh_i04",
+ "verdict": "advance",
+ "epoch": 687,
+ "alive": true,
+ "pids": [
+  1487026,
+  1487035,
+  1487041
+ ],
+ "hours": 3.71,
+ "mirror": "/home/user/rl_ws/hdgp/log/pour_fabric_mimic/mirror/t2r_rh_i04",
+ "metrics": {
+  "done/mimic_runaway": {
+   "n": 687,
+   "last": 0.0001,
+   "max": 0.0049,
+   "first": 0.0049
+  },
+  "done/mimic_err_runaway": {
+   "n": 687,
+   "last": 0.0,
+   "max": 0.001,
+   "first": 0.001
+  },
+  "reward/approach_src": {
+   "n": 687,
+   "last": 1.2295,
+   "max": 1.2529,
+   "first": 0.4053
+  },
+  "reward/approach_rcv": {
+   "n": 687,
+   "last": 1.3819,
+   "max": 1.4331,
+   "first": 0.3756
+  },
+  "reward/orient_src": {
+   "n": 687,
+   "last": 0.1124,
+   "max": 0.1184,
+   "first": 0.0571
+  },
+  "reward/orient_rcv": {
+   "n": 687,
+   "last": 0.1821,
+   "max": 0.21,
+   "first": 0.0573
+  },
+  "reward/tips_src": {
+   "n": 687,
+   "last": 0.0946,
+   "max": 0.1477,
+   "first": 0.0626
+  },
+  "reward/tips_rcv": {
+   "n": 687,
+   "last": 0.1974,
+   "max": 0.2065,
+   "first": 0.0622
+  },
+  "reward/close_src": {
+   "n": 687,
+   "last": 0.0069,
+   "max": 0.0256,
+   "first": 0.0
+  },
+  "reward/close_rcv": {
+   "n": 687,
+   "last": 0.1052,
+   "max": 0.1296,
+   "first": 0.0
+  },
+  "reward/contact_src": {
+   "n": 687,
+   "last": 0.0003,
+   "max": 0.0019,
+   "first": 0.0002
+  },
+  "reward/contact_rcv": {
+   "n": 687,
+   "last": 0.1435,
+   "max": 0.1575,
+   "first": 0.0
+  },
+  "reward/grasp_src": {
+   "n": 687,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/grasp_rcv": {
+   "n": 687,
+   "last": 0.0006,
+   "max": 0.0075,
+   "first": 0.0
+  },
+  "reward/grasp_both": {
+   "n": 687,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/curl_far_pen": {
+   "n": 687,
+   "last": -0.0006,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/rim_hook_pen": {
+   "n": 687,
+   "last": -0.0134,
+   "max": -0.0068,
+   "first": -0.3339
+  },
+  "reward/lift_src": {
+   "n": 687,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/lift_rcv": {
+   "n": 687,
+   "last": 0.0002,
+   "max": 0.0026,
+   "first": 0.0
+  },
+  "reward/align": {
+   "n": 687,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/tilt": {
+   "n": 687,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/pour_delta": {
+   "n": 687,
+   "last": 0.0,
+   "max": 0.0098,
+   "first": 0.0
+  },
+  "reward/spill_delta": {
+   "n": 687,
+   "last": 0.0,
+   "max": 0.0049,
+   "first": -0.0098
+  },
+  "reward/success": {
+   "n": 687,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/pre_tilt_pen": {
+   "n": 687,
+   "last": -0.0003,
+   "max": 0.0,
+   "first": -0.0068
+  },
+  "reward/rcv_upright_pen": {
+   "n": 687,
+   "last": -0.0001,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/knock_pen": {
+   "n": 687,
+   "last": -0.0008,
+   "max": 0.0,
+   "first": -0.027
+  },
+  "reward/cup_push_pen": {
+   "n": 687,
+   "last": -0.0007,
+   "max": 0.0,
+   "first": -0.0207
+  },
+  "reward/drop_pen": {
+   "n": 687,
+   "last": -0.0001,
+   "max": 0.0,
+   "first": -0.0049
+  },
+  "reward/cup_speed_pen": {
+   "n": 686,
+   "last": -0.0001,
+   "max": 0.0,
+   "first": -0.0089
+  },
+  "reward/nested_pen": {
+   "n": 686,
+   "last": 0.0,
+   "max": 0.0,
+   "first": -0.0059
+  },
+  "reward/cup_collision_pen": {
+   "n": 686,
+   "last": 0.0,
+   "max": 0.0,
+   "first": -0.0001
+  },
+  "reward/hand_foreign_pen": {
+   "n": 686,
+   "last": -0.0006,
+   "max": 0.0,
+   "first": -0.0042
+  },
+  "reward/palm_push_pen": {
+   "n": 686,
+   "last": -0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/action_rate_pen": {
+   "n": 686,
+   "last": -0.0387,
+   "max": -0.038,
+   "first": -0.0515
+  },
+  "reward/arm_speed_pen": {
+   "n": 686,
+   "last": -0.0101,
+   "max": -0.0092,
+   "first": -0.0562
+  },
+  "reward/total": {
+   "n": 686,
+   "last": 3.359,
+   "max": 3.4308,
+   "first": 0.4495
+  },
+  "task/success_now": {
+   "n": 686,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "task/episode_success": {
+   "n": 686,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "task/src_grasped": {
+   "n": 686,
+   "last": 0.0,
+   "max": 0.001,
+   "first": 0.0
+  },
+  "task/rcv_grasped": {
+   "n": 686,
+   "last": 0.0007,
+   "max": 0.0078,
+   "first": 0.0
+  },
+  "task/src_cup_lift": {
+   "n": 686,
+   "last": 0.0003,
+   "max": 0.0173,
+   "first": 0.0011
+  },
+  "task/rcv_cup_lift": {
+   "n": 686,
+   "last": 0.0013,
+   "max": 0.1288,
+   "first": 0.0038
+  },
+  "task/src_tilt_deg": {
+   "n": 686,
+   "last": 1.024,
+   "max": 5.6394,
+   "first": 3.0905
+  },
+  "task/aim_dist": {
+   "n": 686,
+   "last": 0.3256,
+   "max": 0.7762,
+   "first": 0.3184
+  },
+  "task/cups_center_dist": {
+   "n": 686,
+   "last": 0.3241,
+   "max": 0.7766,
+   "first": 0.3212
+  },
+  "task/nested_rate": {
+   "n": 686,
+   "last": 0.0,
+   "max": 0.0146,
+   "first": 0.0029
+  },
+  "task/cup_collision_rate": {
+   "n": 686,
+   "last": 0.0,
+   "max": 0.0078,
+   "first": 0.0
+  },
+  "task/src_hand_foreign_rate": {
+   "n": 686,
+   "last": 0.0004,
+   "max": 0.0068,
+   "first": 0.002
+  },
+  "task/rcv_hand_foreign_rate": {
+   "n": 686,
+   "last": 0.0,
+   "max": 0.0088,
+   "first": 0.001
+  },
+  "ctrl/mimic_err_max": {
+   "n": 686,
+   "last": 0.2531,
+   "max": 60.7849,
+   "first": 60.7849
+  },
+  "ctrl/hand_dep_qd_max": {
+   "n": 686,
+   "last": 225.5833,
+   "max": 1276377.125,
+   "first": 1276377.125
+  },
+  "adr/progress": {
+   "n": 686,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "dr/wrench_force_scale": {
+   "n": 686,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "bead/in_target": {
+   "n": 686,
+   "last": 0.0,
+   "max": 0.0002,
+   "first": 0.0
+  },
+  "bead/spill": {
+   "n": 686,
+   "last": 0.0,
+   "max": 0.0024,
+   "first": 0.0001
+  },
+  "done/drop": {
+   "n": 686,
+   "last": 0.0001,
+   "max": 0.0088,
+   "first": 0.0039
+  }
+ },
+ "policy": {
+  "ROUND_EPOCHS": 600,
+  "ROUND_HOURS": 8.0,
+  "KEEP_SUCCESS": 0.3,
+  "MAX_ROUNDS": 8
+ }
+}

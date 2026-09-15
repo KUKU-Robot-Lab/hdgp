@@ -64,5 +64,8 @@
  "round5_end_t2r_rh_i03_a2": "09.15 epoch 146(0.72 h) — 사용자 'T2r 다시 생성해서 재학습 필요 · Usd 문제도 없으니 보상함수 문제' → notes_round5 승인, 학습 PID 1414015/1414022/1414027 종료(RUN_LABEL 확인). 양손 palm↔컵 16~17 cm·접촉 0·파지 0, 이전 런과 동일 패턴",
  "decisions_round5": "09.15 사용자 notes_round5 '승인·진행' — advance(iter_03/feedback.md, iter_04/prompt.md), iter_04 생성 시작",
  "loop_stopped_round5": "cron fbf66aa0 삭제(생성 중 틱 오판정 방지) — iter_04 기동 후 재등록",
- "loop_resumed_round6": "23:34 t2r_rh_i04 기동(e529df59) — cron 재등록, 틱 보고에 task/*_thumb_over_rim_near·_near_rate 포함"
+ "loop_resumed_round6": "23:34 t2r_rh_i04 기동(e529df59) — cron 재등록, 틱 보고에 task/*_thumb_over_rim_near·_near_rate 포함",
+ "round6_end_t2r_rh_i04": "09.16 advance 판정(epoch 687, 3.71 h) — ep_700 저장 후 학습 PID 1487026/1487035/1487041 종료(RUN_LABEL 확인, 1487041 은 SIGTERM 무응답 → kill -9). 영상 our_source/pour_t2r_rh_i04_ep700_0916.mp4 (+_frames sheet·hands_zoom). 접근 해결(rcv 8.2 cm·near 93 %, src 10.6 cm·63 %, 엄지 입구 아래) · 접촉 rcv 2.25 N·src 0 · 파지·들기 0",
+ "decisions_round6": "09.16 사용자 notes_round6 '승인·iter_05 생성' — 접근 해결, 다음 병목 = 엄지+맞은편 손가락 동시 파지(>1 N)·들기",
+ "loop_stopped_round6": "cron 38095edd 삭제(advance 중 틱 오판정 방지) — iter_05 기동 후 재등록"
 }
