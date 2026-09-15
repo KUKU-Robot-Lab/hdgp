@@ -132,5 +132,48 @@
  },
  "round7_note": "env: grip3(액션 18)·palm EMA 0.25·리시버 ≤20° 성공 조건(ccb09a6d) · 보상 iter_06(4858b307) · 처음부터 학습",
  "cron": "6b037cb5 (30m, :07/:37)",
- "round8_note": "iter_07: upright_rcv·직립 배율을 리시버 파지·들기 이후(rcv_carry)로 한정(운영자 요구, notes_round8) · env 는 라운드 7 과 동일 · 루프 상한 라운드 8"
+ "round8_note": "iter_07: upright_rcv·직립 배율을 리시버 파지·들기 이후(rcv_carry)로 한정(운영자 요구, notes_round8) · env 는 라운드 7 과 동일 · 루프 상한 라운드 8",
+ "trace_i07_ep350": {
+  "time": 1789492964.1760862,
+  "file": "log/server_mirror/pour-fab/t2r_i07/trace_i07_latest_adr0.npz",
+  "facts": [
+   "step 200~890 양팔 palm y 액션이 바깥쪽 끝에 고정(소스 −1.00, 리시버 +1.00, 부호 교대 0), palm y ±0.334(델타 한계)",
+   "두 컵 거리 0.66~0.68 m(8 env 모두), 소스 약 40 cm·리시버 약 23 cm 들기, 소스 기울기 80~85°, 비드 이동 0",
+   "벌점 무관: closing_speed −0.0003·meet 0·cup_contact −0.0005 · 들기 보상 약 3.1, tilt+tilt_dir 약 0.7(떨어져도 지급), bring_together 0.12(exp(−3·거리) 평탄)",
+   "리시버 팔 관절속도 RMS 0.4~0.56 rad/s(소스 약 5배), 리시버 회전 두 칸 17~23 % 부호 교대",
+   "작업공간 한계 아님: 소스 palm y 최대 +0.166, 리시버 최소 −0.166 까지 도달 가능"
+  ],
+  "note": "라운드 8 상한 — 자동 advance 없음, 다음 결정은 사용자"
+ },
+ "loop_ended": {
+  "time": 1789497825.996861,
+  "reason": "round ≥ 8 (MAX_ROUNDS) 에서 advance 판정 — LOOP_PROMPT 종료 조건",
+  "last_tick": {
+   "label": "t2r_i07",
+   "epoch": 558,
+   "hours": 4.43,
+   "episode_success": 0.0,
+   "src_grasped": 0.883,
+   "rcv_grasped": 0.879,
+   "src_lift": 0.333,
+   "rcv_lift": 0.195,
+   "src_tilt_deg": 70.3,
+   "aim_dist": 0.507,
+   "spill_recent": 0.021,
+   "spill_max": 0.058,
+   "cup_collision": 0.0007,
+   "hand_foreign_src_rcv": [
+    0.033,
+    0.028
+   ]
+  },
+  "best": "t2r_i05 (성공 max 0.823, 액션 42 · 옛 성공 정의)",
+  "server_run": "t2r_i07 PID 1051431/1051438 GPU1 계속 학습 중 — 중단 여부 사용자 결정",
+  "cron_deleted": "6b037cb5",
+  "next_options": [
+   "라운드 상한 올리고 iter_08 (trace_i07_ep350 사실 + 흘림 증가 notes)",
+   "t2r_i07 계속",
+   "학습 종료"
+  ]
+ }
 }
