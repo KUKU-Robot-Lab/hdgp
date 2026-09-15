@@ -4,12 +4,12 @@
  "label": "fj_reach_i05",
  "label_prefix": "fj_reach_i",
  "round": 6,
- "status": "running",
- "awaiting": null,
+ "status": "stopped",
+ "awaiting": "redesign_after_iter_05",
  "best": null,
  "success_ticks": 0,
  "started": 1789453350,
- "pid": 437985,
+ "pid": null,
  "commit": "16c914b0",
  "algo": {
   "iter_00": "SAPG 12,288 (open-short_r_grasp_fj_t2r_reach-lstm-sapg)",
@@ -29,5 +29,25 @@
    "iter_04/improvement.md"
   ],
   "note": "four-finger wrap (no pinky, palm off) lifts the cup in ~90% of episodes; cup carried far above and to the side of the goal (12 cm straight up) with the arm stretched out; success 0.06 of episodes; push penalty -0.40; earlier e1302 round-end drafts rewritten"
+ },
+ "round_end": {
+  "label": "fj_reach_i05",
+  "epoch": 2014,
+  "hours": 2.92,
+  "verdict": "advance(stuck:grasp)",
+  "checked": "09-15 18:17",
+  "video": "our_source/fj_t2r_videos/fj_reach_i05_0915_1818.mp4",
+  "drafts": [
+   "iter_05/observation.md",
+   "iter_05/improvement.md"
+  ],
+  "note": "regression vs i04: palm never touched (max 0.008), thumb-only rest (thumb contact 0.50), four fingers lie across the cup front without contact, fingers pre-curl during approach; thumb alone still earns wrap_links/curl_onto (inner normal defined toward grasp centre)"
+ },
+ "redesign": {
+  "requested": "09-15 20:4x (user)",
+  "user_intent": "1) approach the cup keeping the default hand pose; 2) envelope grasp at the approached position; 3) lift while tightening appropriately for the object (mass, friction)",
+  "user_note": "training kept running for hours without the intended behaviour - that is wrong",
+  "i05_stopped": "SIGTERM 437985 at 20:45, clean exit (e~3700)",
+  "status": "proposal sent, decisions pending"
  }
 }

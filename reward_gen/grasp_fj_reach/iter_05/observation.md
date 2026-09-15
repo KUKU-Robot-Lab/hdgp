@@ -1,0 +1,15 @@
+- The video shows the last checkpoint (epoch 2014).
+- The hand starts toward the cup open. From about 1.25 s, while the hand is still travelling, the fingers curl into a hook, and they stay curled until the hand is beside the cup at about 3 s.
+- From about 4.5 s to the end of the episode the hand holds one pose. The palm stays beside the cup (on its left in the video) and does not touch it. The four fingers stretch almost straight across the front of the cup body toward its far side. The thumb is bent and rests on the side of the cup next to the palm. By the contact sensors only the thumb touches the cup; the four fingers register almost no contact, so they lie in front of the cup rather than pressing on it (from this camera angle they appear to cross it).
+- The cup stays upright and in place and is never lifted. The hand stays off the table.
+- Training metrics (the round was ended at epoch 2014 by the stuck rule: reach 1.00 at both ends of the 600-epoch window while grasp stayed at 0):
+  - Means for epochs 0-350 / 350-850 / 850-1350 / 1350-2014:
+    - reach: 0.18 / 0.98 / 1.00 / 1.00 of episodes
+    - palm-centre-to-cup gap: 0.20 / 0.067 / 0.055 / 0.050 m
+    - thumb touching the cup: 0.002 / 0.23 / 0.38 / 0.50 of steps
+    - palm touching the cup: 0.000 in every window (at most 0.008 at any point in the round)
+    - reward per step: 0.05 / 0.26 / 0.37 / 0.39, flat since about epoch 1100
+  - Index, middle, ring and pinky contacts stayed at 0.015 or less. Grasp (three or more fingers on the cup) peaked briefly at 0.28 of episodes at epoch 739 and has been about 0 since epoch 1350; lift and success stayed at 0.
+  - Reward components in the last window (per step): reach_facing 0.16, reach_far 0.13, finger_curl_onto_cup 0.054, palm_orient 0.037, finger_open 0.018, wrap_links 0.017, wrap_fingers 0.0000, palm_contact 0.0000, palm_in_grasp 0.0000, all lift and goal terms 0. finger_curl_onto_cup and wrap_links grew with the thumb contact alone.
+  - Penalties: cup_tilt_penalty about -0.02 (mean tilt about 1 degree), table_penalty about 0, carry_away_penalty 0.
+  - For comparison, in the previous round the same approach stage led to palm contact in 7% of steps by epochs 400-700 and 33-55% by epoch 1300, and to a grasp and lift around epoch 2000.
