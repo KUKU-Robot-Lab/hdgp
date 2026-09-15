@@ -237,11 +237,14 @@ class SideRig:
         return torch.stack(out, dim=1)
 
     def finger_link_forces(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """(중간, 원위, 팁) (N,F). `finger_sensor_bodies` 규약: 마지막=팁, 앞이 (중간, 원위)."""
+        """(중간, 원위, 팁) (N,F). `finger_sensor_bodies` 규약: 마지막=팁, 앞이 (중간, 원위).
+
+        RH56F1 은 (중간, 센서) 2개다(09.15) — 손끝 마디 collider 가 `_sensor` 하나라 원위=팁=센서.
+        """
         mids, dists, tips = [], [], []
         for f in self.fingers:
             ss = self.sensors[f]
-            mi, di = (0, 1) if len(ss) >= 3 else (0, 0)
+            mi, di = (0, 1) if len(ss) >= 2 else (0, 0)
             mids.append(self._mag(ss[mi])); dists.append(self._mag(ss[di])); tips.append(self._mag(ss[-1]))
         return torch.stack(mids, 1), torch.stack(dists, 1), torch.stack(tips, 1)
 

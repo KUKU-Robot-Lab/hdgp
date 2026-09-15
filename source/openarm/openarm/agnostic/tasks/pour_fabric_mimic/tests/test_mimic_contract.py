@@ -261,6 +261,21 @@ def test_rh56f1_palm_sensor_column2_is_palmar(s):
     assert thumb_x > max(fingers_x) + 0.01, "엄지 기저가 +x(손바닥) 쪽"
 
 
+@pytest.mark.parametrize("s", ["r", "l"])
+def test_rh56f1_contact_bodies_carry_the_distal_collider(s):
+    """09.15: 손끝 마디 `_2`·`_sensor`·`_tip`(엄지 thumb_4·sensor·tip)은 벤더 STL 이 같은 입체라 collider 는 `_sensor` 에만 둔다.
+    env 가 읽는 접촉 링크는 전부 collider 가 있어야 하고(없으면 접촉이 조용히 0), 사본 링크엔 없어야 한다(겹친 강체에 접촉이 나뉜다)."""
+    P = pytest.importorskip("openarm.agnostic.tasks.pour_fabric_mimic.robot_profiles")
+    prof = P.RH56F1_RIGHT_FAB if s == "r" else P.RH56F1_LEFT_FAB
+    root = ET.parse(_ASSET / "openarm_rh56f1_bi_rl.urdf").getroot()
+    has_col = {link.get("name"): bool(link.findall("collision")) for link in root.findall("link")}
+    bodies = [b for bs in prof.finger_sensor_bodies.values() for b in bs] + [prof.palm_body]
+    assert all(has_col[b] for b in bodies), [b for b in bodies if not has_col[b]]
+    copies = [f"{s}_hl_thumb_4", f"{s}_hl_thumb_tip",
+              *(f"{s}_hl_{f}_{k}" for f in ("index", "middle", "ring", "pinky") for k in ("2", "tip"))]
+    assert not any(has_col[c] for c in copies), [c for c in copies if has_col[c]]
+
+
 # 원본 계약 중 그대로 유지돼야 하는 것(보상 없음 · 성공은 env · a=0 = 앵커)
 def test_inherited_contracts_hold():
     assert "load_reward_fn" in _ENV and "RewardContext(" in _ENV

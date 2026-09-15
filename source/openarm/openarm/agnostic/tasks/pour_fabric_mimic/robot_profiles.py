@@ -50,6 +50,12 @@ RH56F1_RIGHT_FAB = _dc_replace(
     palm_box_min=(0.10, _BASE.palm_box_min[1], _BASE.palm_box_min[2]),
     palm_box_max=(_BASE.palm_box_max[0], _BASE.palm_box_max[1], 0.70),
     # ★붓기 트랙 spawn: Track B 값(0.38, −0.16)을 그대로 시작점으로 쓴다 — probe 로 재확인.
+    # ★09.15 접촉 링크 = (중간, 센서). 자산이 손끝 마디 collider 를 `_sensor` 에만 남긴다(`_2`·`_tip` 은 같은
+    #   입체 사본이라 collision 제거, 사용자 결정 "sensor 링크는 실제 힘측정 부위"). `_tip` 은 위치 프레임으로만 쓴다.
+    finger_sensor_bodies={
+        "thumb": ("r_hl_thumb_3", "r_hl_thumb_sensor"),
+        **{f: (f"r_hl_{f}_1", f"r_hl_{f}_sensor") for f in _RH_FLEX},
+    },
 )
 
 
@@ -83,7 +89,7 @@ RH56F1_LEFT_FAB = _dc_replace(
     palm_body="l_hl_palm_sensor",
     fabric_class="OpenArmRh56f1LeftPoseFabric",
     hand_joint_names=_l(_BASE.hand_joint_names),
-    finger_sensor_bodies={f: _l(b) for f, b in _BASE.finger_sensor_bodies.items()},
+    finger_sensor_bodies={f: _l(b) for f, b in RH56F1_RIGHT_FAB.finger_sensor_bodies.items()},
     fingertip_bodies=_l(_BASE.fingertip_bodies),
     # palm 박스: y 미러.
     palm_box_min=(RH56F1_RIGHT_FAB.palm_box_min[0], -RH56F1_RIGHT_FAB.palm_box_max[1], RH56F1_RIGHT_FAB.palm_box_min[2]),

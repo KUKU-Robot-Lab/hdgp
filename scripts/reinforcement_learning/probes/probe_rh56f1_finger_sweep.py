@@ -36,7 +36,10 @@ parser.add_argument("--mimic_nf", type=float, default=None, help="PhysX mimic na
 parser.add_argument("--mimic_dr", type=float, default=None, help="PhysX mimic dampingRatio 덮어쓰기(미지정=USD 값)")
 parser.add_argument("--contacts", action="store_true", help="오른손 전 링크 접촉 센서로 링크별 최대 접촉력 기록")
 parser.add_argument("--contact_partners", default="",
-                    help="쉼표 구분 상대 링크명. 상대마다 필터 1개짜리 센서(순서 모호성 없음)로 오른손 링크↔상대 최대 접촉력 기록")
+                    help="쉼표 구분 상대 링크명(또는 /World/... 절대경로). 상대마다 필터 1개짜리 센서(순서 모호성 없음)로 오른손 링크↔상대 최대 접촉력 기록")
+parser.add_argument("--obstacle_mm", type=float, nargs=2, default=None, metavar=("NORMAL_MM", "SIZE_MM"),
+                    help="r_hl_palm_sensor 법선(열 2) 앞 NORMAL_MM 에 손바닥 방향으로 정렬한 SIZE_MM 키네마틱 정육면체 "
+                         "(/World/obstacle) — 외부 접촉이 어느 손 링크에 잡히는지(유령 링크·손바닥 센서 가림 검증)")
 parser.add_argument("--label", default="")
 AppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(headless=True)
@@ -100,6 +103,25 @@ def override_mimic(root: str = "/World/robot") -> dict:
     return {"changed": changed, **seen}
 
 
+def spawn_obstacle(root: str = "/World/robot") -> dict:
+    """spawn 직후·sim.reset 전(관절 0 자세) palm_sensor 월드 자세로 장애물 정육면체를 놓는다."""
+    import omni.usd
+    from pxr import Usd, UsdGeom
+    stage = omni.usd.get_context().get_stage()
+    M = UsdGeom.Xformable(stage.GetPrimAtPath(f"{root}/r_hl_palm_sensor")).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    t = M.ExtractTranslation()
+    normal = M.ExtractRotationMatrix().GetRow(2).GetNormalized()   # USD 행벡터 규약: 행 2 = 국소 z(법선) 의 월드 방향
+    q = M.ExtractRotationQuat()
+    gap_mm, size_mm = args.obstacle_mm
+    center = t + normal * ((gap_mm + size_mm / 2.0) / 1000.0)
+    s = size_mm / 1000.0
+    cfg = sim_utils.CuboidCfg(size=(s, s, s), rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                              collision_props=sim_utils.CollisionPropertiesCfg())
+    cfg.func("/World/obstacle", cfg, translation=tuple(center),
+             orientation=(q.GetReal(), *q.GetImaginary()))
+    return {"gap_mm": gap_mm, "size_mm": size_mm, "center": [round(v, 4) for v in center]}
+
+
 def schedule(n_hold: int, n_ramp: int, hi: float) -> list[float]:
     up = [hi * (i + 1) / n_ramp for i in range(n_ramp)]
     return [0.0] * n_hold + up + [hi] * n_hold + up[::-1] + [0.0] * n_hold
@@ -109,11 +131,13 @@ def main() -> dict:
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=DT))
     robot = build_robot()
     mimic = override_mimic()
+    obstacle = spawn_obstacle() if args.obstacle_mm else None
     sensor = ContactSensor(ContactSensorCfg(prim_path="/World/robot/r_hl_.*", update_period=0.0, history_length=1)) \
         if args.contacts else None
     partners = [p for p in args.contact_partners.split(",") if p]
     partner_sensors = {p: ContactSensor(ContactSensorCfg(prim_path="/World/robot/r_hl_.*", update_period=0.0, history_length=1,
-                                                         filter_prim_paths_expr=[f"/World/robot/{p}"])) for p in partners}
+                                                         filter_prim_paths_expr=[p if p.startswith("/") else f"/World/robot/{p}"]))
+                       for p in partners}
     sim.reset()
     robot.update(DT)
     names = robot.joint_names
@@ -171,7 +195,7 @@ def main() -> dict:
         "others_dev_max_rad": round(max(d for d, _ in worst), 5), "others_vel_max_rad_s": round(max(vel[i].item() for i in others), 4),
         "others_worst5": [(n, round(d, 5)) for d, n in worst], "palm_pos_dev_mm": round(1000 * palm_dev, 3),
         "others_vel_rms_rad_s": round(float((vel_sq[others] / max(n_steps, 1)).sqrt().mean().item()), 5),
-        "mimic": mimic,
+        "mimic": mimic, "obstacle": obstacle,
         "contact_top_N": None if sensor is None else sorted(((round(contact_max[i].item(), 3), n) for i, n in enumerate(sensor.body_names)
                                                             if contact_max[i].item() > 1e-3), reverse=True)[:8],
         "contact_pairs_top": sorted(((round(fp[i].item(), 3), n, p) for p, fp in pair_max.items()
