@@ -96,7 +96,7 @@ class IkerShoeGraspT2rEnv(IkerShoeGraspEnv):
         ctx = self._build_context()
         total, terms = call_reward_fn(self._reward_fn, ctx)
         total = torch.nan_to_num(total, nan=0.0, posinf=0.0, neginf=0.0)
-        self._t2r_prev_actions = ctx.actions.clone()
+        self._t2r_prev_actions = self.actions.clone()
         log = {key: value for key, value in self.extras.get("log", {}).items() if not key.startswith("grasp_reward/")}
         log["t2r_reward/total"] = total.mean().item()
         log.update({f"t2r_reward/{name}": value.mean().item() for name, value in terms.items()})

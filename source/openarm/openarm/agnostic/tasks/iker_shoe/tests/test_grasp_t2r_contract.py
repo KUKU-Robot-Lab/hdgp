@@ -26,6 +26,7 @@ def test_reward_comes_from_the_generated_code_on_the_step_state_the_predicate_us
     block = _fn_block(ENV, "_get_rewards")
     _ordered(block, ["self._last is None", "self._build_context()", "call_reward_fn(self._reward_fn", "nan_to_num", "return total"])
     assert "grasp_reward/" in block and "t2r_reward/total" in block and "contact/fingers_touching" in block
+    assert "self._t2r_prev_actions = self.actions.clone()" in block and "ctx.actions.clone()" not in block
     context = _fn_block(ENV, "_build_context")
     for token in ("self._last", "step.held", "step.state.hold_count", "step.state.latched", "step.success", "gs.palm_frame_slip_speed(",
                   "gs.free_lift_height(", "self._link_shoe_forces()", "self._t2r_prev_actions"):
