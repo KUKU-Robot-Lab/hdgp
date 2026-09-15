@@ -356,6 +356,21 @@ def test_stage_track_trains_the_reach_env_with_its_own_history():
         assert stage[k] == reach[k], k
 
 
+def test_video_length_can_be_extended_to_see_later_episodes(tmp_path, monkeypatch):
+    # ★09.16 가까운 출발은 두 번째 에피소드부터라 한 에피소드(900 스텝) 영상에는 안 나온다 — 라운드 끝 영상을 여러 에피소드로 늘린다
+    it = tmp_path / "iter_03"
+    it.mkdir()
+    (it / "status.json").write_text(json.dumps({"tol": 0.1}))
+    seen = []
+    monkeypatch.setattr(R, "run_dir_for", lambda label, logdir: "/x/run")
+    monkeypatch.setattr(R, "_ssh", lambda cmd, timeout=60, allow_timeout=False: seen.append(cmd) or "")
+    base = dict(track="grasp_fj_stage", label="fj_stage_i03", iter=str(it), tol=None)
+    for length, tok in ((2700, "--video_length 2700 "), (None, "--video_length 900 ")):
+        with pytest.raises(SystemExit):        # 가짜 ssh 는 영상 경로를 안 돌려준다
+            R.cmd_video(types.SimpleNamespace(**base, length=length))
+        assert tok in seen[-1], seen[-1][-300:]
+
+
 def test_stage_track_runs_every_round_to_the_end_without_early_stops():
     # ★09.15 23:0x 사용자 "T2R 제대로 적용하면서 진행되는건지?" → 결정 "시작 상태 커리큘럼 + env 고정": 라운드는 끝까지
     #   (4096 env 3000 epoch 또는 4 h) 학습한 뒤 영상으로 판정한다 — 체크포인트·막힘·단계 연장 규칙을 이 트랙에선 끈다.

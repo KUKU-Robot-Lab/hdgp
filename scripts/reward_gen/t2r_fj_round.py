@@ -481,7 +481,8 @@ def cmd_video(a) -> int:
     play = task.replace("-lstm", "-play-lstm", 1)
     ts = time.strftime("%m%d_%H%M")
     out = _ssh(video_command(run_dir_for(a.label, t["server_logdir"]), a.label, float(tol), ts,
-                             length=t["video_length"], task=task, play_task=play), timeout=1800)
+                             length=getattr(a, "length", None) or t["video_length"], task=task, play_task=play),
+               timeout=1800)
     print(out.strip()[-600:])
     remote = next((ln.split(" ", 1)[1].strip() for ln in out.splitlines() if ln.startswith("VIDEO ")), None)
     if not remote:
@@ -579,6 +580,8 @@ def main(argv=None) -> int:
     vd.add_argument("--label", required=True)
     vd.add_argument("--iter", required=True)
     vd.add_argument("--tol", type=float, default=None, help="재생 tol(기본: status.json 의 학습 tol)")
+    vd.add_argument("--length", type=int, default=None,
+                    help="영상 스텝 수(기본: 트랙 video_length). ★09.16 가까운 출발은 두 번째 에피소드부터 — 여러 에피소드를 담을 때")
     vd.set_defaults(fn=cmd_video)
     la = sub.add_parser("launch")
     la.add_argument("--label", required=True)
