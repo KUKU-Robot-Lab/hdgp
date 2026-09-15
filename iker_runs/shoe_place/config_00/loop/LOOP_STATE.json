@@ -1,0 +1,47 @@
+{
+ "schema": 1,
+ "track": "iker_shoe_c00_s2r8",
+ "phase": "vlm_target",
+ "status": "running",
+ "awaiting": null,
+ "stage": 1,
+ "policy": {
+  "bin_epochs": 10,
+  "t2r_round_epochs": 500,
+  "t2r_early_epoch": 250,
+  "t2r_early_latched": 0.005,
+  "t2r_harvest_success": 0.05,
+  "t2r_max_rounds": 6,
+  "t2r_max_requests": 3,
+  "t2r_num_envs": 4096,
+  "t2r_smoke_envs": 64,
+  "t2r_smoke_steps": 150,
+  "harvest_min": 64,
+  "vlm_max_attempts": 3,
+  "stage2_env_smoke": true,
+  "stage2_epochs": 750,
+  "stage2_num_envs": 4096,
+  "eval_every": 250,
+  "success_target": 0.5,
+  "side_gpu_limit_mib": 20000,
+  "minibatch_size": 0,
+  "grasp_bank_path": "",
+  "labels": {
+   "stage1_t2r": "iker_grasp_c00_t2r",
+   "stage2": "iker_vlm_c00_s2r8_s1"
+  }
+ },
+ "runs": {},
+ "t2r": {
+  "iter": 0,
+  "requests": 0,
+  "rounds": []
+ },
+ "bank": null,
+ "attempts": {
+  "1": 0
+ },
+ "eval": {},
+ "vlm_requests": {},
+ "updated": "2026-09-16T07:42:38+09:00"
+}
