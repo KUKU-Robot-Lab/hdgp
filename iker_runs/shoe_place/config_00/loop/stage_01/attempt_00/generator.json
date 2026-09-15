@@ -1,0 +1,17 @@
+{
+ "schema": 1,
+ "agent_type": "iker-vlm-generator",
+ "tools": [
+  "Read",
+  "Write"
+ ],
+ "request": 1,
+ "requested": "2026-09-16T07:48:52+09:00",
+ "prompt": "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop/stage_01/prompt.md",
+ "images": {
+  "[IMAGE_WITH_KEYPOINTS]": "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop/stage_01/snapshot.png"
+ },
+ "response": "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop/stage_01/attempt_00/response.md",
+ "brief": "Read the prompt file /home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop/stage_01/prompt.md and answer it exactly as it instructs.\nThe image for [IMAGE_WITH_KEYPOINTS] is /home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop/stage_01/snapshot.png; open it with the Read tool.\nWrite your complete answer, with the single python code block the prompt asks for, to /home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop/stage_01/attempt_00/response.md.\nRead only these files. Do not open, list or search any other file or directory, and do not run commands.",
+ "note": "The agent definition limits the generator to the Read and Write tools and to the files its brief names; Claude Code may still inject harness-level context (CLAUDE.md files, auto-memory) into the agent."
+}

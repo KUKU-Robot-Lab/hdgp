@@ -1,7 +1,7 @@
 {
  "schema": 1,
  "track": "iker_shoe_c00_s2r8",
- "phase": "vlm_target",
+ "phase": "stage2_train",
  "status": "running",
  "awaiting": null,
  "stage": 1,
@@ -39,9 +39,11 @@
  },
  "bank": null,
  "attempts": {
-  "1": 0
+  "1": 1
  },
  "eval": {},
- "vlm_requests": {},
- "updated": "2026-09-16T07:42:38+09:00"
+ "vlm_requests": {
+  "target_00": 1
+ },
+ "updated": "2026-09-16T08:29:36+09:00"
 }
