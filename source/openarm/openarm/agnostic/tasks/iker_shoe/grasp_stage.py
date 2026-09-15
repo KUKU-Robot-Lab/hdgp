@@ -63,6 +63,10 @@ class Stage1RewardCfg:
     arm_vel_scale: float = 0.1
     hand_vel_scale: float = 0.0
     hand_rate_scale: float = 0.1
+    # revision 3-6: every step, hold_income_scale x the in-zone lift level as a fraction of (lift_height_m - lift_deadband_m) —
+    # 0 at 1 cm, the full 0.25 from 5 cm; not a ratchet and paid before and after the latch (phase A r7: with the ratchet alone the
+    # motion penalties made the policy lift briefly and drop, median lifted steps per episode 36 -> 7)
+    hold_income_scale: float = 0.25
     g_min: float = 1.0
     q_lo: float = 0.0  # placeholders, not a calibration: the whole q range, inert while g_min is 1
     q_hi: float = 1.0
@@ -86,11 +90,12 @@ class Stage1RewardCfg:
         if not 0.0 < self.hold_rel_speed <= self.progress_rel_speed:
             raise ValueError(f"need 0 < hold_rel_speed {self.hold_rel_speed} <= progress_rel_speed {self.progress_rel_speed}")
         if min(self.palm_scale, self.lift_progress_scale, self.lift_bonus, self.success_bonus, self.hand_floor_scale,
-               self.hand_floor_cap, self.arm_vel_scale, self.hand_vel_scale, self.hand_rate_scale) < 0.0:
+               self.hand_floor_cap, self.arm_vel_scale, self.hand_vel_scale, self.hand_rate_scale, self.hold_income_scale) < 0.0:
             raise ValueError("reward scales and bonuses must be non-negative")
 
 
-REWARD_TERMS = ("palm_progress", "lift_progress", "lift_bonus", "success_bonus", "hand_floor", "arm_vel", "hand_vel", "hand_rate")
+REWARD_TERMS = ("palm_progress", "lift_progress", "lift_bonus", "success_bonus", "hand_floor", "arm_vel", "hand_vel", "hand_rate",
+                "hold_income")
 
 
 def hand_action_limits(
@@ -284,6 +289,20 @@ def free_lift_height(
     return torch.where(over_rack, torch.zeros_like(rise), rise)
 
 
+def palm_frame_slip_speed(
+    shoe_lin_vel: torch.Tensor, palm_lin_vel: torch.Tensor, palm_ang_vel: torch.Tensor, shoe_com: torch.Tensor, palm_com: torch.Tensor
+) -> torch.Tensor:
+    """(N,) speed of the shoe's centre of mass relative to the palm body frame: |v_shoe - (v_palm + w_palm x (c_shoe - c_palm))|.
+    All inputs (N, 3), world frame, centre-of-mass velocities and positions. A shoe carried rigidly by a rotating hand reads 0
+    (revision 3-6: the plain |v_shoe - v_palm| counted wrist rotation as slip)."""
+    n = shoe_lin_vel.shape[0]
+    for name, value in dict(shoe_lin_vel=shoe_lin_vel, palm_lin_vel=palm_lin_vel, palm_ang_vel=palm_ang_vel,
+                            shoe_com=shoe_com, palm_com=palm_com).items():
+        if value.shape != (n, 3):
+            raise ValueError(f"{name} must be ({n}, 3), got {tuple(value.shape)}")
+    return (shoe_lin_vel - palm_lin_vel - torch.linalg.cross(palm_ang_vel, shoe_com - palm_com, dim=-1)).norm(dim=-1)
+
+
 @dataclass(frozen=True)
 class Stage1State:
     closest_palm: torch.Tensor  # (N,) best palm-to-surface gap so far, -1 before the first step
@@ -342,8 +361,8 @@ def stage1_step(
     hand_speed_sum: torch.Tensor,
     hand_command_rate: torch.Tensor,
 ) -> Stage1Step:
-    """One policy step of the stage-1 reward (design §6, held narrowed by §16, motion penalties and lost grasps by revision 3-5).
-    All inputs are (N,) tensors."""
+    """One policy step of the stage-1 reward (design §6, held narrowed by §16, motion penalties and lost grasps by revision 3-5,
+    per-step hold income by revision 3-6). All inputs are (N,) tensors."""
     n = state.closest_palm.shape[0]
     for name, value in dict(palm_gap=palm_gap, dz_free=dz_free, palm_shoe_dist=palm_shoe_dist, shoe_shift_xy=shoe_shift_xy,
                             thumb_curl=thumb_curl, rel_speed=rel_speed, shoe_speed=shoe_speed, q=q,
@@ -397,6 +416,7 @@ def stage1_step(
         "arm_vel": -cfg.arm_vel_scale * arm_speed_sum * lifted,
         "hand_vel": -cfg.hand_vel_scale * hand_speed_sum * lifted,
         "hand_rate": -cfg.hand_rate_scale * hand_command_rate * lifted,
+        "hold_income": cfg.hold_income_scale * lift_level / (cfg.lift_height_m - cfg.lift_deadband_m),
     }
     if tuple(terms) != REWARD_TERMS:
         raise RuntimeError(f"term order drifted: {tuple(terms)}")

@@ -176,6 +176,35 @@ def test_free_lift_height_is_zero_while_the_hull_touches_the_widened_rack_footpr
     assert dz.tolist() == pytest.approx([0.08, 0.08, 0.0])
 
 
+def test_palm_frame_slip_speed_ignores_rigid_rotation():
+    palm_com = torch.zeros(1, 3)
+    shoe_com = torch.tensor([[0.1, 0.0, 0.0]])
+    palm_ang_vel = torch.tensor([[0.0, 0.0, 2.0]])
+    palm_lin_vel = torch.zeros(1, 3)
+    shoe_lin_vel = torch.tensor([[0.0, 0.2, 0.0]])
+    slip = gs.palm_frame_slip_speed(shoe_lin_vel, palm_lin_vel, palm_ang_vel, shoe_com, palm_com)
+    assert slip.item() == pytest.approx(0.0, abs=1e-6)
+    assert (shoe_lin_vel - palm_lin_vel).norm(dim=-1).item() == pytest.approx(0.2)
+
+
+def test_palm_frame_slip_speed_counts_slip_in_the_hand():
+    palm_com = torch.zeros(1, 3)
+    shoe_com = torch.tensor([[0.1, 0.0, 0.0]])
+    palm_ang_vel = torch.tensor([[0.0, 0.0, 2.0]])
+    palm_lin_vel = torch.zeros(1, 3)
+    shoe_lin_vel = torch.tensor([[0.05, 0.2, 0.0]])
+    slip = gs.palm_frame_slip_speed(shoe_lin_vel, palm_lin_vel, palm_ang_vel, shoe_com, palm_com)
+    assert slip.item() == pytest.approx(0.05)
+
+
+def test_palm_frame_slip_speed_rejects_bad_shapes():
+    v3 = torch.zeros(2, 3)
+    with pytest.raises(ValueError, match="shoe_lin_vel"):
+        gs.palm_frame_slip_speed(torch.zeros(2), v3, v3, v3, v3)
+    with pytest.raises(ValueError, match="palm_com"):
+        gs.palm_frame_slip_speed(v3, v3, v3, v3, torch.zeros(3, 3))
+
+
 def test_idle_policy_earns_nothing():
     state = gs.Stage1State.start(3)
     total = torch.zeros(3)
@@ -371,12 +400,48 @@ def test_a_latched_shoe_back_on_the_table_is_lost():
     assert not never_latched.lost.item()
 
 
+def test_hold_income_pays_the_in_zone_lift_level_every_step():
+    state = gs.Stage1State.start(1)
+    step = _step(state, dz_free=torch.tensor([CFG.lift_deadband_m]))
+    assert step.terms["hold_income"].item() == pytest.approx(0.0)
+    mid = (CFG.lift_deadband_m + CFG.lift_height_m) / 2
+    step = _step(step.state, dz_free=torch.tensor([mid]))
+    assert step.terms["hold_income"].item() == pytest.approx(0.5 * CFG.hold_income_scale)
+    step = _step(step.state, dz_free=torch.tensor([0.06]))
+    assert step.terms["hold_income"].item() == pytest.approx(CFG.hold_income_scale)
+    # not a ratchet: a second step at the same height pays again
+    step = _step(step.state, dz_free=torch.tensor([0.06]))
+    assert step.terms["hold_income"].item() == pytest.approx(CFG.hold_income_scale)
+    # still pays after the latch
+    state = step.state
+    for _ in range(CFG.latch_steps):
+        state = _step(state, **_held(1)).state
+    assert state.latched.item()
+    step = _step(state, dz_free=torch.tensor([0.06]))
+    assert step.terms["hold_income"].item() == pytest.approx(CFG.hold_income_scale)
+
+
+def test_hold_income_is_zero_outside_the_hold_zone():
+    state = gs.Stage1State.start(1)
+    over_shift = _step(state, dz_free=torch.tensor([0.06]), shoe_shift_xy=torch.tensor([CFG.hold_xy_radius_m + 0.01]))
+    assert over_shift.terms["hold_income"].item() == 0.0
+    thumb_open = _step(state, dz_free=torch.tensor([0.06]), thumb_curl=torch.tensor([CFG.thumb_curl_min_rad - 0.01]))
+    assert thumb_open.terms["hold_income"].item() == 0.0
+    sliding = _step(state, dz_free=torch.tensor([0.06]), rel_speed=torch.tensor([CFG.progress_rel_speed]))
+    assert sliding.terms["hold_income"].item() == 0.0
+    too_high = _step(state, dz_free=torch.tensor([CFG.lift_max_m + 0.01]))
+    assert too_high.terms["hold_income"].item() == 0.0
+
+
 def test_reward_cfg_revision_3_5_motion_penalty_defaults():
     cfg = gs.Stage1RewardCfg()
     assert (cfg.arm_vel_scale, cfg.hand_vel_scale, cfg.hand_rate_scale) == (0.1, 0.0, 0.1)
     with pytest.raises(ValueError, match="non-negative"):
         gs.Stage1RewardCfg(hand_rate_scale=-0.1)
-    assert gs.REWARD_TERMS[-1] == "hand_rate"
+    assert cfg.hold_income_scale == 0.25
+    with pytest.raises(ValueError, match="non-negative"):
+        gs.Stage1RewardCfg(hold_income_scale=-0.1)
+    assert gs.REWARD_TERMS[-1] == "hold_income"
 
 
 def test_reset_rows_restores_only_the_given_envs():

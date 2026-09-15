@@ -253,6 +253,15 @@ class IkerShoeGraspEnv(DirectRLEnv):
         shoe_vel = self._shoe.data.root_lin_vel_w
         shift_xy = (shoe_pos[:, :2] - self._start_xy).norm(dim=-1)
         thumb_curl = gs.closing_travel(self._robot.data.joint_pos[:, self._thumb_curl_id], self._thumb_open, self._thumb_grip)
+        # revision 3-6: judge slip in the palm frame — the plain |v_shoe - v_palm| counted a shoe fixed in a rotating hand as
+        # slip (root_lin_vel_w / body_lin_vel_w / body_ang_vel_w are centre-of-mass quantities, hence the COM positions).
+        rel_speed = gs.palm_frame_slip_speed(
+            shoe_vel,
+            self._robot.data.body_lin_vel_w[:, self._palm],
+            self._robot.data.body_ang_vel_w[:, self._palm],
+            self._shoe.data.root_com_pos_w,
+            self._robot.data.body_com_pos_w[:, self._palm],
+        )
         step = gs.stage1_step(
             self._stage,
             self._reward_cfg,
@@ -261,7 +270,7 @@ class IkerShoeGraspEnv(DirectRLEnv):
             palm_shoe_dist=(palm_pos - shoe_pos).norm(dim=-1),
             shoe_shift_xy=shift_xy,
             thumb_curl=thumb_curl,
-            rel_speed=(shoe_vel - self._robot.data.body_lin_vel_w[:, self._palm]).norm(dim=-1),
+            rel_speed=rel_speed,
             shoe_speed=shoe_vel.norm(dim=-1),
             q=q,
             hand_floor_depth=(layout.TABLE_TOP_Z + self.cfg.hand_floor_offset - hand_z).clamp(min=0.0),
@@ -291,6 +300,7 @@ class IkerShoeGraspEnv(DirectRLEnv):
             "grasp/dz_free": dz_free.mean().item(),
             "grasp/shift_xy": shift_xy.mean().item(),
             "grasp/thumb_curl": thumb_curl.mean().item(),
+            "grasp/rel_speed": rel_speed.mean().item(),
             "grasp/held_frac": step.held.float().mean().item(),
             "grasp/latched_frac": step.state.latched.float().mean().item(),
             "grasp/over_rack_raised_frac": over_rack.float().mean().item(),
