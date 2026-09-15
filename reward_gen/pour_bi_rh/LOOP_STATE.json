@@ -6,7 +6,7 @@
  "gpu": 0,
  "num_envs": 1024,
  "best": null,
- "started": 1789444185,
+ "started": 1789479306,
  "success_ticks": 0,
  "note": "09.14 RH56F1 pour_fabric_mimic · shaker_closed×0.65 · 손끝 파지 허용 · 대본 파지 게이트 면제(사용자 결정)",
  "restart": null,
@@ -41,7 +41,8 @@
   "changes": "자산 hdgp 0e5ea6e7(손끝 collider _sensor 단일·palm_1/2·body_link decomposition·필터 46) · 손 게인 5/2→30/0.3 + 접촉 링크 (_1,_sensor) cb1fd8fe · 촉각 obs 는 _sensor net force",
   "prev_label": "t2r_rh_i03 (라운드 4 advance, 기록 iter_03/*_t2r_rh_i03.json · notes_round4 는 미승인 초안으로 보류)",
   "label": "t2r_rh_i03_a2",
-  "iter": "reward_gen/pour_bi_rh/iter_03"
+  "iter": "reward_gen/pour_bi_rh/iter_03",
+  "started": "22:35:06 (vision-3090, commit f7431e64)"
  },
  "prev_label": "t2r_rh_i03"
 }

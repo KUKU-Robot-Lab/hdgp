@@ -1,0 +1,8 @@
+{
+ "label": "t2r_rh_i03_a2",
+ "num_envs": 1024,
+ "started": 1789479306,
+ "commit": "f7431e64",
+ "host": "vision-3090",
+ "note": "09.15 자산 2판(0e5ea6e7)·손 게인 30/0.3(cb1fd8fe)·접촉 (_1,_sensor) — iter_03 보상 처음부터"
+}
