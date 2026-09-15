@@ -4,8 +4,8 @@
  "label": "fj_reach_i05",
  "label_prefix": "fj_reach_i",
  "round": 6,
- "status": "stopped",
- "awaiting": "redesign_after_iter_05",
+ "status": "superseded",
+ "awaiting": "superseded_by_grasp_fj_stage",
  "best": null,
  "success_ticks": 0,
  "started": 1789453350,
@@ -48,6 +48,6 @@
   "user_intent": "1) approach the cup keeping the default hand pose; 2) envelope grasp at the approached position; 3) lift while tightening appropriately for the object (mass, friction)",
   "user_note": "training kept running for hours without the intended behaviour - that is wrong",
   "i05_stopped": "SIGTERM 437985 at 20:45, clean exit (e~3700)",
-  "status": "proposal sent, decisions pending"
+  "status": "done: superseded by track grasp_fj_stage (stage-gate latches 371e8869, iter_00 c51b93b3, launched 09-15 21:1x)"
  }
 }

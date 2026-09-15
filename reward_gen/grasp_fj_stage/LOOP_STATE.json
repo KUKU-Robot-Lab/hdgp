@@ -1,0 +1,23 @@
+{
+ "track": "grasp_fj_stage",
+ "iter": 0,
+ "label": "fj_stage_i00",
+ "label_prefix": "fj_stage_i",
+ "round": 1,
+ "status": "running",
+ "awaiting": null,
+ "best": null,
+ "success_ticks": 0,
+ "started": 1789474315,
+ "pid": 886825,
+ "commit": "c51b93b3",
+ "algo": {
+  "from_iter_00": "PPO-LSTM 4096 (open-short_r_grasp_fj_t2r_reach-lstm)"
+ },
+ "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY (+ gate checkpoints)",
+ "checkpoints": {
+  "approach": "e600 approach_gate_ep >= 0.3 (one-shot tick 22:13)",
+  "envelope": "e1500 envelope_gate_ep >= 0.05 (one-shot tick 23:33)"
+ },
+ "note": "09.15 사용자 재구성: 1) 기본 핸드 자세로 컵 접근 2) 접근한 상태에서 인벨롭 파지 3) 리프트(조임 적응은 이번 범위 밖). env 보상 게이트 래치(grasp_gates.py, 371e8869) + 새 이력. iter_00 은 단계 기본값이 래치만으로 지급(3단계 6.5) — 인벨롭 래치 뒤 들지 않고 버티는지 볼 것. reach 트랙(fj_reach_i00~i05)은 superseded. 콘솔 our_source/fj_t2r_runs/fj_stage_i00.out."
+}
