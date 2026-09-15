@@ -1,0 +1,128 @@
+{
+ "ok": true,
+ "errors": [],
+ "warnings": [],
+ "term_stats": {
+  "reach_far": {
+   "mean": 0.04209743067622185,
+   "abs_max": 0.18389840424060822
+  },
+  "reach_facing": {
+   "mean": 0.0005887487980847557,
+   "abs_max": 0.037340324372053146
+  },
+  "palm_orient": {
+   "mean": 0.0027679240641494593,
+   "abs_max": 0.03696795925498009
+  },
+  "finger_open": {
+   "mean": 0.00025621012415892136,
+   "abs_max": 0.011834047734737396
+  },
+  "palm_contact": {
+   "mean": 0.0,
+   "abs_max": 0.0
+  },
+  "finger_curl_onto_cup": {
+   "mean": 0.0,
+   "abs_max": 0.0
+  },
+  "wrap_fingers": {
+   "mean": 0.0,
+   "abs_max": 0.0
+  },
+  "wrap_links": {
+   "mean": 0.0,
+   "abs_max": 0.0
+  },
+  "palm_in_grasp": {
+   "mean": 0.0,
+   "abs_max": 0.0
+  },
+  "envelope": {
+   "mean": 0.0,
+   "abs_max": 0.0
+  },
+  "lift": {
+   "mean": 2.2765883194366142e-17,
+   "abs_max": 4.371049573318299e-15
+  },
+  "goal_coarse": {
+   "mean": 3.479426058863454e-18,
+   "abs_max": 6.680498033017832e-16
+  },
+  "goal_fine": {
+   "mean": 3.588377877519005e-18,
+   "abs_max": 6.88968552483649e-16
+  },
+  "hold_still": {
+   "mean": 1.895556334345898e-26,
+   "abs_max": 3.639468161944124e-24
+  },
+  "in_tolerance": {
+   "mean": 0.1141660064458847,
+   "abs_max": 1.5355558395385742
+  },
+  "success_bonus": {
+   "mean": 1.3020833333333335,
+   "abs_max": 12.5
+  },
+  "table_penalty": {
+   "mean": -1.0,
+   "abs_max": 1.0
+  },
+  "cup_tilt_penalty": {
+   "mean": -1.4928936560948691,
+   "abs_max": 1.5
+  },
+  "cup_push_penalty": {
+   "mean": -0.5025271475315094,
+   "abs_max": 1.0
+  },
+  "carry_away_penalty": {
+   "mean": -0.6269940137863159,
+   "abs_max": 3.0
+  },
+  "action_rate_penalty": {
+   "mean": -0.006800216467430195,
+   "abs_max": 0.01162797212600708
+  },
+  "joint_vel_penalty": {
+   "mean": -0.0018302633349473276,
+   "abs_max": 0.003404748858883977
+  }
+ },
+ "total_stats": {
+  "mean": -2.169085741043091,
+  "abs_max": 10.39012336730957
+ },
+ "fields_used": [
+  "actions",
+  "arm_qd",
+  "cup_ang_vel",
+  "cup_axis",
+  "cup_half_height",
+  "cup_lin_vel",
+  "cup_pos",
+  "cup_radius",
+  "cup_spawn_pos",
+  "cup_tilt",
+  "episode_progress",
+  "goal_dist",
+  "goal_pos",
+  "hand_q_norm",
+  "hand_qd",
+  "hand_target_norm",
+  "hand_z_min",
+  "lifted",
+  "link_cup_force",
+  "link_pos",
+  "palm_cup_force",
+  "palm_normal",
+  "palm_pos",
+  "prev_actions",
+  "success",
+  "success_tol",
+  "table_z"
+ ]
+}

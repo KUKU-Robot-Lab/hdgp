@@ -1,13 +1,14 @@
-- The video shows the last checkpoint (epoch 1302).
-- The arm brings the hand to the cup within about 3 s with the hand open: the four fingers straight, the thumb stretched out ahead of them. The palm turns toward the cup on the way, and the hand arrives low beside the cup (on its left in the video).
-- From about 3.5 s the palm is against the side of the cup, over its lower half, and the hand wraps the cup: the thumb, index, middle and ring fingers clearly go around the cup body. The pinky does not join; it sticks out below the hand, pointing down and away from the cup. The wrap does not hold the cup firmly, which is why the cup is never lifted.
-- The hand keeps this pose until the end of the episode. The cup stays upright and in place and is not lifted. The hand does not touch the table.
-- Training metrics (the round was ended at epoch 1302 by the stuck rule on the last point: reach 0.99 at both ends of the 600-epoch window, grasp 0.014 at the last point; the mean over the last 150 epochs is 0.042):
-  - Progress over the round (means for epochs 0-250 / 400-700 / 700-1000 / 1000-1302):
-    - reach: 0.12 / 0.84 / 1.00 / 0.99 of episodes
-    - palm-centre-to-cup gap: 0.19 / 0.067 / 0.045 / 0.041 m
-    - palm touching the cup: 0.00 / 0.07 / 0.15 / 0.33 of steps (0.55 at the last point)
-    - reward per step: 0.05 / 0.24 / 0.36 / 0.43, still rising at the end
-  - Contacts per step in the last window: thumb 0.14, index 0.006, middle 0.002, ring 0.003, pinky 0.0003. Grasp (three or more fingers on the cup) peaked at 0.17 of episodes at epoch 1181 and lift at 0.08 at epoch 535; the cup was off the table in at most 0.24% of steps; no successes.
-  - Reward components in the last window (per step): reach_facing 0.16, reach_far 0.13, palm_contact 0.078 (0.12 at the last point, up from 0.014 in epochs 400-700), palm_orient 0.038, finger_curl_onto_cup 0.027 (up from 0.008), finger_open 0.024, wrap_links 0.005, wrap_fingers 0.0000, lift 0.
-  - Penalties: cup_tilt_penalty about -0.03 per step (-0.065 at the last point, largest -0.15 at epoch 752) with a mean cup tilt of 1.0-1.2 degrees; cup_push_penalty about -0.004; table_penalty -0.002 (-0.011 at the last point). Episodes ending by tipping, falling or abnormal states: 0.8% or fewer.
+- The video shows the checkpoint at epoch 4000. Training was extended from epoch 1302 to epoch 4000 on the user's decision, with the reward unchanged.
+- The arm brings the open hand to the cup within about 3 s, with the palm turned toward the cup, and the fingers start to close around the cup at about 3 s.
+- By about 3.5-4 s the hand closes on the cup, but only the thumb and the middle finger wrap it with their inner surfaces. The index and ring fingers do not wrap; they rest against the cup with the backs of the fingers. The pinky sticks out below the hand, away from the cup. The cup is still upright on the table.
+- From about 4.5 s the hand lifts the cup and carries it up and to the side (to the right in the video, toward the other arm). By about 9 s the arm is stretched out almost horizontally, holding the cup upright high above the table and well to the side of where it started. The hand keeps it there until the end of the episode; the cup is neither dropped nor tipped.
+- The goal is 12 cm straight above the cup's starting position. The cup is carried well past it, much higher and to the side, and does not stay near the goal.
+- Training metrics (epoch 4000; round end after the extension; verdict advance(stuck:envelope)):
+  - Episode funnel, mean of the last 150 epochs: reach 1.00, grasp (three or more fingers on the cup) 0.99, palm plus all five fingers 0.00, lift 0.89, success 0.06 (peak 0.29 at epoch 2366). Mean successes per episode 0.29, peak 0.76.
+  - The cup is off the table in 45-50% of steps, up from 0.10 at epoch 2000.
+  - The grasp formed between epochs 1800 and 2050: grasp went from 0.30 to 0.90 and lift from 0.01 to 0.56. Lift reached 0.95 by epoch 3050.
+  - Contacts per step: thumb 0.75, index 0.72, middle 0.73, ring 0.68, pinky 0.00, palm 0.01. At a success, 3.9 fingers were on the cup and the palm in 2-12% of cases; grasp quality at success 0.34-0.42.
+  - Reward per step, last 150 epochs: lift 2.24, wrap_fingers 1.16, finger_curl_onto_cup about 0.23, wrap_links about 0.23, palm_contact about 0.21 (credited while grasping), goal_coarse 0.08, goal_fine 0.0002, in_tolerance 0.005, success_bonus 0.008; total 4.3.
+  - Penalties: cup_push_penalty -0.40, which grew from -0.09 at epoch 2000 to -0.41 as the lifted fraction rose; cup_tilt_penalty -0.03, mean tilt 3-4 degrees.
+  - The success count swings strongly: mean successes 0.47 at epoch 3000, 0.07 at epoch 3250 and 0.28 at epoch 4000.
+  - Rechecked at epoch 5231, with training still running while waiting for approval. Lift reached 0.99 of episodes and the cup is off the table in 67-72% of steps. Successes fell to 0.015-0.05 of episodes and 0.02-0.08 per episode on average, down from 0.29 at epoch 4000. cup_push_penalty grew to -0.62, the lift reward is 3.4 and the total 5.4. The cup is lifted more often and carried further away, and successes became rarer.
