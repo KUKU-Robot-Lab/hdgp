@@ -1,36 +1,23 @@
 {
  "track": "grasp_fj_reach",
- "iter": 4,
- "label": "fj_reach_i04",
+ "iter": 5,
+ "label": "fj_reach_i05",
  "label_prefix": "fj_reach_i",
- "round": 5,
+ "round": 6,
  "status": "running",
- "awaiting": "approval_iter_04",
+ "awaiting": null,
  "best": null,
  "success_ticks": 0,
- "started": 1789424946,
- "pid": 4156688,
- "commit": "2ade74a5",
+ "started": 1789453350,
+ "pid": 437985,
+ "commit": "16c914b0",
  "algo": {
   "iter_00": "SAPG 12,288 (open-short_r_grasp_fj_t2r_reach-lstm-sapg)",
   "from_iter_01": "PPO-LSTM 4096 (open-short_r_grasp_fj_t2r_reach-lstm)"
  },
  "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY",
- "note": "round 5 = iter_04(2ade74a5): 사용자 승인. i03 퇴보(편 손 호버·엄지만 테두리, finger_open 이 파지 위치 밖에서만 무감쇠 지급, palm_contact 동시 게이트로 0) 반영 — 무게이트 reach_far 파지 위치까지 증가, 손바닥이 컵을 향할 때만 reach_facing, finger_open 소형·위치 무관, 쥐기 전 항 공통 감쇠, 손바닥 접촉 부드러운 곱. 단계 경계 계산: 5 cm 호버 0.30 < 파지 위치 0.72 < 누르기 1.4. i03 은 advance(stuck:grasp) e4423, 07:04 SIGTERM 정상 종료. 틱 3 h(cron fe2b9c91). PPO-LSTM 4096 · 콘솔 our_source/fj_t2r_runs/fj_reach_i04.out.",
+ "note": "round 6 = iter_05(16c914b0): 사용자 승인·교정 '중지와 엄지만 인벨롭으로 잡고 검지·약지는 손가락 등으로 기댐' 반영 — 손가락 안쪽 면 법선으로 등 접촉 배제, 손바닥+안쪽 감싸기 품질을 lift·목표 항에 곱함, 위치 기반 목표 항·정지 유지 강화, 시작→목표 선분 이탈 carry_away 벌점, 밀기 벌점은 테이블 위에서만. i04 는 e4000 연장 뒤 advance(stuck:envelope), 15:07 사용자 결정 SIGKILL. 틱 3 h(cron fe2b9c91). PPO-LSTM 4096 · 콘솔 our_source/fj_t2r_runs/fj_reach_i05.out.",
  "prev_round_end": {
-  "label": "fj_reach_i03",
-  "epoch": 4423,
-  "hours": 5.92,
-  "verdict": "advance(stuck:grasp)",
-  "checked": "09-15 06:17",
-  "video": "our_source/fj_t2r_videos/fj_reach_i03_0915_0617.mp4",
-  "drafts": [
-   "iter_03/observation.md",
-   "iter_03/improvement.md"
-  ],
-  "note": "open hand hovers a few cm away, thumb only on the cup rim, palm sideways; finger_open (paid only away from the grasp spot, no decay) > approach; palm_contact gated to 0. video command killed locally by low memory, server play finished, video fetched and frames extracted manually"
- },
- "round_end": {
   "label": "fj_reach_i04",
   "epoch": 4000,
   "hours": 5.74,
@@ -42,13 +29,5 @@
    "iter_04/improvement.md"
   ],
   "note": "four-finger wrap (no pinky, palm off) lifts the cup in ~90% of episodes; cup carried far above and to the side of the goal (12 cm straight up) with the arm stretched out; success 0.06 of episodes; push penalty -0.40; earlier e1302 round-end drafts rewritten"
- },
- "extend": {
-  "label": "fj_reach_i04",
-  "until_epoch": 4000,
-  "decided": "09-15 (user, after the e1302 round-end drafts)",
-  "user_read": "i04 video: every finger except the pinky clearly wraps the cup; the grip is not firm, so no lift",
-  "then": "at epoch >= 4000: round end — video -> update iter_04 observation/improvement drafts with new metrics -> approval request (awaiting approval_iter_04)",
-  "done": "09-15 13:13 at epoch 4000"
  }
 }
