@@ -64,6 +64,14 @@ PYTHONPATH=source/openarm python3 -m pytest source/openarm/openarm/agnostic/task
 - **손끝 촉각 actor obs**: 손당 5칸 = 손끝 링크 전체 접촉력(net, 컵 필터 아님) · 노이즈 0.1 N · 클립 10 N. 실기 출처 RH56F1 `TouchData1.finger_forces[5]`(0.01 N 단위). sim 손가락 순서(thumb, index, middle, ring, pinky) ≠ 벤더 순서일 수 있다 — 배포 시 재배열. obs 변경이라 iter_01 부터 새로 학습.
 - 계기: 라운드 1 영상 — 오른손 엄지가 컵 입구 테두리에 걸려 들지 못함, 왼손은 컵에 닿지 않음.
 
+### 09.15 자산 collider 정리 · 접촉 링크 `(_1, _sensor)` (사용자 결정 "sensor 링크는 실제 힘측정 부위 — 살린다")
+- **손끝 마디 사본 제거:** 벤더 STL 의 `{f}_2`·`{f}_force_sensor`·`{f}_tip`(엄지 thumb_4·sensor·tip)은 같은 입체였다(면·부피·관성 동일). collider 는 `_sensor` 에만 둔다. `_2`·`_tip` 은 질량·visual·프레임을 유지하고 `_tip` 은 손끝 위치로만 쓴다(`urdf/tools/generate_rl_urdf.COLLISION_DROP_LINKS`).
+- **손바닥:** palm_1·palm_2 hull 이 palm_sensor 패드 면을 1~5 mm 덮어 두 껍질만 convexDecomposition 으로 굽는다(`DECOMPOSITION_LINKS`). 20 mm 큐브를 패드에 대면 `palm_sensor` 에 잡힌다. 40 mm 평판은 CAD 껍질 테두리(+2 mm)에 먼저 닿는데, 이것은 정상이다.
+- **몸통:** body_link 도 decomposition 으로 굽는다. 팔 영자세에서 GPU hull 이 수십 mm 부풀어 중지 2.25 N·엄지 외전 25.6 mm 가짜 접촉이 났다. 사용자 원칙은 **가짜 형상 충돌을 필터로 가리지 않고 형상을 고치는 것**이다. 필터는 설계상 박힘인 thumb_2↔palm_2(allowlist `force_filter`)에만 쓴다.
+- **env 변경:** 트랙 프로필 `finger_sensor_bodies`=(`_1`, `_sensor`)(엄지 thumb_3, thumb_sensor). side_rig 2원소는 원위=팁=센서로 읽는다. 촉각 obs·접촉 동결·손가락 접촉력이 모두 `_sensor` 를 읽는다. **obs 의미가 바뀌었으니 이전 체크포인트는 이어 쓰지 않는다.**
+- **공유 자산 주의:** 모듈 `RH56F1_RIGHT`(Track B)는 (_1, _2, _tip) 그대로라 `_2`·`_tip` 접촉이 0 이다. 그 트랙을 재개할 때 고친다.
+- **검증:** `probe_rh56f1_finger_sweep.py --contacts` 는 자기충돌 ON 에서 손 링크끼리 접촉이 0 이어야 한다. `--obstacle_mm`·`--contact_partners /World/obstacle` 로 외부 접촉이 `_sensor`/`palm_sensor` 에 잡히는지 본다.
+
 ### 09.15 보상 입력 손바닥 축 정정 (사용자 결정 "env 가 계약을 지키게")
 - RewardContext 계약은 `palm_axes` 앞 3칸 = 손바닥 법선. RH56F1 `*_hl_palm_sensor` 는 URDF 상 **열 2 가 법선**(기저 +x, 엄지 기저 쪽), 열 0 = 손가락 가로(±y), 열 1 = 손가락 길이(+z) — 양손 동일(`test_rh56f1_palm_sensor_column2_is_palmar`).
 - iter_00~02 는 palm_axes 를 안 썼다. iter_03 이 처음 `normal = palm_axes[:, 0:3]` 로 방향 보상을 만들어 발견.
