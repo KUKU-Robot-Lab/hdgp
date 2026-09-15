@@ -84,6 +84,22 @@ def test_common_numpy_math_on_keypoints_is_allowed():
     assert result.keypoint_ids == (1, 2, 3, 4) and np.allclose(result.coordinates[1], KEYPOINTS[1])
 
 
+def test_ndarray_methods_run_and_other_imports_stay_blocked():
+    # An ndarray method imports numpy.core._methods through the calling frame at call time; the gate rejected
+    # a valid VLM answer over it (stage_01/attempt_00, 2026-09-16).
+    body = (
+        "pts = np.stack([k['1'], k['2'], k['3']])\n"
+        "centre = pts.mean(axis=0)\n"
+        "span = pts.max(axis=0) - pts.min(axis=0)\n"
+        "k['1'] = centre + span * 0.0\n"
+        "return 'shoe', [1, 2, 3, 4], True, k"
+    )
+    result = run_interaction("import numpy as np\n" + _function(body), KEYPOINTS)
+    assert np.allclose(result.coordinates[1], np.mean(np.stack([KEYPOINTS[1], KEYPOINTS[2], KEYPOINTS[3]]), axis=0))
+    with pytest.raises(InteractionError, match="only numpy may be imported"):
+        check_code("import os\n" + _function("return 'shoe', [1], True, k"))
+
+
 def test_runtime_errors_and_timeouts_become_interaction_errors():
     with pytest.raises(InteractionError, match="ZeroDivisionError"):
         run_interaction(_function("return 1 / 0"), KEYPOINTS)

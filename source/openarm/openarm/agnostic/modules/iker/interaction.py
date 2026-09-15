@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import importlib
 import multiprocessing
 import os
 import re
@@ -158,9 +159,17 @@ def run_interaction(
 
 
 def _import_numpy_only(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: A002 - builtin signature
-    if name != "numpy" or level != 0:
+    """numpy and numpy's own submodules, nothing else.
+
+    An ndarray method (``pts.mean(axis=0)``, ``.min()``, ``.max()``) imports ``numpy.core._methods`` through the
+    calling frame's ``__import__`` every call, even when the module is already loaded, so rejecting every dotted
+    name failed ordinary array maths (VLM gate 2026-09-16, stage_01/attempt_00). The checked code may still only
+    write ``import numpy`` (``check_code``) and cannot reach ``__import__`` itself, so numpy's internal imports
+    widen nothing it can read.
+    """
+    if level != 0 or (name != "numpy" and not name.startswith("numpy.")):
         raise ImportError(f"import of {name!r} is not allowed")
-    return np
+    return importlib.import_module(name) if fromlist else np
 
 
 def _run_in_child(tree: ast.Module, inputs: dict, conn) -> None:
