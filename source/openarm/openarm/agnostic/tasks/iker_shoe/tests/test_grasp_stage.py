@@ -229,14 +229,23 @@ def test_lift_progress_needs_the_thumb_closing():
     assert closing.terms["lift_progress"].item() == pytest.approx(2000 * (0.03 - CFG.lift_deadband_m))
 
 
-def test_lift_progress_needs_the_shoe_still_in_the_hand():
+def test_lift_progress_needs_the_shoe_not_sliding_fast_in_the_hand():
     state = gs.Stage1State.start(1)
-    sliding = _step(state, dz_free=torch.tensor([0.03]), rel_speed=torch.tensor([0.2]))
+    sliding = _step(state, dz_free=torch.tensor([0.03]), rel_speed=torch.tensor([0.3]))
     assert sliding.terms["lift_progress"].item() == 0.0
-    at_the_limit = _step(sliding.state, dz_free=torch.tensor([0.03]), rel_speed=torch.tensor([CFG.hold_rel_speed]))
+    at_the_limit = _step(sliding.state, dz_free=torch.tensor([0.03]), rel_speed=torch.tensor([CFG.progress_rel_speed]))
     assert at_the_limit.terms["lift_progress"].item() == 0.0
-    still = _step(at_the_limit.state, dz_free=torch.tensor([0.03]), rel_speed=torch.tensor([0.01]))
-    assert still.terms["lift_progress"].item() == pytest.approx(2000 * (0.03 - CFG.lift_deadband_m))
+    # slower than the progress limit but faster than the hold's limit: progress is paid, a hold would not count
+    moving = _step(at_the_limit.state, dz_free=torch.tensor([0.03]), rel_speed=torch.tensor([0.1]))
+    assert moving.terms["lift_progress"].item() == pytest.approx(2000 * (0.03 - CFG.lift_deadband_m))
+
+
+def test_reward_cfg_progress_rel_speed_is_looser_than_the_hold():
+    assert gs.Stage1RewardCfg().progress_rel_speed == 0.20
+    with pytest.raises(ValueError, match="progress_rel_speed"):
+        gs.Stage1RewardCfg(progress_rel_speed=0.01)
+    with pytest.raises(ValueError, match="progress_rel_speed"):
+        gs.Stage1RewardCfg(hold_rel_speed=0.0)
 
 
 def test_lift_bonus_needs_three_consecutive_held_steps_and_pays_once():

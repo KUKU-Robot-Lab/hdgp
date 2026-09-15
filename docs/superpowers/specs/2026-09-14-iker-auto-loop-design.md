@@ -171,3 +171,7 @@ API·Qwen 백엔드, 루프의 코드 자동 수정.
 - **r5 재시작(2026-09-15).** r4 루프는 A epoch 200 게이트 미달로 멈췄다(파지 스펙 §16 개정 3-3). r4 상태를
   `config_00/archive/2026-09-15_r4_shoe_slips_in_hand/loop/` 로 옮기고 트랙 `iker_shoe_c00_r5`, 라벨 `iker_grasp_c00_r5_a`·
   `iker_grasp_c00_r5_b`·`iker_vlm_c00_r5_s1` 로 같은 절차를 다시 밟는다.
+- **r6 재시작(2026-09-15).** r5 루프는 A 의 들기 신호 소실로 사용자가 멈췄다(파지 스펙 §16 개정 3-4). r5 상태를
+  `config_00/archive/2026-09-15_r5_lift_signal_lost/loop/` 로 옮기고 트랙 `iker_shoe_c00_r6`, 라벨 `iker_grasp_c00_r6_a`·
+  `iker_grasp_c00_r6_b`·`iker_vlm_c00_r6_s1` 로 다시 밟는다. A 는 새로 착수하지 않고 `iker_grasp_c00_r4_a` 의 epoch 200 체크포인트에서
+  `--checkpoint … --no-reset_epoch` 로 이어학습하며, `loop.py init --policy` 에 `gate_epoch 350` 을 준다.

@@ -45,6 +45,9 @@ class Stage1RewardCfg:
     success_bonus: float = 1000.0
     hold_radius_m: float = 0.15
     hold_rel_speed: float = 0.05
+    # revision 3-4: lift progress needs the shoe slower than this against the palm — looser than the hold's hold_rel_speed, because
+    # an exploring policy almost never lifts with the shoe fully still (phase A r5 lost the lift signal at 0.05 m/s)
+    progress_rel_speed: float = 0.20
     latch_steps: int = 3
     success_steps: int = 20
     success_speed: float = 0.05
@@ -77,6 +80,8 @@ class Stage1RewardCfg:
             raise ValueError(f"need lift_height_m {self.lift_height_m} < lift_max_m {self.lift_max_m}")
         if not self.hold_xy_radius_m > 0.0:
             raise ValueError(f"hold_xy_radius_m must be positive, got {self.hold_xy_radius_m}")
+        if not 0.0 < self.hold_rel_speed <= self.progress_rel_speed:
+            raise ValueError(f"need 0 < hold_rel_speed {self.hold_rel_speed} <= progress_rel_speed {self.progress_rel_speed}")
         if min(self.palm_scale, self.lift_progress_scale, self.lift_bonus, self.success_bonus, self.hand_floor_scale,
                self.hand_floor_cap, self.arm_vel_scale, self.hand_vel_scale) < 0.0:
             raise ValueError("reward scales and bonuses must be non-negative")
@@ -279,7 +284,7 @@ def free_lift_height(
 @dataclass(frozen=True)
 class Stage1State:
     closest_palm: torch.Tensor  # (N,) best palm-to-surface gap so far, -1 before the first step
-    best_lift: torch.Tensor  # (N,) best clamp(dz_free - deadband, 0, lift_height - deadband) inside the hold zone (thumb closing, shoe still in the hand) so far
+    best_lift: torch.Tensor  # (N,) best clamp(dz_free - deadband, 0, lift_height - deadband) inside the hold zone (thumb closing, shoe not sliding fast) so far
     hold_count: torch.Tensor  # (N,) consecutive held steps
     latched: torch.Tensor  # (N,) bool, the lift bonus has been paid
     succeeded: torch.Tensor  # (N,) bool, the success bonus has been paid
@@ -360,12 +365,13 @@ def stage1_step(
     # revision 3-1: lift progress counts only where a hold could — near the start and below the lift ceiling — so carrying the
     # shoe away earns nothing (phase A r2 lifted and carried it 61 cm with progress paid anywhere); revision 3-2: and only with
     # the thumb closing (phase A r3 scooped the shoe with four fingers while they pushed the thumb open through its backstop);
-    # revision 3-3: and only with the shoe still in the hand (phase A r4 lifted with the shoe moving 0.11 m/s against the palm)
+    # revisions 3-3/3-4: and only with the shoe not sliding fast in the hand — progress_rel_speed, looser than the hold's limit
+    # (phase A r4 lifted with the shoe moving 0.11 m/s against the palm; r5 with the hold's 0.05 m/s stopped lifting at all)
     in_hold_zone = (
         (shoe_shift_xy <= cfg.hold_xy_radius_m)
         & (dz_free <= cfg.lift_max_m)
         & (thumb_curl >= cfg.thumb_curl_min_rad)
-        & (rel_speed < cfg.hold_rel_speed)
+        & (rel_speed < cfg.progress_rel_speed)
     )
     lift_level = torch.where(
         in_hold_zone, (dz_free - cfg.lift_deadband_m).clamp(0.0, cfg.lift_height_m - cfg.lift_deadband_m), torch.zeros_like(dz_free)
