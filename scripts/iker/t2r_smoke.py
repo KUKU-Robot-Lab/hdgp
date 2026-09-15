@@ -1,9 +1,11 @@
 """Smoke-check the IKER stage-1 t2r environment (spec 2026-09-15-iker-stage1-t2r §8).
 
---mode wire  (once, with the fixture reward): the prompt's hand action table equals the boot limits; with the shoe written
-             against the palm every step while one finger group closes, that finger's contact rows light and no other non-thumb
-             finger's do (the thumb may light in any group: a closing finger presses the shoe onto it); the all-finger group has
-             an env where the thumb and another finger touch; a shoe written 0.5 m away reads 0 on every row.
+--mode wire  (once, seeded for reproducibility, 70 envs by default — 10 per finger group): the prompt's hand action table
+             equals the boot limits; with the shoe written against the palm every step while one finger group closes, that
+             finger's own contact rows must light in at least 10% of that group's envs and at least twice as often as the
+             most-touched other non-thumb finger (adjacent fingers may press the shoe onto a neighbour, like the thumb,
+             whose row stays exempt from both checks); the all-finger group has an env where the thumb and another finger
+             touch; a shoe written 0.5 m away reads exactly 0 on every link and palm row.
 --mode round (every t2r round, with that round's reward): zero actions for 30 steps then random actions; the reward and every
              logged term are finite, `t2r_reward/total` is in every step's log with one key set and no `grasp_reward/` key,
              previous actions are 0 right after a reset, the hold predicate is evaluated; the zero-action reward mean is reported.
@@ -28,7 +30,7 @@ parser = argparse.ArgumentParser(description="Smoke-check the IKER stage-1 t2r e
 parser.add_argument("--mode", choices=("wire", "round"), required=True)
 parser.add_argument("--reward-code", required=True)
 parser.add_argument("--out", default="")
-parser.add_argument("--num-envs", type=int, default=0, help="0: 14 for wire, 64 for round")
+parser.add_argument("--num-envs", type=int, default=0, help="0: 70 for wire, 64 for round")
 parser.add_argument("--steps", type=int, default=150)
 parser.add_argument("--config-index", type=int, default=0)
 AppLauncher.add_app_launcher_args(parser)
@@ -70,6 +72,10 @@ CLOSE_STEPS = 20
 HOLD_OFFSET_M = 0.06  # shoe reference point along the palm normal while a finger group closes
 FAR_OFFSET_M = 0.5
 GROUPS = ("thumb", "index", "middle", "ring", "pinky", "all", "far")
+WIRE_ENVS = 70  # 10 per group (len(GROUPS) == 7); the wire gate's own/other fractions need more than 2 samples/group
+WIRE_SEED = 0  # wire mode is a fixed pass/fail gate: reruns must reproduce, so the pregrasp-bank draw is seeded
+OWN_MIN_FRACTION = 0.1  # a finger group's own contact rows must light in at least this fraction of its envs
+OWN_OVER_OTHER = 2.0  # ... and at least this many times more often than the most-touched other non-thumb finger
 
 
 def make_env(num_envs: int, noise: bool):
@@ -79,6 +85,8 @@ def make_env(num_envs: int, noise: bool):
     cfg.reward_code_path = str(Path(args.reward_code).resolve())
     cfg.add_noise = noise
     cfg.wrench_prob_range = (1e-9, 1e-9)
+    if args.mode == "wire":
+        cfg.seed = WIRE_SEED  # round mode stays unseeded: each t2r round should sample a fresh distribution
     return gym.make(TASK, cfg=cfg).unwrapped
 
 
@@ -128,10 +136,12 @@ def wire(env) -> tuple[list[str], dict]:
         if group in gb.FINGERS[1:]:
             k = gb.FINGERS.index(group)
             others = [i for i in range(1, len(gb.FINGERS)) if i != k]
-            if not bool(hits[:, k].any()):
-                failures.append(f"group {group}: its own contact rows never lit")
-            if bool(hits[:, others].any()):
-                failures.append(f"group {group}: another finger's contact rows lit")
+            own = float(hits[:, k].float().mean())
+            other = float(hits[:, others].float().mean(dim=0).max())
+            if own < OWN_MIN_FRACTION:
+                failures.append(f"group {group}: its own contact rows lit in {own:.2f} of envs (< {OWN_MIN_FRACTION})")
+            if own < OWN_OVER_OTHER * other:
+                failures.append(f"group {group}: own row {own:.2f} is not twice the largest other finger row {other:.2f}")
         elif group == "all" and not bool((hits[:, 0] & hits[:, 1:].any(dim=1)).any()):
             failures.append("all-finger group: no env with the thumb and another finger touching")
         elif group == "far" and (bool((links[rows] > 0.0).any()) or bool((palm[rows] > 0.0).any())):
@@ -178,7 +188,7 @@ def main() -> int:
     if not code.is_file():
         raise FileNotFoundError(code)
     if args.mode == "wire":
-        env = make_env(args.num_envs or 14, noise=False)
+        env = make_env(args.num_envs or WIRE_ENVS, noise=False)
         failures, details = wire(env)
     else:
         env = make_env(args.num_envs or 64, noise=True)
