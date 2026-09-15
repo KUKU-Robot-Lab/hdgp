@@ -54,7 +54,9 @@
    "ep_300 체크포인트 play 영상(단일 GPU 라 학습 종료 후) — 양손 확대, our_source 에 저장",
    "틱마다 보고 지표: reward/rim_hook_pen · task/src,rcv_palm_to_cup · contact/src,rcv_max (엄지 걸림 접근 여부)",
    "영상·지표를 사용자에게 보고하고 판단을 받는다(보상 변경·iter 생성은 승인 전 금지)",
-   "이어 학습: pour_t2r_rh_train.sh t2r_rh_i03_a2 reward_gen/pour_bi_rh/iter_03 --num_envs 1024 --checkpoint <ep_300.pth> --no-reset_epoch"
+   "이어 학습 전 vision-3090 git pull --ff-only (엄지 입구 로그 지표 263bafba 포함)",
+   "이어 학습: pour_t2r_rh_train.sh t2r_rh_i03_a2 reward_gen/pour_bi_rh/iter_03 --num_envs 1024 --checkpoint <ep_300.pth> --no-reset_epoch",
+   "이어 학습 첫 틱에서 task/{src,rcv}_near_rate · _thumb_over_rim_near · _thumb_above_rim_mm_near 가 TFEvents 에 찍히는지 확인, 이후 틱 보고에 포함"
   ],
   "baseline_epoch_114": "rim_hook_pen −0.067(이전 런 −0.044) · src_palm_to_cup 17.2 cm(이전 17.3) · 접촉 0 — epoch 80 부터 palm<20 cm 에서 벌점 증가"
  }
