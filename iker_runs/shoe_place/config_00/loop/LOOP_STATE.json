@@ -40,7 +40,11 @@
    "adopted": "2026-09-15T22:15:24+09:00"
   }
  },
- "gate1": null,
+ "gate1": {
+  "epoch": 550,
+  "latched": 0.026608537882566452,
+  "passed": true
+ },
  "calibration": null,
  "bank": null,
  "attempts": {
@@ -48,5 +52,5 @@
  },
  "eval": {},
  "vlm_requests": {},
- "updated": "2026-09-15T22:15:24+09:00"
+ "updated": "2026-09-15T23:14:40+09:00"
 }
