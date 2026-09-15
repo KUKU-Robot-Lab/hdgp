@@ -157,6 +157,7 @@ def round_check(env) -> tuple[list[str], dict]:
     env.reset()
     rewards, idle, key_sets = [], [], set()
     terms_finite = prev_zero = predicate = True
+    nonfinite_frac_max = 0.0
     for index in range(args.steps):
         action = torch.zeros(n, env.cfg.action_space, device=dev) if index < IDLE_STEPS else 2.0 * torch.rand(n, env.cfg.action_space, device=dev) - 1.0
         _, reward, terminated, truncated, extras = env.step(action)
@@ -166,6 +167,9 @@ def round_check(env) -> tuple[list[str], dict]:
             idle.append(reward)
         key_sets.add(frozenset(log))
         terms_finite &= all(math.isfinite(float(v)) for k, v in log.items() if k.startswith("t2r_reward/"))
+        # finding 6: the reward the env returns is already nan_to_num'd, so checking it can never fail; the env instead
+        # publishes the pre-sanitise non-finite fraction (t2r_reward/nonfinite_frac) and this must be 0 every step.
+        nonfinite_frac_max = max(nonfinite_frac_max, float(log.get("t2r_reward/nonfinite_frac", 0.0)))
         reset = (terminated | truncated).bool()
         if bool(reset.any()):
             prev_zero &= bool((env._t2r_prev_actions[reset] == 0.0).all())
@@ -174,12 +178,12 @@ def round_check(env) -> tuple[list[str], dict]:
     stacked = torch.stack(rewards)
     keys = next(iter(key_sets)) if len(key_sets) == 1 else frozenset().union(*key_sets)
     checks = {
-        "reward_finite": bool(torch.isfinite(stacked).all()), "terms_finite": terms_finite, "total_logged": "t2r_reward/total" in keys,
+        "reward_finite_before_sanitise": nonfinite_frac_max == 0.0, "terms_finite": terms_finite, "total_logged": "t2r_reward/total" in keys,
         "one_log_key_set": len(key_sets) == 1, "no_hand_reward_keys": not any(k.startswith("grasp_reward/") for k in keys),
         "prev_actions_zero_after_reset": prev_zero, "hold_predicate_evaluated": predicate,
     }
     details = {"idle_reward_mean": float(torch.stack(idle).mean()), "random_reward_mean": float(stacked[IDLE_STEPS:].mean()),
-               "log_keys": sorted(keys)}
+               "nonfinite_frac_max": nonfinite_frac_max, "log_keys": sorted(keys)}
     print(f"T2R SMOKE round: checks {checks}, zero-action reward mean {details['idle_reward_mean']:.4f}, "
           f"random reward mean {details['random_reward_mean']:.4f}", flush=True)
     return [name for name, ok in checks.items() if not ok], {"checks": checks, **details}

@@ -41,7 +41,9 @@ HAND_ACTION_RANGES: tuple[tuple[float, float], ...] = (
     (-0.010, 0.000), (-0.010, 0.000), (0.000, 1.571), (0.000, 1.571),
 )
 FEEDBACK_TAG_PREFIXES = (
-    "t2r_reward/", "grasp_episode/success", "grasp_episode/latched", "grasp_episode/best_lift_m", "grasp/held_frac",
+    # finding 3: "grasp_episode/best_lift_m" (the hand-written reward's in-zone lift level, clipped at 4 cm) is an internal
+    # of that reward, not a fact about this env — showing it as "lift height" in the feedback header would mislead the generator.
+    "t2r_reward/", "grasp_episode/success", "grasp_episode/latched", "grasp/held_frac",
     "grasp/dz_free", "grasp/shift_xy", "grasp/thumb_curl", "grasp/rel_speed", "grasp/lost_frac", "grasp/over_rack_raised_frac",
     "grasp/arm_speed_sum", "grasp/hand_command_rate", "contact/", "episode_lengths", "rewards",
 )
@@ -131,7 +133,7 @@ A success is counted on the step where `ctx.hold_count >= ctx.success_steps` and
 `ctx.success` or `ctx.latched`.
 7. The episode ends on a success; when `ctx.shoe_pos[:, 2]` falls below {drop_z:.2f} m (the shoe fell off the table); when \
 the episode has latched, has not succeeded and `ctx.dz_free` drops below {lost_cm:.0f} cm (the shoe went back down after the \
-hold latched); or after `ctx.episode_steps` steps. Nothing is added to the reward outside your function.
+hold latched); or after `ctx.episode_steps - 1` steps. Nothing is added to the reward outside your function.
 8. Do not keep any state between calls (no globals, no attributes); the function must be pure.
 9. Each component you return is logged separately during training (as `t2r_reward/<name>`, the sum as `t2r_reward/total`) and \
 may be shown back to you after training, so name components meaningfully (e.g. "approach", "lift", "success_bonus").

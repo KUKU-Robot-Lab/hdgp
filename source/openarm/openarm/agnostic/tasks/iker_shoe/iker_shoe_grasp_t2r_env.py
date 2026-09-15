@@ -95,11 +95,16 @@ class IkerShoeGraspT2rEnv(IkerShoeGraspEnv):
             raise RuntimeError("_get_rewards called before _get_dones")
         ctx = self._build_context()
         total, terms = call_reward_fn(self._reward_fn, ctx)
+        # finding 6: measured before nan_to_num, so a generated reward that produces NaN/Inf shows up here instead of being
+        # silently sanitised away (the round smoke's reward_finite check read the post-sanitise total, which can never fail).
+        raw = torch.cat([total.reshape(-1)] + [value.reshape(-1) for value in terms.values()])
+        nonfinite_frac = (~torch.isfinite(raw)).float().mean()
         total = torch.nan_to_num(total, nan=0.0, posinf=0.0, neginf=0.0)
         self._t2r_prev_actions = self.actions.clone()
         log = {key: value for key, value in self.extras.get("log", {}).items() if not key.startswith("grasp_reward/")}
         log["t2r_reward/total"] = total.mean().item()
         log.update({f"t2r_reward/{name}": value.mean().item() for name, value in terms.items()})
+        log["t2r_reward/nonfinite_frac"] = float(nonfinite_frac.item())
         touching = (ctx.link_shoe_force > TOUCH_LOG_N).float()
         log["contact/links_touching"] = touching.sum(dim=(1, 2)).mean().item()
         log["contact/fingers_touching"] = touching.amax(dim=2).sum(dim=1).mean().item()

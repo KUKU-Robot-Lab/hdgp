@@ -151,7 +151,8 @@ def cuda_usable() -> bool:
         return False
 
 
-def dry_run(path: str, *, n: int = 64, device: str = "cpu") -> ValidationReport:
+def dry_run(path: str, *, n: int = 37, device: str = "cpu") -> ValidationReport:
+    # finding 5: 37, not the round smoke's env count (64) — a reward that hard-codes the batch size must fail both checks
     rep = ValidationReport(ok=True)
     try:
         fn, _ = load_reward_fn(path)

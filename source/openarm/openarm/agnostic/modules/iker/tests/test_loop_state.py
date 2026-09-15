@@ -22,7 +22,8 @@ def _flat(value, upto, start=1):
 
 
 LABEL = "iker_grasp_c00_t2r_i00"
-FILES_READY = ls.T2rIter(prompt=True, response=True, validation={"ok": True})
+REWARD_SHA = "a" * 64
+FILES_READY = ls.T2rIter(prompt=True, response=True, validation={"ok": True, "reward_sha256": REWARD_SHA})
 
 
 def _training(state, **run):
@@ -55,19 +56,54 @@ def test_a_round_writes_the_prompt_asks_the_generator_and_ingests_its_response()
     assert paused.action == "pause" and "3 generator requests" in paused.reason
 
 
-def test_a_validated_reward_is_smoked_then_trained_and_a_failed_smoke_pauses():
+def test_a_validated_reward_is_smoked_by_its_digest_then_trained():
     state = _state()
     smoke = ls.decide(state, ls.Probe(t2r=FILES_READY))
-    assert (smoke.action, smoke.params) == ("run_t2r_smoke", {"key": LABEL, "iter": 0})
+    assert (smoke.action, smoke.params) == ("run_t2r_smoke", {"key": REWARD_SHA, "iter": 0, "digest": REWARD_SHA})
     assert ls.decide(state, ls.Probe(t2r=FILES_READY, gpu_used_mib=30000)).action == "wait"
     smoked = ls.apply(state, smoke, NOW, {"run": {"label": "iker_shoe_c00_t2r_smoke", "log": "/l/s.log"}})
-    assert smoked["runs"]["t2r_smoke"]["key"] == LABEL
+    assert smoked["runs"]["t2r_smoke"]["key"] == REWARD_SHA
     assert ls.decide(smoked, ls.Probe(t2r=FILES_READY, runs={"t2r_smoke": RUNNING})).action == "wait"
-    assert ls.decide(smoked, ls.Probe(t2r=FILES_READY, runs={"t2r_smoke": DONE_FAIL})).action == "pause"
     launch = ls.decide(smoked, ls.Probe(t2r=FILES_READY, runs={"t2r_smoke": DONE_PASS}))
     assert (launch.action, launch.params) == ("launch_t2r", {"key": LABEL, "iter": 0})
     launched = ls.apply(smoked, launch, NOW, {"run": {"label": LABEL, "log": "/l/t.log", "started_s": 1.0}})
     assert launched["runs"]["stage1_t2r"]["key"] == LABEL
+    # finding 1: a new reward (a different digest) in the same iteration is smoked again, not read as already launched
+    new_digest = "b" * 64
+    fresh = ls.T2rIter(prompt=True, response=True, validation={"ok": True, "reward_sha256": new_digest})
+    resmoke = ls.decide(smoked, ls.Probe(t2r=fresh))
+    assert (resmoke.action, resmoke.params) == ("run_t2r_smoke", {"key": new_digest, "iter": 0, "digest": new_digest})
+
+
+def test_a_failed_round_smoke_records_a_miss_and_only_pauses_once_requests_are_exhausted():
+    state = _state()
+    smoked = ls.apply(state, ls.decide(state, ls.Probe(t2r=FILES_READY)), NOW,
+                      {"run": {"label": "iker_shoe_c00_t2r_smoke", "log": "/l/s.log"}})
+    # finding 1: a failed smoke with requests still available records a miss (not a pause) and the next decision re-asks
+    miss = ls.decide(smoked, ls.Probe(t2r=FILES_READY, runs={"t2r_smoke": DONE_FAIL}))
+    assert (miss.action, miss.params) == ("record_smoke_miss", {"iter": 0, "digest": REWARD_SHA})
+    missed = ls.apply(smoked, miss, NOW)
+    # the executor moved response.md/validation.json/smoke.json aside; the next probe sees neither
+    again = ls.decide(missed, ls.Probe(t2r=ls.T2rIter(prompt=True, failed_attempts=1), runs={"t2r_smoke": DONE_FAIL}))
+    assert again.action == "t2r_generate" and again.params == {"iter": 0}
+    # a passing smoke still leads to launch_t2r regardless of past misses
+    passed = ls.decide(missed, ls.Probe(t2r=FILES_READY, runs={"t2r_smoke": DONE_PASS}))
+    assert passed.action == "launch_t2r"
+    # with the requests exhausted, a failed smoke pauses instead, naming the failed smoke
+    exhausted = {**missed, "t2r": {**missed["t2r"], "requests": 3}}
+    paused = ls.decide(exhausted, ls.Probe(t2r=FILES_READY, runs={"t2r_smoke": DONE_FAIL}))
+    assert paused.action == "pause" and "t2r smoke failed" in paused.reason and "3 generator requests" in paused.reason
+
+
+def test_launch_t2r_waits_for_the_gpu_limit_like_the_side_runs():
+    state = _state()
+    smoked = ls.apply(state, ls.decide(state, ls.Probe(t2r=FILES_READY)), NOW,
+                      {"run": {"label": "iker_shoe_c00_t2r_smoke", "log": "/l/s.log"}})
+    busy_gpu = ls.Probe(t2r=FILES_READY, runs={"t2r_smoke": DONE_PASS}, gpu_used_mib=25000)
+    waiting = ls.decide(smoked, busy_gpu)
+    assert waiting.action == "wait" and "GPU memory 25000 MiB > 20000 MiB" in waiting.reason
+    ok = ls.decide(smoked, replace(busy_gpu, gpu_used_mib=1000))
+    assert ok.action == "launch_t2r"
 
 
 def test_training_harvests_the_newest_checkpoint_at_five_percent_success_and_commits_the_bank():
@@ -104,6 +140,21 @@ def test_a_round_ends_at_its_last_epoch_or_early_and_the_loop_pauses_after_the_l
     assert ls.decide(state, replace(early, latched=_flat(0.01, 250))).action == "wait"
     full = {**state, "t2r": {"iter": 6, "requests": 0, "rounds": [{"iter": i} for i in range(6)]}}
     assert ls.decide(full, ls.Probe()).action == "pause"
+
+
+def test_a_round_waits_for_the_newest_checkpoint_to_settle_before_ending():
+    # finding 4: training_status reads an unsettled checkpoint list, so `finished` can go True before the harvest loop
+    # (which only sees settled checkpoints) has had a chance to check the newest one — wait instead of ending the round.
+    state = _training(_state())
+    probe = ls.Probe(t2r=FILES_READY, runs={"stage1_t2r": ENDED}, success=_flat(0.0, 500), latched=_flat(0.01, 500),
+                     checkpoint_pending=True)
+    waiting = ls.decide(state, probe)
+    assert waiting.action == "wait" and "settl" in waiting.reason
+    ended = ls.decide(state, replace(probe, checkpoint_pending=False))
+    assert ended.action == "end_round"
+    early = ls.Probe(t2r=FILES_READY, runs={"stage1_t2r": RUNNING}, success=_flat(0.0, 250), latched=_flat(0.001, 250),
+                     checkpoint_pending=True)
+    assert ls.decide(state, early).action == "wait"
 
 
 def test_state_round_trips_and_validation_rejects_inconsistent_states(tmp_path):
@@ -173,7 +224,7 @@ def test_resume_clears_a_dead_crashed_run_so_the_phase_launches_it_again_once():
     assert resumed["status"] == "running" and resumed["runs"]["t2r_smoke"]["cleared"] == "later"
     for seen in (crashed, probe):  # the probe omits a cleared run; a stale reading of its old log is ignored too
         relaunch = ls.decide(resumed, seen)
-        assert relaunch.action == "run_t2r_smoke" and relaunch.params == {"key": LABEL, "iter": 0}
+        assert relaunch.action == "run_t2r_smoke" and relaunch.params == {"key": REWARD_SHA, "iter": 0, "digest": REWARD_SHA}
     relaunched = ls.apply(resumed, relaunch, NOW, {"run": {"label": "iker_shoe_c00_t2r_smoke"}})
     assert "cleared" not in relaunched["runs"]["t2r_smoke"]
     assert ls.decide(relaunched, replace(probe, runs={"t2r_smoke": RUNNING})).action == "wait"

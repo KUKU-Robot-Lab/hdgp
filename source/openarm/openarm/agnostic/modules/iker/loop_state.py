@@ -62,7 +62,7 @@ LAUNCH_RUNS: Mapping[str, str] = {
 SESSION_ACTIONS = ("wait",)  # nothing to record
 MANUAL_ACTIONS = ("approve", "resume")  # only on the user's word
 FILE_ACTIONS = ("write_prompt", "write_requery_prompt", "parse_requery", "store_video", "kill_stale",
-                "write_t2r_prompt", "ingest_reward")  # files are the record
+                "write_t2r_prompt", "ingest_reward", "record_smoke_miss")  # files are the record
 VLM_MAX_REQUESTS = 3  # generator requests for one response file before the loop pauses (a module constant: a new policy key
 #                       would make validate_state reject existing state files)
 LOOP_END_MARKS = ("stopping", "stopped", "cleared")  # a run record carrying one ended by the loop's hand, never by a crash
@@ -105,6 +105,7 @@ class Probe:
     latched: tuple[tuple[int, float], ...] = ()  # Episode/grasp_episode/latched of the phase's stage-1 run, by epoch
     over_rack: tuple[tuple[int, float], ...] = ()  # Episode/grasp/over_rack_raised_frac, by epoch
     checkpoints: Mapping[int, str] = field(default_factory=dict)  # the phase's training run: epoch -> checkpoint path
+    checkpoint_pending: bool = False  # a checkpoint file exists that is too young to be a candidate yet (finding 4)
     success: tuple[tuple[int, float], ...] = ()  # Episode/grasp_episode/success of the round's run, by epoch
     bank_meta: Mapping | None = None  # metadata of the grasp bank stage 2 loads
     attempts: tuple[AttemptStatus, ...] = ()  # stage-1 VLM attempts holding a response, in order
@@ -335,16 +336,26 @@ def _t2r_prepare(state: Mapping, probe: Probe, iteration: int, label: str) -> De
         return Decision("t2r_generate", f"iter {iteration:02d} request {requests + 1}", {"iter": iteration})
     if not files.validation.get("ok"):
         return _pause(f"iter {iteration:02d} validation.json is not ok", "a failed ingest moves its files aside; inspect the iteration folder")
-    if not _launched(state, "t2r_smoke", label):
-        return _side_launch(state, probe, "run_t2r_smoke", {"key": label, "iter": iteration})
+    # finding 1: the smoke launch is keyed on the reward's own digest, not the round label, so a regenerated reward within
+    # the same iter (after a failed smoke moved the old files aside) is smoked again instead of reusing the old verdict.
+    digest = files.validation["reward_sha256"]
+    if not _launched(state, "t2r_smoke", digest):
+        return _side_launch(state, probe, "run_t2r_smoke", {"key": digest, "iter": iteration, "digest": digest})
     smoke = probe.runs.get("t2r_smoke", IDLE)
     if not smoke.finished:
         return _wait(f"t2r smoke of iter {iteration:02d} running")
     if not smoke.passed:
-        return _pause(f"t2r smoke of iter {iteration:02d} failed: {smoke.marker}", "read its T2R SMOKE CHECK FAILED lines and smoke.json")
+        requests = state["t2r"]["requests"]
+        if requests >= policy["t2r_max_requests"]:
+            return _pause(f"iter {iteration:02d} t2r smoke failed and {requests} generator requests are used: {smoke.marker}",
+                          "read its T2R SMOKE CHECK FAILED lines and smoke.json; `loop.py act resume` allows new requests")
+        return Decision("record_smoke_miss", f"iter {iteration:02d} t2r smoke failed: {smoke.marker}", {"iter": iteration, "digest": digest})
     busy = _busy_side_run(probe)
     if busy is not None:
         return _wait(f"launch_t2r waits for the side run {busy}")
+    limit = policy["side_gpu_limit_mib"]  # finding 2: launch_t2r starts a second 4096-env training and needs the same guard
+    if probe.gpu_used_mib > limit:
+        return _wait(f"launch_t2r waits: GPU memory {probe.gpu_used_mib} MiB > {limit} MiB")
     return Decision("launch_t2r", f"iter {iteration:02d}: {policy['t2r_round_epochs']} epochs x {policy['t2r_num_envs']} envs",
                     {"key": label, "iter": iteration})
 
@@ -375,6 +386,10 @@ def _t2r_training(state: Mapping, probe: Probe, iteration: int, label: str, widt
     success, latched = bin_mean(probe.success, last, width), bin_mean(probe.latched, last, width)
     finished = probe.runs.get("stage1_t2r", IDLE).finished
     early = last >= policy["t2r_early_epoch"] and (success or 0.0) == 0.0 and (latched or 0.0) < policy["t2r_early_latched"]
+    if (finished or early) and probe.checkpoint_pending:
+        # finding 4: `finished` reads an unsettled checkpoint list (training_status), while the harvest loop above only
+        # sees settled ones (>= CHECKPOINT_SETTLE_S old) — ending the round here would skip the newest checkpoint's harvest check.
+        return _wait(f"t2r iter {iteration:02d}: the newest checkpoint is still settling")
     if finished or early:
         return Decision("end_round", f"iter {iteration:02d} {'finished' if finished else 'ended early'} at epoch {last}, latched {_pct(latched)}", {
             "iter": iteration, "label": label, "end_epoch": last, "ended": "round_epochs" if finished else "early",

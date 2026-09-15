@@ -39,7 +39,8 @@
 다른 트랙(pour_fabric·grasp_fj_t2r)의 런·GPU·크론 접촉. 루프 밖에서 사용자가 띄운 런(예: iker_grasp_c00_r8_a_ext)도 건드리지 않는다.
 
 크론: 세션 CronCreate `7,37 * * * *`, 프롬프트 "IKER 자동 루프 틱: ~/rl_ws/hdgp-iker/scripts/iker/LOOP_PROMPT.md 절차대로 한 틱을
-수행한다 (track iker_shoe_c00_t2r)". 세션이 끝나면 루프도 멈춘다. 다음 세션은 `status` 로 이어가고, 커밋 트레일러는
+수행한다 (track iker_shoe_c00_t2r)". 틱 세션은 반드시 `~/rl_ws/hdgp-iker` 에서 시작한다 — 다른 경로에서 시작하면 프로젝트 에이전트
+`iker-vlm-generator`·`iker-t2r-generator` 를 쓸 수 없다. 세션이 끝나면 루프도 멈춘다. 다음 세션은 `status` 로 이어가고, 커밋 트레일러는
 `python3 scripts/iker/loop.py --session-url <그 세션 URL> act ...` 로 그 세션 것을 쓴다.
 
 task-observer: 틱 보고(산출물 전달) 때 관측 기록을 확인한다.

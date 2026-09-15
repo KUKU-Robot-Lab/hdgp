@@ -27,8 +27,10 @@ def run_label(prefix: str, iteration: int) -> str:
 
 
 def failed_attempt_names(k: int) -> dict[str, str]:
-    """Where a failed ingest moves its files, so the next decision sees no response and asks the generator again (§14)."""
-    return {RESPONSE: f"response_attempt_{k}.md", VALIDATION: f"validation_attempt_{k}.json", CODE: f"compute_reward_attempt_{k}.py"}
+    """Where a failed ingest or a failed round smoke moves its files, so the next decision sees no response and asks the
+    generator again (§14, finding 1: a failed smoke is not a crash, so its files are moved aside the same way)."""
+    return {RESPONSE: f"response_attempt_{k}.md", VALIDATION: f"validation_attempt_{k}.json",
+            CODE: f"compute_reward_attempt_{k}.py", SMOKE: f"smoke_attempt_{k}.json"}
 
 
 def generator_brief(prompt_path, response_path) -> str:

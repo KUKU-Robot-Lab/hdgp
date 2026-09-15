@@ -206,12 +206,24 @@ def ingest_reward(state, paths, decision):
 
 
 def run_t2r_smoke(state, paths, decision):
-    policy, iteration = state["policy"], decision.params["iter"]
+    policy, iteration, digest = state["policy"], decision.params["iter"], decision.params["digest"]
     folder = paths.t2r_iter_dir(iteration)
     argv = ["scripts/iker/t2r_smoke.py", "--mode", "round", "--reward-code", str(folder / loop_t2r.CODE), "--out", str(folder / loop_t2r.SMOKE),
             "--num-envs", str(policy["t2r_smoke_envs"]), "--steps", str(policy["t2r_smoke_steps"]), "--config-index", str(CONFIG_INDEX), "--headless"]
-    log = paths.side_log("t2r_smoke", f"iter{iteration:02d}")
-    return {"run": launch(side_label(state, "t2r_smoke"), argv, log, f"IKER loop t2r smoke iter {iteration:02d}")}
+    # finding 1: the smoke is keyed on the reward digest, so a regenerated reward in the same iter gets its own log
+    log = paths.side_log("t2r_smoke", f"iter{iteration:02d}_{digest[:8]}")
+    return {"run": launch(side_label(state, "t2r_smoke"), argv, log, f"IKER loop t2r smoke iter {iteration:02d} reward {digest[:8]}")}
+
+
+def record_smoke_miss(state, paths, decision):
+    """A round smoke that ran and did not pass: move the round's files aside like a failed ingest, so the next decision
+    sees no response/validation/smoke and asks the generator again instead of pausing (finding 1, spec §14)."""
+    folder = paths.t2r_iter_dir(decision.params["iter"])
+    attempt = len(list(folder.glob("validation_attempt_*.json"))) + 1
+    for name, moved in loop_t2r.failed_attempt_names(attempt).items():
+        if (folder / name).exists():
+            (folder / name).rename(folder / moved)
+    return {"attempt": attempt, "digest": decision.params["digest"]}
 
 
 def launch_t2r(state, paths, decision):
@@ -376,6 +388,7 @@ def pause(state, paths, decision):
 
 EXECUTORS = {
     "write_t2r_prompt": write_t2r_prompt, "t2r_generate": t2r_generate, "ingest_reward": ingest_reward, "run_t2r_smoke": run_t2r_smoke,
+    "record_smoke_miss": record_smoke_miss,
     "launch_t2r": launch_t2r, "end_round": end_round, "run_harvest": run_harvest,
     "advance": advance, "commit_bank": commit_bank, "write_prompt": write_prompt, "vlm_generate": vlm_generate, "ingest": ingest,
     "commit_interaction": commit_interaction,

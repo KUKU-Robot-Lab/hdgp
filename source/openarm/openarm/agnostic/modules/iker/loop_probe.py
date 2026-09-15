@@ -139,6 +139,14 @@ def list_checkpoints(nn_dir: Path, settled_before_s: float | None = None) -> dic
     return found
 
 
+def has_pending_checkpoint(nn_dir: Path, settled_before_s: float) -> bool:
+    """True when a checkpoint file exists that is too young to be a harvest candidate yet (finding 4: ``Probe.checkpoint_pending``,
+    so a decider can wait instead of ending a round on ``training_status``'s unsettled ``finished`` read)."""
+    if not nn_dir.is_dir():
+        return False
+    return any(CHECKPOINT_RE.match(path.name) and path.stat().st_mtime > settled_before_s for path in nn_dir.iterdir())
+
+
 def find_run_dir(task_dir: Path, label: str, started_s: float) -> Path | None:
     """The folder train.py made for ``label`` (``label``, or ``label-rN`` when that existed), modified since the launch."""
     candidates = [task_dir / label, *task_dir.glob(f"{label}-r*")] if task_dir.is_dir() else []
@@ -243,6 +251,7 @@ def collect(state: Mapping, paths: LoopPaths, *, now_s: float, gpu_used_mib: int
     policy = state["policy"]
     runs = run_statuses(state, paths, now_s=now_s, proc_root=proc_root)
     latched, over_rack, success, checkpoints = (), (), (), {}
+    checkpoint_pending = False
     training = PHASE_TRAINING.get(state["phase"])
     if training is not None:
         label = ls.t2r_label(state) if training == "stage1_t2r" else policy["labels"][training]
@@ -250,13 +259,16 @@ def collect(state: Mapping, paths: LoopPaths, *, now_s: float, gpu_used_mib: int
         started = record.get("started_s", 0.0) if record.get("key") == label or training == "stage2" else now_s
         run_dir = find_run_dir(paths.task_dir(training), label, started)
         if run_dir is not None:
-            checkpoints = list_checkpoints(run_dir / "nn", settled_before_s=now_s - CHECKPOINT_SETTLE_S)
+            settle_before = now_s - CHECKPOINT_SETTLE_S
+            checkpoints = list_checkpoints(run_dir / "nn", settled_before_s=settle_before)
+            checkpoint_pending = has_pending_checkpoint(run_dir / "nn", settle_before)
             if training != "stage2":
                 series = _events(run_dir, load_events)
                 latched, over_rack, success = _series(series, LATCHED_TAG), _series(series, OVER_RACK_TAG), _series(series, SUCCESS_TAG)
     t2r = t2r_files(paths.t2r_iter_dir(state["t2r"]["iter"]), state["t2r"]["iter"]) if state["phase"] == "stage1_t2r" else ls.T2rIter()
     return ls.Probe(
         gpu_used_mib=gpu_used_mib, runs=runs, latched=latched, over_rack=over_rack, success=success, checkpoints=checkpoints,
+        checkpoint_pending=checkpoint_pending,
         bank_meta=(_optional_json(paths.harvest_bank_file) or {}).get("metadata"), attempts=attempts(paths.stage_dir),
         evals=evals(paths.stage_dir), final_rows=final_rows(paths.final_states_file), requery=_optional_json(paths.observe_dir / "requery.json"),
         files=_files(state, paths), t2r=t2r,

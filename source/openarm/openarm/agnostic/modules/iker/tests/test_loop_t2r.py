@@ -11,7 +11,7 @@ from openarm.agnostic.tasks.iker_shoe import layout
 def test_names_of_a_round():
     assert loop_t2r.iter_dir_name(3) == "iter_03" and loop_t2r.run_label("iker_grasp_c00_t2r", 3) == "iker_grasp_c00_t2r_i03"
     assert loop_t2r.failed_attempt_names(2) == {"response.md": "response_attempt_2.md", "validation.json": "validation_attempt_2.json",
-                                                "compute_reward.py": "compute_reward_attempt_2.py"}
+                                                "compute_reward.py": "compute_reward_attempt_2.py", "smoke.json": "smoke_attempt_2.json"}
     assert (loop_t2r.PROMPT, loop_t2r.RESPONSE, loop_t2r.CODE, loop_t2r.VALIDATION, loop_t2r.SMOKE, loop_t2r.FEEDBACK, loop_t2r.GENERATOR) == (
         "prompt.md", "response.md", "compute_reward.py", "validation.json", "smoke.json", "feedback.md", "generator.json")
 

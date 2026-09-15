@@ -161,6 +161,21 @@ def test_a_failed_ingest_moves_the_attempt_aside(tmp_path, monkeypatch):
     assert sorted(p.name for p in folder.iterdir()) == ["compute_reward_attempt_1.py", "response_attempt_1.md", "validation_attempt_1.json"]
 
 
+def test_record_smoke_miss_moves_the_rounds_files_aside(tmp_path):
+    state, paths = _mock_loop(tmp_path, "stage1_t2r")
+    folder = paths.t2r_iter_dir(0)
+    folder.mkdir(parents=True)
+    (folder / "response.md").write_text("r")
+    (folder / "compute_reward.py").write_text("c")
+    (folder / "validation.json").write_text(json.dumps({"ok": True, "reward_sha256": "a" * 64}))
+    (folder / "smoke.json").write_text(json.dumps({"passed": False}))
+    result = loop.record_smoke_miss(state, paths, ls.Decision("record_smoke_miss", "iter 00", {"iter": 0, "digest": "a" * 64}))
+    assert result == {"attempt": 1, "digest": "a" * 64}
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "compute_reward_attempt_1.py", "response_attempt_1.md", "smoke_attempt_1.json", "validation_attempt_1.json",
+    ]
+
+
 def test_launch_t2r_trains_fresh_with_the_round_reward(tmp_path, monkeypatch):
     state, paths = _mock_loop(tmp_path, "stage1_t2r")
     folder = paths.t2r_iter_dir(0)

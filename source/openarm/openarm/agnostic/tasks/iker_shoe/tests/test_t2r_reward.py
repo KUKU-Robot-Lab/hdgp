@@ -64,6 +64,22 @@ def test_validator_passes_a_wellformed_reward_and_rejects_bad_ones(tmp_path):
     assert not rep.ok and any("dz_free" in error for error in rep.errors)
 
 
+HARDCODED_BATCH = """import torch
+
+
+def compute_reward(ctx):
+    return torch.zeros(64), {}
+"""
+
+
+def test_dry_run_env_count_differs_from_the_round_smoke_so_a_hardcoded_batch_size_fails(tmp_path):
+    # finding 5: the round smoke uses 64 envs; if the dry run also used 64, a reward that hard-codes that batch size
+    # would pass both. The dry run must use a different count (37) so such a reward fails validation here.
+    assert V.dry_run.__kwdefaults__["n"] == 37
+    rep = V.validate(_write(tmp_path, HARDCODED_BATCH), devices=("cpu",))
+    assert not rep.ok and any("reward" in error for error in rep.errors)
+
+
 def test_loader_enforces_shapes_and_an_empty_path_is_zero_reward():
     ctx = V.make_fake_context(4)
     with pytest.raises(RuntimeError):
@@ -106,6 +122,15 @@ def test_feedback_series_strips_prefixes_and_keeps_only_feedback_tags():
     assert series == {"t2r_reward/touch": [0.1, 0.2], "grasp_episode/success": [0.0], "rewards": [3.0]}
     table = P.render_feedback_table(series, n_points=10)
     assert "t2r_reward/touch: [0.1, 0.2]" in table and "min 0.1" in table
+
+
+def test_feedback_series_drops_the_hand_written_rewards_internal_best_lift_m():
+    # finding 3: grasp_episode/best_lift_m is the hand-written reward's own internal (an in-zone lift level clipped at
+    # 4 cm) — it must not reach the generator's feedback table labelled as a fact about the env, like "lift height".
+    assert "grasp_episode/best_lift_m" not in P.FEEDBACK_TAG_PREFIXES
+    events = {"Episode/grasp_episode/best_lift_m": [(1, 0.02)], "Episode/grasp_episode/success": [(1, 0.0)]}
+    series = pipeline.feedback_series(events)
+    assert series == {"grasp_episode/success": [0.0]}
 
 
 def test_round_files_render_ingest_and_reflect(tmp_path):

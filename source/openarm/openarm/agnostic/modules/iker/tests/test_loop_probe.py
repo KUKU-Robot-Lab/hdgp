@@ -102,6 +102,31 @@ def test_a_checkpoint_younger_than_thirty_seconds_is_not_yet_a_candidate(tmp_pat
     assert probe.checkpoints == {} and probe.runs["stage2"].finished and not probe.runs["stage2"].crashed
 
 
+def test_checkpoint_pending_flags_an_unsettled_checkpoint_file(tmp_path):
+    """finding 4: a checkpoint file younger than CHECKPOINT_SETTLE_S must be visible as pending, separately from the
+    settled ``checkpoints`` mapping, so a decider can wait for it instead of ending a round on an unsettled ``finished``."""
+    paths = lp.LoopPaths.of(tmp_path / "hdgp", 0, "iker_shoe_c00_t2r")
+    state = ls.new_state("t")
+    label = ls.t2r_label(state)
+    run_dir = paths.task_dir("stage1_t2r") / label
+    (run_dir / "nn").mkdir(parents=True)
+    (run_dir / "summaries").mkdir()
+    (run_dir / "summaries" / "events.out.tfevents.1").write_bytes(b"")
+    old, young = run_dir / "nn" / "last_x_ep_100_rew_1.0.pth", run_dir / "nn" / "last_x_ep_150_rew_1.0.pth"
+    for path, mtime in ((old, 1000.0), (young, 1020.0)):
+        path.write_bytes(b"")
+        os.utime(path, (mtime, mtime))
+    train_log = paths.train_log(label)
+    train_log.write_text("epoch\n")
+    state["runs"] = {"stage1_t2r": {"label": label, "log": str(train_log), "started_s": 0.0, "key": label}}
+    (tmp_path / "no_proc").mkdir()
+    read = dict(gpu_used_mib=0, load_events=lambda path: {}, proc_root=tmp_path / "no_proc")
+    still_young = lp.collect(state, paths, now_s=young.stat().st_mtime + lp.CHECKPOINT_SETTLE_S - 5.0, **read)
+    assert still_young.checkpoint_pending and list(still_young.checkpoints) == [100]
+    settled = lp.collect(state, paths, now_s=young.stat().st_mtime + lp.CHECKPOINT_SETTLE_S + 5.0, **read)
+    assert not settled.checkpoint_pending and sorted(settled.checkpoints) == [100, 150]
+
+
 def test_cleared_records_are_absent_and_runs_the_loop_stops_are_never_crashed(tmp_path):
     paths = lp.LoopPaths.of(tmp_path / "hdgp", 0, "iker_shoe_c00")
     state = ls.new_state("t")
