@@ -2,8 +2,12 @@
  "schema": 1,
  "track": "iker_shoe_c00_r7",
  "phase": "stage1_a",
- "status": "running",
- "awaiting": null,
+ "status": "awaiting",
+ "awaiting": {
+  "reason": "epoch 550 latched 0.37 % vs 2.00 %",
+  "needs": "phase A missed the gate: resume to go on (a new gate_epoch judges again), or stop it",
+  "phase": "stage1_a"
+ },
  "stage": 1,
  "policy": {
   "gate_epoch": 550,
@@ -40,7 +44,11 @@
    "adopted": "2026-09-15T20:43:40+09:00"
   }
  },
- "gate1": null,
+ "gate1": {
+  "epoch": 550,
+  "latched": 0.0037163373199291527,
+  "passed": false
+ },
  "calibration": null,
  "bank": null,
  "attempts": {
@@ -48,5 +56,5 @@
  },
  "eval": {},
  "vlm_requests": {},
- "updated": "2026-09-15T20:43:40+09:00"
+ "updated": "2026-09-15T21:43:06+09:00"
 }
