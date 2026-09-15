@@ -1,6 +1,6 @@
 """IKER shoe-placement environment (design spec §7).
 
-Episodes start from a grasp-bank state (shoe already in the closed hand on the table). The policy moves the
+Episodes start from a grasp-bank state (shoe already in the closed hand; a learned bank holds it 5-15 cm above the table). The policy moves the
 palm with a 6-D delta pose through damped least-squares IK at 10 Hz; the hand keeps the bank's commanded
 targets, with the stage-1 thumb backstop (learned-grasp spec §16). The reward is the fixed IKER reward toward
 the target keypoints of one interaction file.

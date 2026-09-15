@@ -5,8 +5,9 @@ import math
 import pytest
 import torch
 
+from openarm.agnostic.modules import robot_profiles
 from openarm.agnostic.modules.iker import run_files
-from openarm.agnostic.tasks.iker_shoe import grasp_stage as gs
+from openarm.agnostic.tasks.iker_shoe import grasp_bank as gb, grasp_stage as gs, layout
 
 NAMES = ("l_hj_thumb_3", "l_hj_index_3", "l_hj_index_4", "l_hj_index_1")
 CFG = gs.Stage1RewardCfg(g_min=0.5, q_lo=0.2, q_hi=0.6)
@@ -89,6 +90,20 @@ def test_backstop_limits_move_the_opening_side_limit_to_the_open_pose():
         gs.backstop_limits(names, lo, hi, open_pose, (0.0, 1.8), ("thumb_3",))
     with pytest.raises(ValueError, match="outside"):
         gs.backstop_limits(names, lo, hi, (2.0, 0.0), grip_pose, ("thumb_3",))
+
+
+def test_the_profile_thumb_closes_toward_its_side_sign_and_is_backstopped_on_the_other_side():
+    # the left hand is the right one mirrored: thumb_3 closes in the side-sign direction (robot_profiles, FK-verified 2026-09-13)
+    prof = robot_profiles.PROFILES[layout.PROFILE_NAME]
+    names = prof.hand_joint_names
+    i = gs.role_joint_index(names, "thumb_3")
+    sign = gb.side_sign(names)
+    open_q, grip_q = torch.tensor(prof.hand_open_pose[i]), torch.tensor(prof.hand_grip_pose[i])
+    assert gs.closing_travel(open_q + 0.1 * sign, open_q, grip_q).item() == pytest.approx(0.1)
+    hard = torch.full((len(names),), 1.5708)
+    lo, hi = gs.backstop_limits(names, -hard, hard, prof.hand_open_pose, prof.hand_grip_pose, ("thumb_3",))[names[i]]
+    assert (hi if sign < 0 else lo) == pytest.approx(prof.hand_open_pose[i])
+    assert (lo if sign < 0 else hi) == pytest.approx(sign * 1.5708)
 
 
 def test_hand_targets_map_linearly_filter_and_clamp():
