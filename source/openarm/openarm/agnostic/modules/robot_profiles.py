@@ -866,12 +866,13 @@ RH56F1_RIGHT = RobotProfile(
     palm_rot_center_deg=(0.0, -65.0, -90.0),
     palm_rot_half_deg=45.0,
     palm_box_verified=False,
-    # ---- 접촉 링크 (Track B 는 센서를 만들지 않는다 — 손가락 목록·손끝으로만 쓰인다) ----
-    # 규약: (중간, 원위, 팁). RH56F1 4지는 2마디라 (_1, _2, _tip), 엄지는 원위 2마디가
-    # 종속이라 (_3, _4, _tip).
+    # ---- 접촉 링크 ----
+    # 규약: (중간, 원위, 팁) — RH56F1 은 (중간, 센서) 2개(09.15, 사용자 결정 "sensor 링크는 실제 힘측정 부위").
+    # 벤더 STL 의 `_2`·`_force_sensor`·`_tip`(엄지 thumb_4·sensor·tip)은 같은 입체라 자산이 collider 를 `_sensor`
+    # 에만 둔다(urdf generate_rl_urdf.COLLISION_DROP_LINKS) → 원위=팁=센서. `_tip` 은 위치(fingertip_bodies)로만 쓴다.
     finger_sensor_bodies={
-        "thumb": ("r_hl_thumb_3", "r_hl_thumb_4", "r_hl_thumb_tip"),
-        **{f: (f"r_hl_{f}_1", f"r_hl_{f}_2", f"r_hl_{f}_tip") for f in _RH_FLEX},
+        "thumb": ("r_hl_thumb_3", "r_hl_thumb_sensor"),
+        **{f: (f"r_hl_{f}_1", f"r_hl_{f}_sensor") for f in _RH_FLEX},
     },
     contact_group_a=("thumb",),
     contact_group_b=_RH_FLEX,
@@ -917,19 +918,21 @@ RH56F1_RIGHT = RobotProfile(
     actuator_specs={
         **_vg.arm_actuators("right_arm", "r"),
         **_vg.arm_actuators("left_arm", "l"),         # 유휴측도 벤더 게인(같은 로봇이다)
-        # ★★손 게인 5.0/2.0 — 벤더 PD 가 **없다**(`vendor_gains.NO_VENDOR_PD["rh56f1_hand"]`:
-        #   RS-485 위치 서보라 PD 개념이 없다). 자산 USD 는 fallback 100/1 이지만
-        #   이 관절들의 effort 는 1 N·m 라 kp 100 이면 오차 0.01 rad 에서 포화해
-        #   사실상 정토크원이 된다 — 접촉이 들어오면 관절이 역구동돼 한계 밖으로 밀린다
-        #   (09.02 실측 hand_joint_err_max 1.94 rad > 가동범위 1.53 rad → 씬 발산).
-        #   kp 5 면 0.2 rad 에서 effort 에 닿아 선형 구간이 남는다. 파지력은 effort 가
-        #   정하므로 줄지 않는다.
+        # ★★손 게인 30/0.3 (09.15 사용자 결정 "30/0.3 으로 통일") — 벤더 PD 가 **없다**
+        #   (`vendor_gains.NO_VENDOR_PD["rh56f1_hand"]`: 위치 서보 전동실린더, 속도·힘 임계·전류 보호만).
+        #   자산 USD 와 같은 값(urdf build_usd.RH56F1_HAND_DRIVE_GAINS). 근거는 벤더 사양이다:
+        #   4지 >10 N·엄지 >15 N·속도 2000 = 전 범위 1 s·고강성 링크(10 kg 파지).
+        #   vision-3090 자기충돌 OFF 스윕(probe_rh56f1_finger_sweep.py):
+        #   - 30/0.3: 추종 오차 0.010 rad, 다른 관절 1.4 mrad.
+        #   - 옛 5/2: 0.51 rad 지연(thumb_1 0.75), 엄지 중력 처짐 7 mrad. 손끝 10 N 에서 약 0.18 rad 휜다(30 이면 0.03).
+        #   ⚠09.02 kp 100 은 effort 1 N·m 에서 오차 0.01 rad 에 포화해 접촉 역구동으로 발산했다
+        #   → 30 은 부팅·파지 프로브(mimic 폭주 0)로 확인한다.
         "right_hand_drive": dict(
             joint_names_expr=["r_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)"],
-            stiffness=5.0, damping=2.0),
+            stiffness=30.0, damping=0.3),
         "left_hand_drive": dict(
             joint_names_expr=["l_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)"],
-            stiffness=5.0, damping=2.0),
+            stiffness=30.0, damping=0.3),
         # ★★종속 12 = **0/0**. 이 관절들은 USD 에 DriveAPI 가 없고 PhysX mimic 제약이
         #   위치를 정한다. 액추에이터를 두는 이유는 IsaacLab 이 전 관절 커버리지를
         #   요구하기 때문이고(articulation.py:1769), 게인을 0 으로 두는 이유는 드라이브가

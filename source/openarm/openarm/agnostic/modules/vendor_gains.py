@@ -301,7 +301,9 @@ NO_VENDOR_PD = {
     "rh56f1_hand": (
         "Inspire RH56F1 은 RS-485 위치 서보다. 벤더 스택(vendor/inspire_ws)이 여는 레지스터는 "
         "angleSet/speedSet/forceSet/defaultSpeedSet/defaultForceSet 뿐이고 PD 게인이라는 개념이 "
-        "없다. 자산 USD 는 fallback 100.0/1.0, sim 액추에이터는 트랙별 값을 그대로 쓴다."),
+        "없다(위치 서보 전동실린더 — 속도·힘 임계·전류 보호만). sim 손 드라이브는 벤더 사양(4지 >10 N·엄지 >15 N·"
+        "속도 2000 = 전 범위 1 s)에서 고른 30/0.3 을 자산 USD(urdf build_usd.RH56F1_HAND_DRIVE_GAINS)와 "
+        "robot_profiles.RH56F1_RIGHT 가 같이 쓴다(09.15)."),
     "stock_gripper_jaw": (
         "스톡 2지 그리퍼의 벤더값 GRIPPER_KP 5.0 / GRIPPER_KD 0.1(openarm_real "
         "v10_simple_hardware.hpp)은 **모터축 회전 게인**[N·m/rad]인데 URDF 조는 직동[m]이다. "

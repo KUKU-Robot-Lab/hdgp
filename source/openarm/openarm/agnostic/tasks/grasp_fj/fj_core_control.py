@@ -559,11 +559,12 @@ class FJControlMixin:
 
         `finger_sensor_bodies` 규약: 마지막 원소 = 팁, 그 앞이 (중간, 원위) 순.
         body 가 하나뿐인 손가락은 그 접촉 자체가 감쌈이다(mid=dist=그 body).
+        RH56F1 은 (중간, 센서) 2개다(09.15) — 손끝 마디 collider 가 `_sensor` 하나라 원위=팁=센서.
         """
         mids, dists, tips = [], [], []
         for finger in self._finger_names:
             sensors = self._finger_sensors[finger]
-            mid_i, dist_i = (0, 1) if len(sensors) >= 3 else (0, 0)
+            mid_i, dist_i = (0, 1) if len(sensors) >= 2 else (0, 0)
             mids.append(mag(sensors[mid_i]))
             dists.append(mag(sensors[dist_i]))
             tips.append(mag(sensors[-1]))
