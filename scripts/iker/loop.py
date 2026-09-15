@@ -47,7 +47,7 @@ VIDEO_DIR = ROOT.parent / "our_source"
 STOP_TIMEOUT_S, PID_WAIT_S = 300.0, 120.0
 SESSION_URL = "https://claude.ai/code/session_01Hqg9n53yi9x4qtfFzXRMi4"
 COMMIT_ACTIONS = (
-    "record_gate", "advance", "launch_t2r", "end_round", "commit_bank", "commit_interaction", "record_eval", "store_video", "pause",
+    "advance", "launch_t2r", "end_round", "commit_bank", "commit_interaction", "record_eval", "store_video", "pause",
     "approve", "resume",
 )
 OBSERVE_FILES = ("prompt.md", "response.md", "generator.json", "requery.json", "snapshot.png", "snapshot_raw.png", "keypoints.json",

@@ -31,12 +31,12 @@
    - `commit_bank` 뒤: `PYTHONPATH=source/openarm python3 -m pytest source/openarm/openarm/agnostic/tasks/iker_shoe/tests/test_grasp_bank_file.py -q -p no:cacheprovider`
      결과를 보고에 적는다. 실패해도 루프는 코드를 고치지 않는다 — 사용자에게 알린다.
    - `completion_review` 의 pause: `stage_01/video.txt` 의 영상 경로를 사용자에게 준다.
-6. 사람의 말이 있을 때만: `act approve`(영상 확인 뒤 완수 승인), `act resume [--policy '{"gate_epoch": 300}']`.
+6. 사람의 말이 있을 때만: `act approve`(영상 확인 뒤 완수 승인), `act resume [--policy '{"t2r_max_rounds": 8}']`.
    정책 변경은 `resume --policy` 로만 한다(LOOP_STATE.json 손편집 금지). `resume` 은 죽어서 crash 로 읽히는 런 기록을
    `cleared` 로 표시해(그 phase 가 그 단계를 처음부터 다시 띄운다) 생성기 요청 횟수도 비운다.
 
 금지: `pkill`·`killall`(종료는 loop.py 가 RUN_LABEL 로 찾은 PID 로만 한다) · 코드·보상·env 수정 · `git add -A`·push ·
-다른 트랙(t2r·pour_fabric)의 런·GPU·크론 접촉.
+다른 트랙(pour_fabric·grasp_fj_t2r)의 런·GPU·크론 접촉. 루프 밖에서 사용자가 띄운 런(예: iker_grasp_c00_r8_a_ext)도 건드리지 않는다.
 
 크론: 세션 CronCreate `7,37 * * * *`, 프롬프트 "IKER 자동 루프 틱: ~/rl_ws/hdgp-iker/scripts/iker/LOOP_PROMPT.md 절차대로 한 틱을
 수행한다 (track iker_shoe_c00_t2r)". 세션이 끝나면 루프도 멈춘다. 다음 세션은 `status` 로 이어가고, 커밋 트레일러는
