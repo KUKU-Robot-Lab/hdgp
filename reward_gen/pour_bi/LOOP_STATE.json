@@ -1,7 +1,7 @@
 {
- "iter": 5,
- "label": "t2r_i05",
- "round": 6,
+ "iter": 6,
+ "label": "t2r_i06",
+ "round": 7,
  "best": {
   "iter": 5,
   "label": "t2r_i05",
@@ -18,55 +18,19 @@
   "time": 1789464906.1567261,
   "note": "라운드3 env(DR·ADR·지각노이즈·충돌신호)에서 달성, 영상 게이트 ep800 pass"
  },
- "started": 1789388399.1182153,
- "success_ticks": 2,
+ "started": 1789473766.9440324,
+ "success_ticks": 0,
  "restart": "09.13 nesting hacking 수정 후 같은 iter_00 보상으로 재학습",
  "prev": {
-  "iter": 4,
-  "label": "t2r_i04",
-  "epoch": 526,
-  "episode_success": 0.0004,
-  "src_closure": 0.4,
-  "src_tilt_deg": 47.3,
-  "rcv_hand_foreign": 0.023,
-  "note": "오른손 인벨롭 형성(영상 our_source/pour_t2r_i04_ep500_right_0914_2112.mp4)·안전 지표 해결, 붓기 47° 정체"
+  "iter": 5,
+  "label": "t2r_i05",
+  "epoch": 2950,
+  "episode_success": 0.81,
+  "note": "수렴 후 사용자 판단 종료 · 영상/궤적: 오른손 굴림·팔 회전 액션 교대·리시버 46° → 라운드 7 env 수정"
  },
  "round3_note": "env 변경(hand_qd 제거·지각 지연/노이즈·물리 DR+ADR·충돌 신호) 후 iter_02 (notes_round3.md)",
  "round4_note": "iter_03: pouring-lip 기하 aim/tilt 재정의 (notes_round4.md)",
- "success_tick_log": [
-  {
-   "epoch": 810,
-   "hours": 6.25,
-   "episode_success_last50": 0.6584,
-   "recent10": 0.6771,
-   "max": 0.6877,
-   "in_target": 0.6323,
-   "spill": 0.0471,
-   "nested": 0.0,
-   "cup_coll": 0.0063,
-   "src_foreign": 0.0205,
-   "rcv_foreign": 0.0136,
-   "src_closure": 0.3943,
-   "adr": 0.186,
-   "time": 1789410914.8531106
-  },
-  {
-   "epoch": 1194,
-   "hours": 9.25,
-   "episode_success_last50": 0.7519,
-   "recent10": 0.7514,
-   "max": 0.7666,
-   "in_target": 0.7305,
-   "spill": 0.0374,
-   "nested": 0.0,
-   "cup_coll": 0.0079,
-   "src_foreign": 0.0212,
-   "rcv_foreign": 0.0222,
-   "src_closure": 0.3875,
-   "adr": 0.458,
-   "time": 1789421707.536861
-  }
- ],
+ "success_tick_log": [],
  "round5_note": "iter_04: wrap 품질·손 이물 게이트·중앙선 벌점 (notes_round5.md)",
  "round6_note": "iter_05: tilt 방향·붓기 자세 보너스·closure 램프 정정 (notes_round6.md)",
  "video_check": {
@@ -165,5 +129,7 @@
   "cron_deleted": "31e22bfe",
   "reason": "성공률·총보상 평탄(수렴) + 손 유효 액션 노이즈 증가(null 22/42 차원) — 수정 후 재학습",
   "next": "영상 추출(ADR 최대) → null 액션 차원 등 수정 → 재학습"
- }
+ },
+ "round7_note": "env: grip3(액션 18)·palm EMA 0.25·리시버 ≤20° 성공 조건(ccb09a6d) · 보상 iter_06(4858b307) · 처음부터 학습",
+ "cron": "6cda6bd5 (3h, :17)"
 }

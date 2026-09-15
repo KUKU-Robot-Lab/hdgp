@@ -1,0 +1,14 @@
+{
+ "label": "t2r_i06",
+ "num_envs": 4096,
+ "started": 1789473766.9440324,
+ "commit": "4858b307",
+ "gpu": 1,
+ "server_pids": [
+  873357,
+  873364
+ ],
+ "prev_label": "t2r_i05",
+ "fresh": true,
+ "env_changes": "hand_action_mode=grip3(action 18) · palm_action_ema_alpha=0.25 · success_rcv_tilt_max_deg=20 (ccb09a6d)"
+}
