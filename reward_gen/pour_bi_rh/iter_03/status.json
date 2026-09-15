@@ -1,0 +1,363 @@
+{
+ "label": "t2r_rh_i03_a2",
+ "verdict": "continue",
+ "epoch": 54,
+ "alive": true,
+ "pids": [
+  1414015,
+  1414022,
+  1414027
+ ],
+ "hours": 0.28,
+ "mirror": "/home/user/rl_ws/hdgp/log/pour_fabric_mimic/mirror/t2r_rh_i03_a2",
+ "metrics": {
+  "done/mimic_runaway": {
+   "n": 54,
+   "last": 0.0001,
+   "max": 0.0059,
+   "first": 0.001
+  },
+  "done/mimic_err_runaway": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/approach_src": {
+   "n": 54,
+   "last": 0.399,
+   "max": 0.4797,
+   "first": 0.479
+  },
+  "reward/approach_rcv": {
+   "n": 54,
+   "last": 0.3936,
+   "max": 0.4518,
+   "first": 0.4518
+  },
+  "reward/orient_src": {
+   "n": 54,
+   "last": 0.141,
+   "max": 0.1628,
+   "first": 0.1355
+  },
+  "reward/orient_rcv": {
+   "n": 54,
+   "last": 0.1371,
+   "max": 0.1572,
+   "first": 0.1387
+  },
+  "reward/tips_src": {
+   "n": 54,
+   "last": 0.0436,
+   "max": 0.0548,
+   "first": 0.0519
+  },
+  "reward/tips_rcv": {
+   "n": 54,
+   "last": 0.0433,
+   "max": 0.0538,
+   "first": 0.0504
+  },
+  "reward/close_src": {
+   "n": 54,
+   "last": 0.017,
+   "max": 0.0317,
+   "first": 0.0081
+  },
+  "reward/close_rcv": {
+   "n": 54,
+   "last": 0.0187,
+   "max": 0.0375,
+   "first": 0.0074
+  },
+  "reward/contact_src": {
+   "n": 54,
+   "last": 0.0006,
+   "max": 0.0081,
+   "first": 0.0073
+  },
+  "reward/contact_rcv": {
+   "n": 54,
+   "last": 0.0005,
+   "max": 0.0058,
+   "first": 0.0054
+  },
+  "reward/grasp_src": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/grasp_rcv": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/grasp_both": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/curl_far_pen": {
+   "n": 54,
+   "last": -0.1759,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/rim_hook_pen": {
+   "n": 54,
+   "last": -0.0386,
+   "max": -0.0024,
+   "first": -0.1806
+  },
+  "reward/lift_src": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/lift_rcv": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/align": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/tilt": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/pour_delta": {
+   "n": 54,
+   "last": 0.0002,
+   "max": 0.0098,
+   "first": 0.0
+  },
+  "reward/spill_delta": {
+   "n": 54,
+   "last": -0.0002,
+   "max": 0.0049,
+   "first": 0.0
+  },
+  "reward/success": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/pre_tilt_pen": {
+   "n": 54,
+   "last": -0.0016,
+   "max": 0.0,
+   "first": -0.0098
+  },
+  "reward/rcv_upright_pen": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/knock_pen": {
+   "n": 54,
+   "last": -0.0041,
+   "max": 0.0,
+   "first": -0.0351
+  },
+  "reward/cup_push_pen": {
+   "n": 54,
+   "last": -0.0065,
+   "max": 0.0,
+   "first": -0.0378
+  },
+  "reward/drop_pen": {
+   "n": 54,
+   "last": -0.0004,
+   "max": 0.0,
+   "first": -0.0057
+  },
+  "reward/cup_speed_pen": {
+   "n": 54,
+   "last": -0.0005,
+   "max": 0.0,
+   "first": -0.0079
+  },
+  "reward/nested_pen": {
+   "n": 54,
+   "last": -0.003,
+   "max": 0.0,
+   "first": -0.002
+  },
+  "reward/cup_collision_pen": {
+   "n": 54,
+   "last": -0.0002,
+   "max": 0.0,
+   "first": -0.0001
+  },
+  "reward/hand_foreign_pen": {
+   "n": 54,
+   "last": -0.0022,
+   "max": 0.0,
+   "first": -0.0142
+  },
+  "reward/palm_push_pen": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/action_rate_pen": {
+   "n": 54,
+   "last": -0.0495,
+   "max": -0.0481,
+   "first": -0.0515
+  },
+  "reward/arm_speed_pen": {
+   "n": 54,
+   "last": -0.0435,
+   "max": -0.0366,
+   "first": -0.0573
+  },
+  "reward/total": {
+   "n": 54,
+   "last": 0.8103,
+   "max": 0.9433,
+   "first": 0.8829
+  },
+  "task/success_now": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "task/episode_success": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "task/src_grasped": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "task/rcv_grasped": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "task/src_cup_lift": {
+   "n": 54,
+   "last": 0.0002,
+   "max": 0.0104,
+   "first": 0.0007
+  },
+  "task/rcv_cup_lift": {
+   "n": 54,
+   "last": 0.0034,
+   "max": 0.0669,
+   "first": 0.0018
+  },
+  "task/src_tilt_deg": {
+   "n": 54,
+   "last": 0.4753,
+   "max": 4.6984,
+   "first": 3.3341
+  },
+  "task/aim_dist": {
+   "n": 54,
+   "last": 0.3298,
+   "max": 0.5566,
+   "first": 0.3175
+  },
+  "task/cups_center_dist": {
+   "n": 54,
+   "last": 0.33,
+   "max": 0.5585,
+   "first": 0.3201
+  },
+  "task/nested_rate": {
+   "n": 54,
+   "last": 0.0015,
+   "max": 0.0098,
+   "first": 0.001
+  },
+  "task/cup_collision_rate": {
+   "n": 54,
+   "last": 0.0004,
+   "max": 0.0039,
+   "first": 0.0
+  },
+  "task/src_hand_foreign_rate": {
+   "n": 54,
+   "last": 0.0008,
+   "max": 0.0049,
+   "first": 0.0049
+  },
+  "task/rcv_hand_foreign_rate": {
+   "n": 54,
+   "last": 0.0006,
+   "max": 0.0059,
+   "first": 0.0039
+  },
+  "ctrl/mimic_err_max": {
+   "n": 54,
+   "last": 0.4278,
+   "max": 2.1967,
+   "first": 2.1511
+  },
+  "ctrl/hand_dep_qd_max": {
+   "n": 54,
+   "last": 43.7828,
+   "max": 682.2487,
+   "first": 117.4318
+  },
+  "adr/progress": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "dr/wrench_force_scale": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "bead/in_target": {
+   "n": 54,
+   "last": 0.0,
+   "max": 0.0001,
+   "first": 0.0
+  },
+  "bead/spill": {
+   "n": 54,
+   "last": 0.0002,
+   "max": 0.0015,
+   "first": 0.0002
+  },
+  "done/drop": {
+   "n": 54,
+   "last": 0.0005,
+   "max": 0.0107,
+   "first": 0.001
+  }
+ },
+ "policy": {
+  "ROUND_EPOCHS": 600,
+  "ROUND_HOURS": 8.0,
+  "KEEP_SUCCESS": 0.3,
+  "MAX_ROUNDS": 8
+ }
+}

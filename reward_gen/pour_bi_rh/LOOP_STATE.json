@@ -18,7 +18,20 @@
  "round3_end": "09.15 advance 판정(epoch 674, 3.69 h) — 사용자 지시 'epoch 600 까지 진행되면 영상추출'. 학습 PID 487734 종료, 영상 체크포인트 ep_600. 정체: 파지 0, 접촉 보상 ≤0.011, reward/total 0.56→0.62(epoch 320→670)",
  "decisions_round3": "09.15 사용자 영상 평가 '손을 돌려서 다가가고 손이 펴지지 않아 컵 앞에서 멈춤' 반영 후 '진행' — notes_round3(iter_05 참고 사실·사용자 판단 포함) 승인, iter_03 생성 시작",
  "palm_axes_fix_0915": "env palm_axes = [열2 법선, 열1] (5ce10644). vision-3090 프로브: ctx==열2 오차 0, 손 닫을 때 손끝 +25.6/+25.8 mm(열2) vs ±2.4 mm(옛 열0) — 양손 확인 후 iter_03 기동",
- "round_extension": {
+ "round4_end": "09.15 epoch 836(5.03 h) — 사용자 조건부 결정 충족(오른손 파지 19.5→28.0% 상승 · 들기 0.13 cm · lift_src 0.017 · 왼손 palm↔컵 17.3 cm · 접촉 0 N · 파지 0) → advance. 학습 PID 687083 종료, 영상 체크포인트 ep_800",
+ "notes_draft": "reward_gen/pour_bi_rh/notes_round4.md",
+ "loop_stopped_0915": "09.15 사용자: 't2r 은 학습 종료. 보상함수 변경 전에 urdf 및 usd 세팅 변경 후 진행' — cron 틱 중지. 재개 조건: RH56F1 자산 재생성(전 링크 convex hull·자기충돌 ON 에서도 링크 간 충돌 0·손가락 액추에이터 설정 정정) 후. notes_round4 는 승인 전 초안(자산 변경 사실을 반영해 재작성 필요).",
+ "restart_0915_asset_v2": {
+  "decided": "09.15 사용자 't2r 재시작: 새 자산과 obs 로 학습을 처음부터 시작' · '자기충돌은 끄고 진행' · 손 게인 '30/0.3 으로 통일' · 보상 'iter_03 보상으로 재학습'",
+  "changes": "자산 hdgp 0e5ea6e7(손끝 collider _sensor 단일·palm_1/2·body_link decomposition·필터 46) · 손 게인 5/2→30/0.3 + 접촉 링크 (_1,_sensor) cb1fd8fe · 촉각 obs 는 _sensor net force",
+  "prev_label": "t2r_rh_i03 (라운드 4 advance, 기록 iter_03/*_t2r_rh_i03.json · notes_round4 는 미승인 초안으로 보류)",
+  "label": "t2r_rh_i03_a2",
+  "iter": "reward_gen/pour_bi_rh/iter_03",
+  "started": "22:35:06 (vision-3090, commit f7431e64)"
+ },
+ "prev_label": "t2r_rh_i03",
+ "loop_resumed_0915": "22:40 cron fbf66aa0 (13,43 * * * *, 세션 한정·7일 만료) — 재개 조건 충족: 자산 2판 자기충돌 ON 스윕 손 링크 접촉 0 (urdf 4a69859·hdgp 0e5ea6e7), 손 게인 30/0.3(cb1fd8fe), 게이트 PASS, t2r_rh_i03_a2 epoch 9 정상",
+ "round_extension_t2r_rh_i03": {
   "decided": "09.15 사용자 '라운드 연장' — epoch 597 에서 오른손 파지 1.2%→7.9%(epoch 520→590) 상승 중",
   "round_epochs": 1200,
   "round_hours": 10,
@@ -32,18 +45,5 @@
    "action": "조건 모두 참이면 advance 절차: 학습 PID 종료(명령줄 iter_03 확인, SIGTERM 후 남으면 kill -9) → 최신 체크포인트 play 영상(PYTHONUNBUFFERED 불필요, play.py) → our_source 시트·양손 확대 → notes_round4 초안 → 사용자 승인 후 advance/iter_04 생성",
    "else": "조건 하나라도 거짓이면 continue(extended) 요약"
   }
- },
- "round4_end": "09.15 epoch 836(5.03 h) — 사용자 조건부 결정 충족(오른손 파지 19.5→28.0% 상승 · 들기 0.13 cm · lift_src 0.017 · 왼손 palm↔컵 17.3 cm · 접촉 0 N · 파지 0) → advance. 학습 PID 687083 종료, 영상 체크포인트 ep_800",
- "notes_draft": "reward_gen/pour_bi_rh/notes_round4.md",
- "loop_stopped_0915": "09.15 사용자: 't2r 은 학습 종료. 보상함수 변경 전에 urdf 및 usd 세팅 변경 후 진행' — cron 틱 중지. 재개 조건: RH56F1 자산 재생성(전 링크 convex hull·자기충돌 ON 에서도 링크 간 충돌 0·손가락 액추에이터 설정 정정) 후. notes_round4 는 승인 전 초안(자산 변경 사실을 반영해 재작성 필요).",
- "restart_0915_asset_v2": {
-  "decided": "09.15 사용자 't2r 재시작: 새 자산과 obs 로 학습을 처음부터 시작' · '자기충돌은 끄고 진행' · 손 게인 '30/0.3 으로 통일' · 보상 'iter_03 보상으로 재학습'",
-  "changes": "자산 hdgp 0e5ea6e7(손끝 collider _sensor 단일·palm_1/2·body_link decomposition·필터 46) · 손 게인 5/2→30/0.3 + 접촉 링크 (_1,_sensor) cb1fd8fe · 촉각 obs 는 _sensor net force",
-  "prev_label": "t2r_rh_i03 (라운드 4 advance, 기록 iter_03/*_t2r_rh_i03.json · notes_round4 는 미승인 초안으로 보류)",
-  "label": "t2r_rh_i03_a2",
-  "iter": "reward_gen/pour_bi_rh/iter_03",
-  "started": "22:35:06 (vision-3090, commit f7431e64)"
- },
- "prev_label": "t2r_rh_i03",
- "loop_resumed_0915": "22:40 cron fbf66aa0 (13,43 * * * *, 세션 한정·7일 만료) — 재개 조건 충족: 자산 2판 자기충돌 ON 스윕 손 링크 접촉 0 (urdf 4a69859·hdgp 0e5ea6e7), 손 게인 30/0.3(cb1fd8fe), 게이트 PASS, t2r_rh_i03_a2 epoch 9 정상"
+ }
 }
