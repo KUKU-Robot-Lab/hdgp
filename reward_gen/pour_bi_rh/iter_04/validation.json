@@ -1,0 +1,190 @@
+{
+ "ok": true,
+ "errors": [],
+ "warnings": [],
+ "term_stats": {
+  "approach_src": {
+   "mean": 0.14345692594846088,
+   "abs_max": 1.4979321956634521
+  },
+  "approach_rcv": {
+   "mean": 0.1504907434185346,
+   "abs_max": 1.4979321956634521
+  },
+  "orient_src": {
+   "mean": 0.015651249947647255,
+   "abs_max": 0.1327214241027832
+  },
+  "orient_rcv": {
+   "mean": 0.01613634421179692,
+   "abs_max": 0.11380942165851593
+  },
+  "tips_src": {
+   "mean": 0.030515444154540695,
+   "abs_max": 0.1789398193359375
+  },
+  "tips_rcv": {
+   "mean": 0.03414378687739372,
+   "abs_max": 0.2880092263221741
+  },
+  "close_src": {
+   "mean": 9.604591832612641e-05,
+   "abs_max": 0.00548526318743825
+  },
+  "close_rcv": {
+   "mean": 0.0008683203941473039,
+   "abs_max": 0.15064960718154907
+  },
+  "contact_src": {
+   "mean": 0.8825091322263081,
+   "abs_max": 1.5
+  },
+  "contact_rcv": {
+   "mean": 1.0025449991226196,
+   "abs_max": 1.5
+  },
+  "grasp_src": {
+   "mean": 0.3422779440879822,
+   "abs_max": 1.999345064163208
+  },
+  "grasp_rcv": {
+   "mean": 0.3532990515232086,
+   "abs_max": 1.9723305702209473
+  },
+  "grasp_both": {
+   "mean": 0.029367449382940933,
+   "abs_max": 0.8256217837333679
+  },
+  "curl_far_pen": {
+   "mean": -0.27758633097012836,
+   "abs_max": 0.5997603535652161
+  },
+  "rim_hook_pen": {
+   "mean": -0.01230546785518527,
+   "abs_max": 0.5
+  },
+  "lift_src": {
+   "mean": 0.4896324574947357,
+   "abs_max": 2.9414820671081543
+  },
+  "lift_rcv": {
+   "mean": 0.7566471497217815,
+   "abs_max": 2.9709463119506836
+  },
+  "align": {
+   "mean": 0.00941033823376832,
+   "abs_max": 1.0484830141067505
+  },
+  "tilt": {
+   "mean": 0.00010659918410927764,
+   "abs_max": 0.017968181520700455
+  },
+  "pour_delta": {
+   "mean": -0.8098706901073456,
+   "abs_max": 19.874704360961914
+  },
+  "spill_delta": {
+   "mean": -0.32364649077256524,
+   "abs_max": 9.831416130065918
+  },
+  "success": {
+   "mean": 1.640625,
+   "abs_max": 15.0
+  },
+  "pre_tilt_pen": {
+   "mean": -0.6203231811523438,
+   "abs_max": 0.9995771646499634
+  },
+  "rcv_upright_pen": {
+   "mean": -0.6634717782338461,
+   "abs_max": 0.9999999403953552
+  },
+  "knock_pen": {
+   "mean": -0.20259366432825723,
+   "abs_max": 0.5999895930290222
+  },
+  "cup_push_pen": {
+   "mean": -0.14247862994670868,
+   "abs_max": 0.4000000059604645
+  },
+  "drop_pen": {
+   "mean": -0.10989459852377573,
+   "abs_max": 1.181555986404419
+  },
+  "cup_speed_pen": {
+   "mean": -0.3153514266014099,
+   "abs_max": 0.39535316824913025
+  },
+  "nested_pen": {
+   "mean": -0.28125,
+   "abs_max": 2.0
+  },
+  "cup_collision_pen": {
+   "mean": -0.44164048631985986,
+   "abs_max": 0.7590588331222534
+  },
+  "hand_foreign_pen": {
+   "mean": -1.8221165736516318,
+   "abs_max": 2.8644065856933594
+  },
+  "palm_push_pen": {
+   "mean": -0.41951720913251245,
+   "abs_max": 0.7180302739143372
+  },
+  "action_rate_pen": {
+   "mean": -0.033446816106637314,
+   "abs_max": 0.054496508091688156
+  },
+  "arm_speed_pen": {
+   "mean": -0.03172816832860311,
+   "abs_max": 0.048922330141067505
+  }
+ },
+ "total_stats": {
+  "mean": -0.6094420353571575,
+  "abs_max": 38.354286193847656
+ },
+ "fields_used": [
+  "actions",
+  "bead_in_source_frac",
+  "cup_bottom_z",
+  "cup_cup_force",
+  "cup_mouth_z",
+  "cup_radius",
+  "cups_nested",
+  "d_in_target",
+  "d_spill",
+  "prev_actions",
+  "rcv_arm_qd",
+  "rcv_cup_lin_vel",
+  "rcv_cup_mouth_pos",
+  "rcv_cup_pos",
+  "rcv_cup_spawn_pos",
+  "rcv_cup_tilt",
+  "rcv_cup_up",
+  "rcv_finger_force",
+  "rcv_grasped",
+  "rcv_hand_closure",
+  "rcv_hand_foreign_force",
+  "rcv_palm_axes",
+  "rcv_palm_force",
+  "rcv_palm_pos",
+  "rcv_tips_pos",
+  "src_arm_qd",
+  "src_cup_lin_vel",
+  "src_cup_mouth_pos",
+  "src_cup_pos",
+  "src_cup_spawn_pos",
+  "src_cup_tilt",
+  "src_cup_up",
+  "src_finger_force",
+  "src_grasped",
+  "src_hand_closure",
+  "src_hand_foreign_force",
+  "src_palm_axes",
+  "src_palm_force",
+  "src_palm_pos",
+  "src_tips_pos",
+  "success"
+ ]
+}
