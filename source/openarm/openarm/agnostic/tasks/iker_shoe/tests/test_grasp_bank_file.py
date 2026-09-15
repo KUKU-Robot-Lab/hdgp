@@ -12,6 +12,14 @@ from openarm.agnostic.modules.iker import run_files
 from openarm.agnostic.tasks.iker_shoe import grasp_bank as gb
 from openarm.agnostic.tasks.iker_shoe import layout
 
+BANK_PATH = layout.RUNS_DIR / "config_00" / "grasp_bank.json"
+
+
+def _read_bank() -> dict:
+    if not BANK_PATH.is_file():
+        pytest.skip(f"{BANK_PATH} does not exist yet — the auto loop harvests it (auto-loop spec §13)")
+    return run_files.read_json(BANK_PATH)
+
 
 def _hand_joint_limits(urdf_path: Path, names: Sequence[str]) -> tuple[torch.Tensor, torch.Tensor]:
     root = ET.parse(urdf_path).getroot()
@@ -43,7 +51,7 @@ def _skip_if_bank_is_for_the_other_arm(doc, profile) -> None:
 
 
 def test_bank_entries_have_no_finger_at_an_opposite_or_beyond_limit():
-    doc = run_files.read_json(layout.RUNS_DIR / "config_00" / "grasp_bank.json")
+    doc = _read_bank()
     profile = robot_profiles.PROFILES[layout.PROFILE_NAME]
     _skip_if_bank_is_for_the_other_arm(doc, profile)
 
@@ -83,6 +91,6 @@ def test_bank_entries_have_no_finger_at_an_opposite_or_beyond_limit():
 
 
 def test_bank_was_built_for_the_selected_robot():
-    doc = run_files.read_json(layout.RUNS_DIR / "config_00" / "grasp_bank.json")
+    doc = _read_bank()
     profile = robot_profiles.PROFILES[layout.PROFILE_NAME]
     assert doc["metadata"]["robot_usd"] == str(profile.usd_relpath)
