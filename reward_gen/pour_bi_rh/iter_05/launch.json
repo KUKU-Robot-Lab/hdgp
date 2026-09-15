@@ -1,0 +1,8 @@
+{
+ "label": "t2r_rh_i05",
+ "num_envs": 1024,
+ "started": 1789512834,
+ "commit": "9790eb76",
+ "host": "vision-3090",
+ "note": "notes_round6 반영 iter_05 — pinch_geo·명령 squeeze·air_pinch_pen·양측 힘 pinch_force·파지 3.0·들기 4.0"
+}
