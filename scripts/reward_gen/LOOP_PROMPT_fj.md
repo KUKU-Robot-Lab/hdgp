@@ -22,6 +22,8 @@
 
 1. `python3 scripts/reward_gen/t2r_fj_round.py status --track <track> --label <label> --iter reward_gen/<track>/iter_NN` → verdict.
 2. `LOOP_STATE.awaiting` 이 있으면(초안 작성·사용자 승인 대기) 한 줄 요약만 남기고 끝낸다. 영상·초안을 다시 만들지 않는다.
+   단 `awaiting` 이 `extend_<label>_until_eNNNN`(사용자가 보상은 그대로 두고 학습 연장을 고름 — `LOOP_STATE.extend`)이면
+   epoch < NNNN 동안은 한 줄 요약만, NNNN 이상이면 4(라운드 끝: 영상 → 기존 초안을 새 지표로 갱신 → 승인 요청, awaiting=approval_iter_NN)로 간다.
 3. verdict 별
    - `continue` / `continue(success)` / `continue(curriculum)` / `continue(stage)`: 한 줄 요약만. success_ticks 0.
      요약 = epoch · 성공 · tol · **퍼널(에피소드 비율, 200 epoch 변화): 접근 → 파지 → 인벨롭 → 리프트 → 성공** · 손바닥↔컵 간극 ·

@@ -1,0 +1,13 @@
+- The video shows the last checkpoint (epoch 1302).
+- The arm brings the hand to the cup within about 3 s with the hand open: the four fingers straight, the thumb stretched out ahead of them. The palm turns toward the cup on the way, and the hand arrives low beside the cup (on its left in the video).
+- From about 3.5 s the palm is against the side of the cup, over its lower half, and the hand wraps the cup: the thumb, index, middle and ring fingers clearly go around the cup body. The pinky does not join; it sticks out below the hand, pointing down and away from the cup. The wrap does not hold the cup firmly, which is why the cup is never lifted.
+- The hand keeps this pose until the end of the episode. The cup stays upright and in place and is not lifted. The hand does not touch the table.
+- Training metrics (the round was ended at epoch 1302 by the stuck rule on the last point: reach 0.99 at both ends of the 600-epoch window, grasp 0.014 at the last point; the mean over the last 150 epochs is 0.042):
+  - Progress over the round (means for epochs 0-250 / 400-700 / 700-1000 / 1000-1302):
+    - reach: 0.12 / 0.84 / 1.00 / 0.99 of episodes
+    - palm-centre-to-cup gap: 0.19 / 0.067 / 0.045 / 0.041 m
+    - palm touching the cup: 0.00 / 0.07 / 0.15 / 0.33 of steps (0.55 at the last point)
+    - reward per step: 0.05 / 0.24 / 0.36 / 0.43, still rising at the end
+  - Contacts per step in the last window: thumb 0.14, index 0.006, middle 0.002, ring 0.003, pinky 0.0003. Grasp (three or more fingers on the cup) peaked at 0.17 of episodes at epoch 1181 and lift at 0.08 at epoch 535; the cup was off the table in at most 0.24% of steps; no successes.
+  - Reward components in the last window (per step): reach_facing 0.16, reach_far 0.13, palm_contact 0.078 (0.12 at the last point, up from 0.014 in epochs 400-700), palm_orient 0.038, finger_curl_onto_cup 0.027 (up from 0.008), finger_open 0.024, wrap_links 0.005, wrap_fingers 0.0000, lift 0.
+  - Penalties: cup_tilt_penalty about -0.03 per step (-0.065 at the last point, largest -0.15 at epoch 752) with a mean cup tilt of 1.0-1.2 degrees; cup_push_penalty about -0.004; table_penalty -0.002 (-0.011 at the last point). Episodes ending by tipping, falling or abnormal states: 0.8% or fewer.

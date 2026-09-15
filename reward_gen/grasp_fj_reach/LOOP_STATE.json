@@ -5,7 +5,7 @@
  "label_prefix": "fj_reach_i",
  "round": 5,
  "status": "running",
- "awaiting": null,
+ "awaiting": "extend_fj_reach_i04_until_e4000",
  "best": null,
  "success_ticks": 0,
  "started": 1789424946,
@@ -29,5 +29,25 @@
    "iter_03/improvement.md"
   ],
   "note": "open hand hovers a few cm away, thumb only on the cup rim, palm sideways; finger_open (paid only away from the grasp spot, no decay) > approach; palm_contact gated to 0. video command killed locally by low memory, server play finished, video fetched and frames extracted manually"
+ },
+ "round_end": {
+  "label": "fj_reach_i04",
+  "epoch": 1302,
+  "hours": 1.81,
+  "verdict": "advance(stuck:grasp)",
+  "checked": "09-15 09:17",
+  "video": "our_source/fj_t2r_videos/fj_reach_i04_0915_0918.mp4",
+  "drafts": [
+   "iter_04/observation.md",
+   "iter_04/improvement.md"
+  ],
+  "note": "stuck fired on the last point (grasp 0.014, last-150 mean 0.042) while palm contact kept rising 0.07->0.55 and reward 0.24->0.43; video shows palm on the cup with fingers curved around the front. Option offered: extend i04 instead of generating iter_05."
+ },
+ "extend": {
+  "label": "fj_reach_i04",
+  "until_epoch": 4000,
+  "decided": "09-15 (user, after the e1302 round-end drafts)",
+  "user_read": "i04 video: every finger except the pinky clearly wraps the cup; the grip is not firm, so no lift",
+  "then": "at epoch >= 4000: round end — video -> update iter_04 observation/improvement drafts with new metrics -> approval request (awaiting approval_iter_04)"
  }
 }
