@@ -1,0 +1,14 @@
+{
+ "label": "t2r_i07",
+ "num_envs": 4096,
+ "started": 1789481845.0,
+ "commit": "1dc8e099",
+ "gpu": 1,
+ "server_pids": [
+  1051431,
+  1051438
+ ],
+ "prev_label": "t2r_i06",
+ "fresh": true,
+ "incident": "첫 기동 ssh 가 timeout(124)로 끊겨 실패로 보였으나 서버에서는 23:17:25 에 기동됨 → 재기동이 23:18:00 에 중복 기동(PID 1052687/1052694, 로그 폴더 t2r_i07-r2). 중복을 PID 로 종료하고 빈 r2 폴더 삭제. ~/logs/t2r/t2r_i07.log 앞부분은 두 기동 출력이 섞임"
+}

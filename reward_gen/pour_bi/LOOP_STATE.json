@@ -1,7 +1,7 @@
 {
- "iter": 6,
- "label": "t2r_i06",
- "round": 7,
+ "iter": 7,
+ "label": "t2r_i07",
+ "round": 8,
  "best": {
   "iter": 5,
   "label": "t2r_i05",
@@ -18,15 +18,15 @@
   "time": 1789464906.1567261,
   "note": "라운드3 env(DR·ADR·지각노이즈·충돌신호)에서 달성, 영상 게이트 ep800 pass"
  },
- "started": 1789473766.9440324,
+ "started": 1789481845.0,
  "success_ticks": 0,
  "restart": "09.13 nesting hacking 수정 후 같은 iter_00 보상으로 재학습",
  "prev": {
-  "iter": 5,
-  "label": "t2r_i05",
-  "epoch": 2950,
-  "episode_success": 0.81,
-  "note": "수렴 후 사용자 판단 종료 · 영상/궤적: 오른손 굴림·팔 회전 액션 교대·리시버 46° → 라운드 7 env 수정"
+  "iter": 6,
+  "label": "t2r_i06",
+  "epoch": 250,
+  "episode_success": 0.0,
+  "note": "사용자 지시 조기 advance(epoch 208~250): 리시버 파지 0 — 항상 켜진 upright_rcv 가 초반 접촉을 벌해 리시버 회피"
  },
  "round3_note": "env 변경(hand_qd 제거·지각 지연/노이즈·물리 DR+ADR·충돌 신호) 후 iter_02 (notes_round3.md)",
  "round4_note": "iter_03: pouring-lip 기하 aim/tilt 재정의 (notes_round4.md)",
@@ -131,5 +131,6 @@
   "next": "영상 추출(ADR 최대) → null 액션 차원 등 수정 → 재학습"
  },
  "round7_note": "env: grip3(액션 18)·palm EMA 0.25·리시버 ≤20° 성공 조건(ccb09a6d) · 보상 iter_06(4858b307) · 처음부터 학습",
- "cron": "6cda6bd5 (3h, :17)"
+ "cron": "6b037cb5 (30m, :07/:37)",
+ "round8_note": "iter_07: upright_rcv·직립 배율을 리시버 파지·들기 이후(rcv_carry)로 한정(운영자 요구, notes_round8) · env 는 라운드 7 과 동일 · 루프 상한 라운드 8"
 }

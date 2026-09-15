@@ -33,6 +33,9 @@
    - 서버: `git fetch && git reset --hard origin/main`, 이전 런은 **RUN_LABEL 로 PID 확정 후 kill**(pkill 금지),
      ★SIGTERM 후 30 s 안에 python 이 안 죽으면(09.14 i03: R 상태로 16.5 GB 유지) RUN_LABEL 재확인 후 `kill -9 <pid>`,
      GPU 메모리가 비워진 것을 보고 기동한다. 런처는 `scripts/experiments/run_pour_t2r.sh`(f6f38389 에서 루트→이동).
+     ★09.15 i07: 기동 ssh 가 timeout(124)·무출력으로 끊겨도 서버에서는 **기동됐을 수 있다**(fetch 가 늦게 끝나
+     setsid 기동까지 진행). 재기동 전에 반드시 `RUN_LABEL=<label>` 프로세스와 `log/rl_games/.../<label>*` 폴더를
+     확인한다 — 확인 없이 다시 띄우면 같은 라벨이 GPU 에 두 개 뜨고 train.sh 가 `<label>-r2` 폴더를 만든다.
      `nohup bash ~/logs/t2r/launch_t2r.sh <label> reward_gen/pour_bi/iter_(NN+1) <num_envs> > ~/logs/t2r/<label>.log 2>&1 < /dev/null &`
      **num_envs = 4096**(사용자 지시 09.13: 적은 env 는 분산이 큼 · 1024 에서 19 GB → 4096 ≈ 40 GB 예상). PhysX overflow/OOM 이면 2048 → 1024 로 후퇴.
    - 로컬: `iter_(NN+1)/launch.json` {"label","num_envs","started","commit","gpu":1} 기록, LOOP_STATE 갱신.
