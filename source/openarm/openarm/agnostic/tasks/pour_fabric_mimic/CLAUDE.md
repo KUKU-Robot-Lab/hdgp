@@ -74,6 +74,14 @@ PYTHONPATH=source/openarm python3 -m pytest source/openarm/openarm/agnostic/task
 - **t2r 재시작(사용자 결정):** 새 자산·obs·게인으로 iter_03 보상을 처음부터 학습한다. 라벨은 `t2r_rh_i03_a2` 이고, 옛 기록은 `iter_03/*_t2r_rh_i03.json` 에 있다. 자기충돌은 OFF 그대로 둔다.
 - **검증:** `probe_rh56f1_finger_sweep.py --contacts` 는 자기충돌 ON 에서 손 링크끼리 접촉이 0 이어야 한다. `--obstacle_mm`·`--contact_partners /World/obstacle` 로 외부 접촉이 `_sensor`/`palm_sensor` 에 잡히는지 본다.
 
+### 09.15 엄지 입구 걸림 접근 로그 지표 (사용자 "다음부터 지표로깅으로 확인 가능하게")
+- 이 지표는 로그 전용이다. obs 와 RewardContext 에는 넣지 않았다. 보상 코드와 무관하게 env 가 직접 계산하므로 iter 가 달라도 서로 비교할 수 있다.
+  - `task/{src,rcv}_near_rate`: palm↔컵 원점 거리가 10 cm 안인 env 비율
+  - `task/{side}_thumb_over_rim_near`: 위 env 중 엄지 끝이 입구 높이 −2 cm 이상이고 입구 위(벽+2.5 cm 안)에 있는 비율
+  - `task/{side}_thumb_above_rim_mm_near`: 같은 env 들에서 엄지 끝 높이 − 입구 높이의 평균(mm). 양수면 엄지가 입구보다 위에 있다.
+- 기하는 iter_03 `rim_hook` 과 같다. 기준값은 cfg `thumb_rim_*` 에 둔다.
+- t2r_rh_i03_a2 는 epoch 300 에서 영상을 확인한 뒤 이어 학습할 때부터 이 지표가 기록된다.
+
 ### 09.15 보상 입력 손바닥 축 정정 (사용자 결정 "env 가 계약을 지키게")
 - RewardContext 계약은 `palm_axes` 앞 3칸 = 손바닥 법선. RH56F1 `*_hl_palm_sensor` 는 URDF 상 **열 2 가 법선**(기저 +x, 엄지 기저 쪽), 열 0 = 손가락 가로(±y), 열 1 = 손가락 길이(+z) — 양손 동일(`test_rh56f1_palm_sensor_column2_is_palmar`).
 - iter_00~02 는 palm_axes 를 안 썼다. iter_03 이 처음 `normal = palm_axes[:, 0:3]` 로 방향 보상을 만들어 발견.

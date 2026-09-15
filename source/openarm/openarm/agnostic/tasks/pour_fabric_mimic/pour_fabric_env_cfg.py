@@ -324,6 +324,11 @@ class PourFabricMimicEnvCfg(DirectRLEnvCfg):
     ctx_palm_normal_col: int = 2
     ctx_palm_second_col: int = 1
     collision_force_threshold: float = 1.0    # N — 컵끼리·손↔타물체 충돌 지표 임계
+    # ---- 엄지 입구 걸림 접근 계측(로그 전용, 09.15 사용자 "지표로깅으로 확인 가능하게") --------------
+    # task/{src,rcv}_near_rate · _thumb_over_rim_near · _thumb_above_rim_mm_near. iter_03 rim_hook 과 같은 기하.
+    thumb_rim_near_m: float = 0.10            # palm↔컵 원점 거리가 이 안이면 "접근한 env"
+    thumb_rim_band_m: float = 0.02            # 엄지 끝 축방향 높이 ≥ 입구 − 이 값이면 입구 높이
+    thumb_rim_radial_margin_m: float = 0.025  # 엄지 끝 반경 < 벽(내경+4 mm) + 이 값이면 입구 위
 
     # ---- 성공 판정 (pour_v1 계승) — 보상과 분리된 **기준 지표** ----------------------
     success_fill_ratio: float = 0.50

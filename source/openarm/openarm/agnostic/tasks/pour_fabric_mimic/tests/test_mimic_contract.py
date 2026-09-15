@@ -301,3 +301,16 @@ def test_dims_from_resolve_cfg():
     assert cfg.state_space == 182 + 12 + 4 + 3 + 12 + 1 + 10 == 224
     from openarm.agnostic.tasks.pour_fabric_mimic import config as reg
     assert reg.REGISTERED == {"rh": "open-rh_b_pour_fab_mimic"}
+
+
+def test_thumb_rim_approach_is_logged_not_rewarded():
+    """09.15 사용자 "다음부터 지표로깅으로 확인 가능하게": 엄지 입구 걸림 접근을 영상 없이 본다.
+    양손 near 비율·near 중 엄지 입구 위 비율·엄지-입구 높이(mm) 를 로그로만 낸다 — obs·RewardContext 에는 넣지 않는다."""
+    for side in ("src", "rcv"):
+        for k in ("near_rate", "thumb_over_rim_near", "thumb_above_rim_mm_near"):
+            assert f'f"task/{{side}}_{k}"' in _ENV or f"task/{side}_{k}" in _ENV
+    assert _ENV.count("self._log_thumb_rim(") == 2
+    for f in ("thumb_rim_near_m", "thumb_rim_band_m", "thumb_rim_radial_margin_m"):
+        assert re.search(rf"{f}:\s*float\s*=", _CFG), f
+    ctx_block = _ENV.split("return RewardContext(")[1].split("\n        )")[0]
+    assert "thumb_rim" not in ctx_block and "thumb_over_rim" not in ctx_block

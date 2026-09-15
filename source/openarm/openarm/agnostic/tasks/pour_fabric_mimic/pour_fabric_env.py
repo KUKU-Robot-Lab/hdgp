@@ -644,6 +644,25 @@ class PourFabricMimicEnv(DirectRLEnv):
         self._log(total, terms, flags, ctx)
         return total
 
+    def _log_thumb_rim(self, side: str, palm, tips, cup_pos, cup_up) -> None:
+        """엄지 입구 걸림 접근 계측 — 보상·관측과 무관, env 가 직접 잰다(09.15 사용자 "지표로깅으로 확인 가능하게").
+
+        near = palm↔컵 원점 < `thumb_rim_near_m`. 걸림 = 엄지 끝(tips 0번)의 컵 축방향 높이 ≥ 입구 − `thumb_rim_band_m`
+        이고 반경 < 컵 벽(내경 + 4 mm) + `thumb_rim_radial_margin_m`(= 입구 위). iter_03 `rim_hook` 과 같은 기하.
+        """
+        cfg = self.cfg
+        rel = tips[:, 0, :] - cup_pos
+        axial = (rel * cup_up).sum(dim=-1)
+        radial = (rel - axial.unsqueeze(-1) * cup_up).norm(dim=-1)
+        near = (palm - cup_pos).norm(dim=-1) < float(cfg.thumb_rim_near_m)
+        hook = near & (axial >= float(cfg.cup_mouth_z) - float(cfg.thumb_rim_band_m)) \
+            & (radial < float(cfg.cup_inner_radius) + 0.004 + float(cfg.thumb_rim_radial_margin_m))
+        n_near = near.float().sum().clamp(min=1.0)
+        self.extras[f"task/{side}_near_rate"] = near.float().mean()
+        self.extras[f"task/{side}_thumb_over_rim_near"] = hook.float().sum() / n_near
+        self.extras[f"task/{side}_thumb_above_rim_mm_near"] = \
+            1000.0 * torch.where(near, axial - float(cfg.cup_mouth_z), torch.zeros_like(axial)).sum() / n_near
+
     def _log(self, total, terms, flags, ctx: RewardContext) -> None:
         cfg = self.cfg
         for k, v in terms.items():
@@ -682,6 +701,8 @@ class PourFabricMimicEnv(DirectRLEnv):
         self.extras["task/rcv_palm_to_cup"] = (ctx.rcv_palm_pos - ctx.rcv_cup_pos).norm(dim=-1).mean()
         self.extras["contact/src_max"] = ctx.src_finger_force.max(dim=1).values.mean()
         self.extras["contact/rcv_max"] = ctx.rcv_finger_force.max(dim=1).values.mean()
+        self._log_thumb_rim("src", ctx.src_palm_pos, ctx.src_tips_pos, ctx.src_cup_pos, ctx.src_cup_up)
+        self._log_thumb_rim("rcv", ctx.rcv_palm_pos, ctx.rcv_tips_pos, ctx.rcv_cup_pos, ctx.rcv_cup_up)
         self.extras["bead/in_source"] = flags.in_source_frac.mean()
         self.extras["bead/in_target"] = flags.in_target_frac.mean()
         self.extras["bead/spill"] = flags.spill_frac.mean()
