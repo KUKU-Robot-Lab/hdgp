@@ -1,0 +1,18 @@
+{
+ "track": "grasp_fj_stage",
+ "iter": 1,
+ "task": "Pick up the upright cup in three stages, strictly in this order.\nStage 1, approach: starting from the raised pose beside the table, move the hand to the cup's -y side without turning it. The hand already has the right orientation at the start: keep that orientation the whole way (ctx.palm_normal along +y, towards the cup, and ctx.palm_finger_dir along +x, as in the start pose), so the approach is a movement of the palm towards the cup, not a rotation of the hand. Keep the hand's default pose as well (ctx.hand_default_q_norm): the fingers and the thumb must not change shape and must not touch the cup during the approach. The approach is complete when the palm centre is at the cup's graspable band on the cup's -y side, with the palm facing the cup and the hand still in its start-pose orientation; the environment then sets ctx.approach_done for the rest of the episode.\nStage 2, envelope grasp: only after the approach is complete, at that position and with that hand orientation, close the hand into an envelope grasp (a power grasp): the palm against the side of the cup and all five fingers wrapped around the cup body with their inner surfaces, the thumb on the opposite side of the cup from the other four fingers. The environment sets ctx.envelope_done once the palm, the thumb and enough fingers hold the cup for several consecutive steps.\nStage 3, lift: only after the envelope grasp is formed, keep that grasp and lift the cup straight up to the goal position, then hold it there, upright and still, so that the environment keeps counting successes.\nNo stage may earn reward before the previous stage is complete, and behaviour that skips or reorders the stages must not earn reward. The cups differ in shape and size between environments. Do not knock the cup over, do not drop it, and do not push the hand into the table.",
+ "task_file": "scripts/reward_gen/tasks/grasp_fj_stage.txt",
+ "variant": "reach",
+ "created": "2026-09-15T21:42:00.079856",
+ "context": "openarm.agnostic.tasks.grasp_fj_t2r.t2r.context.RewardContext",
+ "prev_iter": "reward_gen/grasp_fj_stage/iter_00",
+ "history_iters": [
+  0
+ ],
+ "description": "reward_gen/grasp_fj_stage/iter_00/observation.md",
+ "feedback": "reward_gen/grasp_fj_stage/iter_00/improvement.md",
+ "events": [
+  "/home/user/rl_ws/hdgp/log/server_mirror/grasp-fj-t2r-reach/fj_stage_i00/summaries/events.out.tfevents.1789474523.oem-MS73-HB1-000"
+ ]
+}
