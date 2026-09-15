@@ -3,7 +3,8 @@
 Episodes start from a pre-grasp arm pose 8-12 cm above the shoe with the hand open. The policy moves the palm with a
 6-D delta pose through damped least-squares IK (as in stage 2) and commands all 20 hand joints through the grasp_fj
 full-joint law. The reward is ``grasp_stage.stage1_step``: approach and lift progress, a lift bonus and a success
-bonus scaled by the five-finger grasp quality. Success = the shoe held 5 cm above its start for 20 steps.
+bonus scaled by the five-finger grasp quality. Success = the shoe held 5-15 cm above and within 10 cm of its start, the
+thumb closing, for 20 steps (§6, §16).
 """
 
 from __future__ import annotations
@@ -80,6 +81,11 @@ class IkerShoeGraspEnv(DirectRLEnv):
         self._finger_links = torch.tensor([body_names.index(body) for body in link_names], device=dev)
         self._finger_sizes = tuple(len(prof.finger_sensor_bodies[finger]) for finger in gb.FINGERS)
         self._palmar_axis = torch.tensor(PALMAR_AXIS_LOCAL, device=dev).expand(n, 3)
+        curl = gs.role_joint_index(prof.hand_joint_names, cfg.thumb_curl_role)
+        self._thumb_curl_id = int(self._hand_ids[curl])
+        self._thumb_open = torch.tensor(float(prof.hand_open_pose[curl]), device=dev)
+        self._thumb_grip = torch.tensor(float(prof.hand_grip_pose[curl]), device=dev)
+        gs.closing_travel(self._thumb_open, self._thumb_open, self._thumb_grip)  # boot error when the role has no closing direction
 
         hard = self._robot.data.joint_pos_limits[0, self._hand_ids]
         self._hand_lo, self._hand_hi = gs.stage1_hand_limits(prof.hand_joint_names, hard[:, 0], hard[:, 1], prof.hand_action_limit_override,
@@ -121,7 +127,8 @@ class IkerShoeGraspEnv(DirectRLEnv):
         reward_cfg.validate()  # re-validate after the hydra round trip and the calibration
         self._reward_cfg = reward_cfg
         idle = gs.stage1_step(gs.Stage1State.start(1, dev), reward_cfg, **{k: torch.zeros(1, device=dev) for k in (
-            "palm_gap", "dz_free", "rel_speed", "shoe_speed", "q", "hand_floor_depth", "arm_speed_sum", "hand_speed_sum")},
+            "palm_gap", "dz_free", "shoe_shift_xy", "thumb_curl", "rel_speed", "shoe_speed", "q", "hand_floor_depth",
+            "arm_speed_sum", "hand_speed_sum")},
             palm_shoe_dist=torch.ones(1, device=dev))
         print(f"[iker_grasp] reward {reward_cfg} · idle income per step {float(idle.reward):.3f} · "
               f"calibration {calibration_path if calibration_path.is_file() else 'none'}", flush=True)
@@ -136,6 +143,7 @@ class IkerShoeGraspEnv(DirectRLEnv):
         self._hand_targets = self._hand_reset.expand(n, -1).clone()
         self._stage = gs.Stage1State.start(n, dev)
         self._start_bottom_z = torch.zeros(n, device=dev)
+        self._start_xy = torch.zeros(n, 2, device=dev)  # env-local shoe centre at the episode start (§16)
         self._q_at_latch = torch.zeros(n, device=dev)
         self._q_at_success = torch.zeros(n, device=dev)
         # q and w_f of the latest _get_dones; _reset_idx leaves them alone, so a caller can read the step that ended an episode
@@ -229,12 +237,16 @@ class IkerShoeGraspEnv(DirectRLEnv):
         hand_z = torch.cat([self._robot.data.body_pos_w[:, self._finger_links, 2], palm_pos[:, 2:3]], dim=1).min(dim=1).values
         dz_free = gs.free_lift_height(surface, self._start_bottom_z, layout.RACK_X_RANGE, layout.RACK_Y_RANGE)
         shoe_vel = self._shoe.data.root_lin_vel_w
+        shift_xy = (shoe_pos[:, :2] - self._start_xy).norm(dim=-1)
+        thumb_curl = gs.closing_travel(self._robot.data.joint_pos[:, self._thumb_curl_id], self._thumb_open, self._thumb_grip)
         step = gs.stage1_step(
             self._stage,
             self._reward_cfg,
             palm_gap=gs.nearest_distance(palm_pos[:, None, :], surface)[:, 0],
             dz_free=dz_free,
             palm_shoe_dist=(palm_pos - shoe_pos).norm(dim=-1),
+            shoe_shift_xy=shift_xy,
+            thumb_curl=thumb_curl,
             rel_speed=(shoe_vel - self._robot.data.body_lin_vel_w[:, self._palm]).norm(dim=-1),
             shoe_speed=shoe_vel.norm(dim=-1),
             q=q,
@@ -262,6 +274,8 @@ class IkerShoeGraspEnv(DirectRLEnv):
             "grasp/q": q.mean().item(),
             "grasp/palm_cos": palm_cos.mean().item(),
             "grasp/dz_free": dz_free.mean().item(),
+            "grasp/shift_xy": shift_xy.mean().item(),
+            "grasp/thumb_curl": thumb_curl.mean().item(),
             "grasp/held_frac": step.held.float().mean().item(),
             "grasp/latched_frac": step.state.latched.float().mean().item(),
             "grasp/over_rack_raised_frac": over_rack.float().mean().item(),
@@ -296,6 +310,7 @@ class IkerShoeGraspEnv(DirectRLEnv):
         self._joint_targets[env_ids] = joint_target
         self._hand_targets[env_ids] = joint_target[:, self._hand_ids]
         shoe_pose = self._capture.shoe_pose[env_ids].clone()
+        self._start_xy[env_ids] = shoe_pose[:, :2]
         self._start_bottom_z[env_ids] = self._bottom_z(shoe_pose)
         shoe_pose[:, :3] += self.scene.env_origins[env_ids]
         self._shoe.write_root_pose_to_sim(shoe_pose, env_ids=env_ids)
@@ -352,6 +367,7 @@ class IkerShoeGraspEnv(DirectRLEnv):
         zero_velocity = torch.zeros(count, 6, device=dev)
         shoe_pose = self._bank.shoe_pose[pick].clone()
         shoe_pose[:, :2] += sample_uniform(-self.cfg.start_noise_xy, self.cfg.start_noise_xy, (count, 2), dev)
+        self._start_xy[env_ids] = shoe_pose[:, :2]
         self._start_bottom_z[env_ids] = self._bottom_z(shoe_pose)
         shoe_pose[:, :3] += origins
         self._shoe.write_root_pose_to_sim(shoe_pose, env_ids=env_ids)

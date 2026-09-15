@@ -24,6 +24,8 @@ def _step(state, **overrides):
         hand_floor_depth=torch.zeros(n),
         arm_speed_sum=torch.zeros(n),
         hand_speed_sum=torch.zeros(n),
+        shoe_shift_xy=torch.zeros(n),
+        thumb_curl=torch.full((n,), 0.5),
     )
     inputs.update(overrides)
     return gs.stage1_step(state, CFG, **inputs)
@@ -213,6 +215,53 @@ def test_success_waits_for_the_shoe_to_be_slow():
         step = _step(state, **_held(1), shoe_speed=torch.tensor([0.2]))
         assert not step.success.any()
         state = step.state
+
+
+def test_a_hold_counts_only_near_the_start_below_the_lift_ceiling_with_the_thumb_closing():
+    state = gs.Stage1State.start(5)
+    inputs = {
+        **_held(5),
+        "dz_free": torch.tensor([0.14, 0.16, 0.06, 0.06, 0.06]),
+        "shoe_shift_xy": torch.tensor([0.09, 0.0, 0.11, 0.0, 0.0]),
+        "thumb_curl": torch.tensor([0.06, 0.5, 0.5, 0.04, -0.3]),
+    }
+    step = _step(state, **inputs)
+    assert step.held.tolist() == [True, False, False, False, False]
+
+
+def test_a_hold_far_from_the_start_never_latches_or_succeeds():
+    state = gs.Stage1State.start(1)
+    for _ in range(25):
+        step = _step(state, **_held(1), shoe_shift_xy=torch.tensor([0.5]))
+        assert not step.held.any() and not step.success.any() and step.terms["lift_bonus"].item() == 0.0
+        state = step.state
+
+
+def test_reward_cfg_revision_3_defaults_and_rejections():
+    cfg = gs.Stage1RewardCfg()
+    assert (cfg.lift_max_m, cfg.hold_xy_radius_m, cfg.thumb_curl_min_rad) == (0.15, 0.10, 0.05)
+    with pytest.raises(ValueError, match="lift_max_m"):
+        gs.Stage1RewardCfg(lift_max_m=0.05)
+    with pytest.raises(ValueError, match="hold_xy_radius_m"):
+        gs.Stage1RewardCfg(hold_xy_radius_m=0.0)
+    assert gs.Stage1RewardCfg(thumb_curl_min_rad=-1.0).thumb_curl_min_rad == -1.0  # negative switches the thumb condition off
+
+
+def test_closing_travel_is_signed_by_the_closing_direction():
+    open_pose, grip_pose = torch.tensor([0.0, 0.0]), torch.tensor([-1.8, 1.9])
+    q = torch.tensor([[-0.3, 0.3], [0.95, -0.1]])
+    assert torch.allclose(gs.closing_travel(q, open_pose, grip_pose), torch.tensor([[0.3, 0.3], [-0.95, -0.1]]))
+    with pytest.raises(ValueError, match="closing direction"):
+        gs.closing_travel(q, open_pose, torch.tensor([0.0, 1.0]))
+
+
+def test_role_joint_index_needs_exactly_one_match():
+    names = ("l_hj_thumb_3", "l_hj_index_3", "l_hj_thumb_4")
+    assert gs.role_joint_index(names, "thumb_3") == 0
+    with pytest.raises(ValueError, match="matches 0"):
+        gs.role_joint_index(names, "pinky_3")
+    with pytest.raises(ValueError, match="matches 2"):
+        gs.role_joint_index(("l_hj_thumb_3", "r_hj_thumb_3"), "thumb_3")
 
 
 def test_progress_stops_after_the_latch():

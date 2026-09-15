@@ -48,6 +48,11 @@ class Stage1RewardCfg:
     latch_steps: int = 3
     success_steps: int = 20
     success_speed: float = 0.05
+    # learned-grasp spec §16 (revision 3): a hold counts only near the pick location, below a lift ceiling and with the thumb
+    # closing; a negative thumb_curl_min_rad switches the thumb condition off (grasp_smoke's wiring check)
+    lift_max_m: float = 0.15
+    hold_xy_radius_m: float = 0.10
+    thumb_curl_min_rad: float = 0.05
     hand_floor_scale: float = 10.0
     hand_floor_cap: float = 5.0
     arm_vel_scale: float = 0.0
@@ -68,6 +73,10 @@ class Stage1RewardCfg:
             raise ValueError(f"need 1 <= latch_steps {self.latch_steps} <= success_steps {self.success_steps}")
         if not 0.0 <= self.lift_deadband_m < self.lift_height_m:
             raise ValueError(f"need 0 <= lift_deadband_m {self.lift_deadband_m} < lift_height_m {self.lift_height_m}")
+        if not self.lift_height_m < self.lift_max_m:
+            raise ValueError(f"need lift_height_m {self.lift_height_m} < lift_max_m {self.lift_max_m}")
+        if not self.hold_xy_radius_m > 0.0:
+            raise ValueError(f"hold_xy_radius_m must be positive, got {self.hold_xy_radius_m}")
         if min(self.palm_scale, self.lift_progress_scale, self.lift_bonus, self.success_bonus, self.hand_floor_scale,
                self.hand_floor_cap, self.arm_vel_scale, self.hand_vel_scale) < 0.0:
             raise ValueError("reward scales and bonuses must be non-negative")
@@ -103,6 +112,14 @@ def hand_action_limits(
     return lo, hi
 
 
+def role_joint_index(joint_names: Sequence[str], role: str) -> int:
+    """Index of the one hand joint named ``<side>_hj_<role>`` (``thumb_3``) — no side is spelled out."""
+    matches = [i for i, name in enumerate(joint_names) if name.endswith(f"_hj_{role}")]
+    if len(matches) != 1:
+        raise ValueError(f"hand joint role {role!r} matches {len(matches)} joints of {list(joint_names)}")
+    return matches[0]
+
+
 def frozen_hand_override(
     joint_names: Sequence[str], open_pose: Sequence[float], roles: Sequence[str], halfwidth: float = FROZEN_HALFWIDTH_RAD
 ) -> dict[str, tuple[float, float]]:
@@ -116,11 +133,9 @@ def frozen_hand_override(
         raise ValueError(f"open pose has {len(open_pose)} values for {len(names)} hand joints")
     override = {}
     for role in roles:
-        matches = [i for i, name in enumerate(names) if name.endswith(f"_hj_{role}")]
-        if len(matches) != 1:
-            raise ValueError(f"hand joint role {role!r} matches {len(matches)} joints of {names}")
-        value = float(open_pose[matches[0]])
-        override[re.escape(names[matches[0]]) + "$"] = (value - halfwidth, value + halfwidth)
+        index = role_joint_index(names, role)
+        value = float(open_pose[index])
+        override[re.escape(names[index]) + "$"] = (value - halfwidth, value + halfwidth)
     return override
 
 
@@ -152,6 +167,18 @@ def hand_targets(
 def normalized_targets(targets: torch.Tensor, lo: torch.Tensor, hi: torch.Tensor) -> torch.Tensor:
     """Post-EMA hand targets mapped to [-1, 1], the observation of the policy's own filter state."""
     return 2.0 * (targets - lo) / (hi - lo) - 1.0
+
+
+def closing_travel(joint_pos: torch.Tensor, open_pose: torch.Tensor, grip_pose: torch.Tensor) -> torch.Tensor:
+    """How far joints moved from the open pose toward the grip pose; negative = bent back past the open pose.
+
+    Shapes broadcast (``joint_pos`` (N,) or (N, J) against (J,) or scalar poses). A joint whose open and grip poses coincide
+    has no closing direction and is rejected.
+    """
+    direction = torch.sign(grip_pose - open_pose)
+    if bool((direction == 0).any()):
+        raise ValueError("closing_travel needs a closing direction: the open and grip poses coincide")
+    return (joint_pos - open_pose) * direction
 
 
 def surface_subsample(points: Sequence[Sequence[float]], count: int = SURFACE_POINT_COUNT) -> torch.Tensor:
@@ -266,6 +293,8 @@ def stage1_step(
     palm_gap: torch.Tensor,
     dz_free: torch.Tensor,
     palm_shoe_dist: torch.Tensor,
+    shoe_shift_xy: torch.Tensor,
+    thumb_curl: torch.Tensor,
     rel_speed: torch.Tensor,
     shoe_speed: torch.Tensor,
     q: torch.Tensor,
@@ -273,15 +302,22 @@ def stage1_step(
     arm_speed_sum: torch.Tensor,
     hand_speed_sum: torch.Tensor,
 ) -> Stage1Step:
-    """One policy step of the stage-1 reward (design §6). All inputs are (N,) tensors."""
+    """One policy step of the stage-1 reward (design §6, held narrowed by §16). All inputs are (N,) tensors."""
     n = state.closest_palm.shape[0]
-    for name, value in dict(palm_gap=palm_gap, dz_free=dz_free, palm_shoe_dist=palm_shoe_dist, rel_speed=rel_speed,
-                            shoe_speed=shoe_speed, q=q, hand_floor_depth=hand_floor_depth,
-                            arm_speed_sum=arm_speed_sum, hand_speed_sum=hand_speed_sum).items():
+    for name, value in dict(palm_gap=palm_gap, dz_free=dz_free, palm_shoe_dist=palm_shoe_dist, shoe_shift_xy=shoe_shift_xy,
+                            thumb_curl=thumb_curl, rel_speed=rel_speed, shoe_speed=shoe_speed, q=q,
+                            hand_floor_depth=hand_floor_depth, arm_speed_sum=arm_speed_sum, hand_speed_sum=hand_speed_sum).items():
         if value.shape != (n,):
             raise ValueError(f"{name} must be ({n},), got {tuple(value.shape)}")
 
-    held = (dz_free >= cfg.lift_height_m) & (palm_shoe_dist <= cfg.hold_radius_m) & (rel_speed < cfg.hold_rel_speed)
+    held = (
+        (dz_free >= cfg.lift_height_m)
+        & (dz_free <= cfg.lift_max_m)
+        & (shoe_shift_xy <= cfg.hold_xy_radius_m)
+        & (thumb_curl >= cfg.thumb_curl_min_rad)
+        & (palm_shoe_dist <= cfg.hold_radius_m)
+        & (rel_speed < cfg.hold_rel_speed)
+    )
     hold_count = torch.where(held, state.hold_count + 1, torch.zeros_like(state.hold_count))
     before_latch = (~state.latched).float()
     just_latched = ~state.latched & (hold_count >= cfg.latch_steps)
