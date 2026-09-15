@@ -34,6 +34,7 @@ parser.add_argument("--hi", type=float, default=1.2, help="스윕 최대 각 [ra
 parser.add_argument("--rate", type=float, default=1.5, help="스윕 속도 [rad/s] (벤더 최대 ≈ 1.5)")
 parser.add_argument("--mimic_nf", type=float, default=None, help="PhysX mimic naturalFrequency 덮어쓰기(미지정=USD 값)")
 parser.add_argument("--mimic_dr", type=float, default=None, help="PhysX mimic dampingRatio 덮어쓰기(미지정=USD 값)")
+parser.add_argument("--contacts", action="store_true", help="오른손 전 링크 접촉 센서로 링크별 최대 접촉력 기록")
 parser.add_argument("--label", default="")
 AppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(headless=True)
@@ -45,6 +46,7 @@ import torch  # noqa: E402
 import isaaclab.sim as sim_utils  # noqa: E402
 from isaaclab.actuators import ImplicitActuatorCfg  # noqa: E402
 from isaaclab.assets import Articulation, ArticulationCfg  # noqa: E402
+from isaaclab.sensors import ContactSensor, ContactSensorCfg  # noqa: E402
 
 DT = 1.0 / 120.0
 HAND_DRIVEN = r"[rl]_hj_(thumb_[12]|index_1|middle_1|ring_1|pinky_1)"
@@ -68,6 +70,7 @@ def build_robot() -> Articulation:
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 enabled_self_collisions=args.self_collision == "on",
                 solver_position_iteration_count=16, solver_velocity_iteration_count=1),
+            activate_contact_sensors=args.contacts,
         ),
         actuators=actuators,
     ))
@@ -104,6 +107,8 @@ def main() -> dict:
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=DT))
     robot = build_robot()
     mimic = override_mimic()
+    sensor = ContactSensor(ContactSensorCfg(prim_path="/World/robot/r_hl_.*", update_period=0.0, history_length=1)) \
+        if args.contacts else None
     sim.reset()
     robot.update(DT)
     names = robot.joint_names
@@ -124,6 +129,7 @@ def main() -> dict:
     dev = torch.zeros(len(names), device=q0.device); vel = torch.zeros_like(dev)
     vel_sq = torch.zeros_like(dev); n_steps = 0
     track_err = 0.0; mimic_err = 0.0; palm_dev = 0.0; sat = 0.0
+    contact_max = None
     effort = robot.data.joint_effort_limits[0, ji].item() if hasattr(robot.data, "joint_effort_limits") else float("nan")
     for tgt in schedule(60, n_ramp, args.hi):
         target = q0.clone(); target[:, ji] = tgt
@@ -131,6 +137,10 @@ def main() -> dict:
         q, qd = robot.data.joint_pos[0], robot.data.joint_vel[0]
         dev = torch.maximum(dev, (q - q0[0]).abs()); vel = torch.maximum(vel, qd.abs())
         vel_sq += qd ** 2; n_steps += 1
+        if sensor is not None:
+            sensor.update(DT)
+            f = sensor.data.net_forces_w[0].norm(dim=-1)
+            contact_max = f if contact_max is None else torch.maximum(contact_max, f)
         track_err = max(track_err, abs(q[ji].item() - tgt))
         if follower is not None:
             mimic_err = max(mimic_err, abs(q[follower].item() - mult * q[ji].item()))
@@ -149,6 +159,8 @@ def main() -> dict:
         "others_worst5": [(n, round(d, 5)) for d, n in worst], "palm_pos_dev_mm": round(1000 * palm_dev, 3),
         "others_vel_rms_rad_s": round(float((vel_sq[others] / max(n_steps, 1)).sqrt().mean().item()), 5),
         "mimic": mimic,
+        "contact_top_N": None if sensor is None else sorted(((round(contact_max[i].item(), 3), n) for i, n in enumerate(sensor.body_names)
+                                                            if contact_max[i].item() > 1e-3), reverse=True)[:8],
     }
 
 
