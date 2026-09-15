@@ -63,3 +63,9 @@ PYTHONPATH=source/openarm python3 -m pytest source/openarm/openarm/agnostic/task
 - **느린 mimic 폭주도 종료**: `mimic_runaway_err_rad` 3.0 — 속도 100 rad/s 아래로 오차만 벌어진 폭주 2회(epoch 321-323, 348-351)가 속도 기준을 빠져나갔다. 지표 `done/mimic_err_runaway`.
 - **손끝 촉각 actor obs**: 손당 5칸 = 손끝 링크 전체 접촉력(net, 컵 필터 아님) · 노이즈 0.1 N · 클립 10 N. 실기 출처 RH56F1 `TouchData1.finger_forces[5]`(0.01 N 단위). sim 손가락 순서(thumb, index, middle, ring, pinky) ≠ 벤더 순서일 수 있다 — 배포 시 재배열. obs 변경이라 iter_01 부터 새로 학습.
 - 계기: 라운드 1 영상 — 오른손 엄지가 컵 입구 테두리에 걸려 들지 못함, 왼손은 컵에 닿지 않음.
+
+### 09.15 보상 입력 손바닥 축 정정 (사용자 결정 "env 가 계약을 지키게")
+- RewardContext 계약은 `palm_axes` 앞 3칸 = 손바닥 법선. RH56F1 `*_hl_palm_sensor` 는 URDF 상 **열 2 가 법선**(기저 +x, 엄지 기저 쪽), 열 0 = 손가락 가로(±y), 열 1 = 손가락 길이(+z) — 양손 동일(`test_rh56f1_palm_sensor_column2_is_palmar`).
+- iter_00~02 는 palm_axes 를 안 썼다. iter_03 이 처음 `normal = palm_axes[:, 0:3]` 로 방향 보상을 만들어 발견.
+- env 는 `ctx_palm_normal_col=2`, `ctx_palm_second_col=1` 로 [법선, 손가락 길이] 를 넣는다. 정책 obs(`_side_obs` 의 R 열 0·1)는 그대로.
+

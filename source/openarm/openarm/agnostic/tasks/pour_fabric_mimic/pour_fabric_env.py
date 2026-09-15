@@ -552,6 +552,11 @@ class PourFabricMimicEnv(DirectRLEnv):
         return {"policy": torch.nan_to_num(obs), "critic": torch.nan_to_num(state)}
 
     # ==================================================================
+    def _ctx_palm_axes(self, rig: SideRig) -> torch.Tensor:
+        """보상 입력 palm_axes (N,6) = [손바닥 법선, 두 번째 축]. 계약상 앞 3칸이 법선이다(09.15, cfg 주석 참조)."""
+        R = rig.palm_R()
+        return torch.cat([R[:, :, int(self.cfg.ctx_palm_normal_col)], R[:, :, int(self.cfg.ctx_palm_second_col)]], dim=1)
+
     def _build_context(self, flags, d_in_target, d_spill) -> RewardContext:
         cfg = self.cfg
         src_f, rcv_f = self.src.finger_forces(), self.rcv.finger_forces()
@@ -567,12 +572,12 @@ class PourFabricMimicEnv(DirectRLEnv):
             cup_mouth_z=float(cfg.cup_mouth_z), cup_bottom_z=-float(cfg.object_origin_offset_z),
             num_beads=int(cfg.bead_count),
             src_palm_pos=self.src.palm_pos(),
-            src_palm_axes=torch.cat([self.src.palm_R()[:, :, 0], self.src.palm_R()[:, :, 1]], dim=1),
+            src_palm_axes=self._ctx_palm_axes(self.src),
             src_tips_pos=self.src.tips_pos(), src_hand_closure=self.src.closure(),
             src_finger_force=src_f, src_palm_force=self.src.palm_force(),
             src_grasped=self._src_grasped, src_arm_qd=self.robot.data.joint_vel[:, self.src.arm_t],
             rcv_palm_pos=self.rcv.palm_pos(),
-            rcv_palm_axes=torch.cat([self.rcv.palm_R()[:, :, 0], self.rcv.palm_R()[:, :, 1]], dim=1),
+            rcv_palm_axes=self._ctx_palm_axes(self.rcv),
             rcv_tips_pos=self.rcv.tips_pos(), rcv_hand_closure=self.rcv.closure(),
             rcv_finger_force=rcv_f, rcv_palm_force=self.rcv.palm_force(),
             rcv_grasped=self._rcv_grasped, rcv_arm_qd=self.robot.data.joint_vel[:, self.rcv.arm_t],

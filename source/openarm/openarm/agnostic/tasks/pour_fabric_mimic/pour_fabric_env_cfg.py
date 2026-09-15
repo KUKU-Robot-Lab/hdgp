@@ -318,6 +318,11 @@ class PourFabricMimicEnvCfg(DirectRLEnvCfg):
     # 실기 센서는 무엇에 닿든 재므로 sim 도 컵 필터가 아닌 손끝 링크 전체 접촉력(net). 배포 시 손가락 순서 재배열 필요.
     tactile_obs_clip_n: float = 10.0
     tactile_obs_noise_n: float = 0.1
+    # ---- 보상 입력(RewardContext) 손바닥 축 — 계약 "palm_axes 앞 3칸 = 손바닥 법선" (09.15) --------------
+    # RH56F1 palm_sensor 링크: 열 0 = 손가락이 늘어선 가로(기저 ±y), 열 1 = 손가락 길이(기저 +z), 열 2 = 손바닥 법선(기저 +x,
+    # 엄지 기저가 이쪽). 열 0·1 을 그대로 넣으면 iter_03 orient 가 손 옆날을 컵으로 돌리게 보상했다. 정책 obs 는 무관.
+    ctx_palm_normal_col: int = 2
+    ctx_palm_second_col: int = 1
     collision_force_threshold: float = 1.0    # N — 컵끼리·손↔타물체 충돌 지표 임계
 
     # ---- 성공 판정 (pour_v1 계승) — 보상과 분리된 **기준 지표** ----------------------
@@ -402,6 +407,9 @@ def _validate_mimic_fields(cfg: "PourFabricMimicEnvCfg", pair) -> None:
         errs.append("mimic_dep_limit_margin_rad 는 ≥ 0")
     if float(cfg.mimic_runaway_err_rad) <= 0.0:
         errs.append("mimic_runaway_err_rad 는 > 0 (0 이면 모든 env 가 매 스텝 종료)")
+    cols = (int(cfg.ctx_palm_normal_col), int(cfg.ctx_palm_second_col))
+    if not all(0 <= c <= 2 for c in cols) or cols[0] == cols[1]:
+        errs.append(f"ctx_palm_normal_col/ctx_palm_second_col 는 0~2 의 서로 다른 열: {cols}")
     for p in (pair.source, pair.receiver):
         for name, spec in p.actuator_specs.items():
             if name.endswith("_hand_mimic") and (spec.get("stiffness"), spec.get("damping")) != (0.0, 0.0):

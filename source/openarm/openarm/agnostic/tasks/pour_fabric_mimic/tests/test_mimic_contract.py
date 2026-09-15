@@ -218,6 +218,49 @@ def test_fingertip_tactile_obs_is_sim2real_shaped():
     assert "+ f  # tactile" in _CFG, "관측 차원식에 손끝 촉각 f 칸"
 
 
+def test_ctx_palm_axes_put_palm_normal_first():
+    """09.15: RewardContext 계약은 "palm_axes 앞 3칸 = 손바닥 법선". RH56F1 palm_sensor 는 열 2 가 법선(URDF, 아래 테스트)이라
+    열 0·1 을 그대로 넣으면 생성 보상(iter_03 orient)이 손 옆날을 컵으로 돌리는 방향을 보상한다 → env 가 [법선, 손가락 방향] 순서로 넣는다."""
+    m = re.search(r"ctx_palm_normal_col:\s*int\s*=\s*(\d)", _CFG)
+    m2 = re.search(r"ctx_palm_second_col:\s*int\s*=\s*(\d)", _CFG)
+    assert m and int(m.group(1)) == 2
+    assert m2 and int(m2.group(1)) == 1
+    code = _code_only(_ENV)
+    assert code.count("src_palm_axes = self . _ctx_palm_axes ( self . src )") == 1
+    assert code.count("rcv_palm_axes = self . _ctx_palm_axes ( self . rcv )") == 1
+    assert "palm_R ( ) [ : , : , 0 ] , self . src . palm_R ( ) [ : , : , 1 ]" not in code
+    assert "palm_R ( ) [ : , : , 0 ] , self . rcv . palm_R ( ) [ : , : , 1 ]" not in code
+
+
+def _rpy_matrix(rpy):
+    import math
+    r, p_, y = rpy
+    cr, sr, cp, sp, cy, sy = math.cos(r), math.sin(r), math.cos(p_), math.sin(p_), math.cos(y), math.sin(y)
+    return [[cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+            [-sp, cp * sr, cp * cr]]
+
+
+@pytest.mark.parametrize("s", ["r", "l"])
+def test_rh56f1_palm_sensor_column2_is_palmar(s):
+    """URDF 실측: palm_sensor 열 2 = 손 기저 +x, 엄지 기저가 네 손가락보다 +x 쪽(손바닥 쪽). 열 0 = 손가락 늘어선 가로(±y)."""
+    root = ET.parse(_ASSET / "openarm_rh56f1_bi_rl.urdf").getroot()
+    J = {j.get("name"): j for j in root.findall("joint")}
+    def origin(name):
+        o = J[name].find("origin")
+        return [float(v) for v in o.get("xyz").split()], [float(v) for v in o.get("rpy").split()]
+    for n in (f"{s}_hj_palm_1", f"{s}_hj_palm_2"):
+        assert all(abs(v) < 1e-6 for v in origin(n)[1]), f"{n} 회전 없음 가정(palm_2 프레임 = 기저 프레임)"
+    assert J[f"{s}_hj_palm_sensor"].find("parent").get("link") == f"{s}_hl_palm_2"
+    R = _rpy_matrix(origin(f"{s}_hj_palm_sensor")[1])
+    col = lambda k: [R[i][k] for i in range(3)]
+    assert all(abs(a - b) < 1e-3 for a, b in zip(col(2), (1.0, 0.0, 0.0))), col(2)
+    assert abs(abs(col(0)[1]) - 1.0) < 1e-3, col(0)
+    thumb_x = origin(f"{s}_hj_thumb_1")[0][0]
+    fingers_x = [origin(f"{s}_hj_{f}_1")[0][0] for f in ("index", "pinky")]
+    assert thumb_x > max(fingers_x) + 0.01, "엄지 기저가 +x(손바닥) 쪽"
+
+
 # 원본 계약 중 그대로 유지돼야 하는 것(보상 없음 · 성공은 env · a=0 = 앵커)
 def test_inherited_contracts_hold():
     assert "load_reward_fn" in _ENV and "RewardContext(" in _ENV
