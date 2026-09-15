@@ -1,0 +1,18 @@
+{
+ "label": "t2r_i04",
+ "num_envs": 4096,
+ "started": 1789372643.7428777,
+ "commit": "e48b6319",
+ "gpu": 1,
+ "server_pids_killed": [
+  3151233,
+  3151240
+ ],
+ "prev_label": "t2r_i03",
+ "reason": "사용자 지시(09.14): 오른손 훅 파지·손 위 지지·합류점 우측 쏠림 관찰 → t2r 재생성 후 재학습",
+ "server_pids": [
+  3554696,
+  3554705
+ ],
+ "note": "첫 기동은 서버의 launch_t2r.sh 가 옛 경로 ./run_pour_t2r.sh 를 가리켜 실패(f6f38389 에서 scripts/experiments/ 로 이동) → 경로 수정 후 재기동; i03 python 은 SIGTERM 무시(R 상태, 16.5GB 유지) → PID 확인 후 SIGKILL"
+}

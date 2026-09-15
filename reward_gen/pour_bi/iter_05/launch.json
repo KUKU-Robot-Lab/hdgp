@@ -1,0 +1,17 @@
+{
+ "label": "t2r_i05",
+ "num_envs": 4096,
+ "started": 1789388399.1182153,
+ "commit": "2501611e",
+ "gpu": 1,
+ "server_pids_killed": [
+  3554696,
+  3554705
+ ],
+ "prev_label": "t2r_i04",
+ "server_pids": [
+  3826003,
+  3826010
+ ],
+ "server_head": "2501611e"
+}

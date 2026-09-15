@@ -1,8 +1,94 @@
 {
- "iter": 2,
- "label": "t2r_i02",
- "round": 3,
+ "iter": 5,
+ "label": "t2r_i05",
+ "round": 6,
  "best": {
+  "iter": 5,
+  "label": "t2r_i05",
+  "epoch": 2765,
+  "episode_success_last": 0.8086,
+  "episode_success_max": 0.8232,
+  "in_target_last": 0.7787,
+  "spill_last": 0.0458,
+  "nested_rate": 0.0,
+  "cup_collision_rate": 0.0108,
+  "hand_foreign_src": 0.0211,
+  "hand_foreign_rcv": 0.042,
+  "adr_progress": 1.0,
+  "time": 1789464906.1567261,
+  "note": "라운드3 env(DR·ADR·지각노이즈·충돌신호)에서 달성, 영상 게이트 ep800 pass"
+ },
+ "started": 1789388399.1182153,
+ "success_ticks": 2,
+ "restart": "09.13 nesting hacking 수정 후 같은 iter_00 보상으로 재학습",
+ "prev": {
+  "iter": 4,
+  "label": "t2r_i04",
+  "epoch": 526,
+  "episode_success": 0.0004,
+  "src_closure": 0.4,
+  "src_tilt_deg": 47.3,
+  "rcv_hand_foreign": 0.023,
+  "note": "오른손 인벨롭 형성(영상 our_source/pour_t2r_i04_ep500_right_0914_2112.mp4)·안전 지표 해결, 붓기 47° 정체"
+ },
+ "round3_note": "env 변경(hand_qd 제거·지각 지연/노이즈·물리 DR+ADR·충돌 신호) 후 iter_02 (notes_round3.md)",
+ "round4_note": "iter_03: pouring-lip 기하 aim/tilt 재정의 (notes_round4.md)",
+ "success_tick_log": [
+  {
+   "epoch": 810,
+   "hours": 6.25,
+   "episode_success_last50": 0.6584,
+   "recent10": 0.6771,
+   "max": 0.6877,
+   "in_target": 0.6323,
+   "spill": 0.0471,
+   "nested": 0.0,
+   "cup_coll": 0.0063,
+   "src_foreign": 0.0205,
+   "rcv_foreign": 0.0136,
+   "src_closure": 0.3943,
+   "adr": 0.186,
+   "time": 1789410914.8531106
+  },
+  {
+   "epoch": 1194,
+   "hours": 9.25,
+   "episode_success_last50": 0.7519,
+   "recent10": 0.7514,
+   "max": 0.7666,
+   "in_target": 0.7305,
+   "spill": 0.0374,
+   "nested": 0.0,
+   "cup_coll": 0.0079,
+   "src_foreign": 0.0212,
+   "rcv_foreign": 0.0222,
+   "src_closure": 0.3875,
+   "adr": 0.458,
+   "time": 1789421707.536861
+  }
+ ],
+ "round5_note": "iter_04: wrap 품질·손 이물 게이트·중앙선 벌점 (notes_round5.md)",
+ "round6_note": "iter_05: tilt 방향·붓기 자세 보너스·closure 램프 정정 (notes_round6.md)",
+ "video_check": {
+  "label": "t2r_i05",
+  "ckpt": "last_open-short_b_pour_fab_ep_800_rew_19825.951.pth",
+  "epoch": 800,
+  "time": 1789411895.0980866,
+  "result": "pass",
+  "findings": [
+   "끼워넣기 아님: 소스 컵 몸통은 리시버 밖, 입구 끝만 리시버 입구 위(왼쪽 위 시점 step 210~500)",
+   "양손 인벨롭 유지: 오른손 네 손가락이 소스 컵 몸통을 감싼 채 틸트, 왼손은 리시버 직립 파지",
+   "손-손 접촉 안 보임(오른손 엄지가 리시버 림 근처까지 옴)",
+   "주의: 소스 입구 끝이 리시버 림에 약 1 cm 이하로 근접 — cup_collision 0.6% 는 가벼운 림 접촉으로 해석",
+   "테이블 비드 2~3개(spill 4%)"
+  ],
+  "files": {
+   "left_top": "/home/user/rl_ws/our_source/pour_t2r_i05_ep800_0915_0344_left_top.mp4",
+   "right": "/home/user/rl_ws/our_source/pour_t2r_i05_ep800_0915_0344_right.mp4",
+   "frames": "/home/user/rl_ws/our_source/pour_t2r_i05_ep800_0915_0344_frames/"
+  }
+ },
+ "best_prev": {
   "iter": 1,
   "label": "t2r_i01",
   "epoch": 413,
@@ -13,14 +99,71 @@
   "nested_rate": 0.0099,
   "time": 1789321439.155391
  },
- "started": 1789282006.5596128,
- "success_ticks": 0,
- "restart": "09.13 nesting hacking \uc218\uc815 \ud6c4 \uac19\uc740 iter_00 \ubcf4\uc0c1\uc73c\ub85c \uc7ac\ud559\uc2b5",
- "prev": {
-  "iter": 1,
-  "label": "t2r_i01",
-  "epoch": 413,
-  "episode_success": 0.7287
+ "termination_met": {
+  "time": 1789421707.536861,
+  "epoch": 1194,
+  "detail": "success ≥0.5 두 틱 연속(ep810 0.66, ep1194 0.75) ∧ nested 0 ∧ cup_coll 0.8% ∧ 영상 pass(ep800)",
+  "action": "hold 상태 — 사용자 지시로 종료하지 않고 계속 학습·보고만"
  },
- "round3_note": "env \ubcc0\uacbd(hand_qd \uc81c\uac70\u00b7\uc9c0\uac01 \uc9c0\uc5f0/\ub178\uc774\uc988\u00b7\ubb3c\ub9ac DR+ADR\u00b7\ucda9\ub3cc \uc2e0\ud638) \ud6c4 iter_02 (notes_round3.md)"
+ "hold_released": {
+  "label": "t2r_i05",
+  "since_epoch": 282,
+  "time": 1789397582.073141,
+  "reason": "사용자 판단(09.15): 학습 지표까지 수렴 → 학습 종료. 문제 부분 수정 후 재학습 예정",
+  "updated": 1789432849.7253928,
+  "reason2": "사용자 지시(09.15): 현재 학습 수렴할 때까지 진행. 에피소드당 비드 개수 eval 은 수렴 뒤로 보류",
+  "convergence": {
+   "rule": "adr/progress == 1.0 이후 두 틱 연속 episode_success recent10 변화 |Δ| ≤ 0.02",
+   "on_converged": "보고만 하고 런 유지 — 중단 여부는 사용자 결정",
+   "history": [
+    {
+     "epoch": 1590,
+     "recent10": 0.769,
+     "adr": 0.7667
+    },
+    {
+     "epoch": 1983,
+     "recent10": 0.7912,
+     "adr": 1.0,
+     "note": "adr 1.0 최초 도달 — 수렴 판정 기준점(Δ 카운트 0)"
+    },
+    {
+     "epoch": 2374,
+     "recent10": 0.8091,
+     "adr": 1.0,
+     "delta": 0.0179,
+     "stable": true
+    },
+    {
+     "epoch": 2765,
+     "recent10": 0.8065,
+     "adr": 1.0,
+     "delta": -0.0026,
+     "stable": true
+    }
+   ],
+   "adr_full_epoch": 1983,
+   "stable_ticks": 2,
+   "converged": true,
+   "converged_at": {
+    "epoch": 2765,
+    "hours": 21.25,
+    "time": 1789464906.1567261
+   }
+  },
+  "released": 1789470236.6035817
+ },
+ "stopped": {
+  "label": "t2r_i05",
+  "time": 1789470236.6035817,
+  "final_ckpt": "last_open-short_b_pour_fab_ep_2950_rew_23967.287.pth",
+  "converged_ckpt": "last_open-short_b_pour_fab_ep_2750_rew_23587.35.pth",
+  "server_pids_killed": [
+   3826003,
+   3826010
+  ],
+  "cron_deleted": "31e22bfe",
+  "reason": "성공률·총보상 평탄(수렴) + 손 유효 액션 노이즈 증가(null 22/42 차원) — 수정 후 재학습",
+  "next": "영상 추출(ADR 최대) → null 액션 차원 등 수정 → 재학습"
+ }
 }
