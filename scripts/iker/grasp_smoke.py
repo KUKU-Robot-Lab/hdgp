@@ -9,7 +9,11 @@
 5. random actions for 12 s keep rewards finite, write the episode-end log, and publish the same log keys on every step
    (rl_games reads each step's log with the keys of the epoch's first step);
 6. with ``capture_success_states`` the success call of a forced hold is captured, and restoring it writes the captured joints
-   and hand targets back as a fresh episode (the learned grasp harvest, auto-loop design §5).
+   and hand targets back as a fresh episode (the learned grasp harvest, auto-loop design §5);
+7. the thumb backstop (learned-grasp spec §16): with its target 0.8 rad past the open pose and the action path bypassed,
+   thumb_3 stays at its open-pose limit, and the simulator limit equals the boot metadata;
+8. with the default thumb condition, the forced hold of an open hand is never held (checks 4 and 6 run with the xy radius
+   and the thumb condition switched off — their bounds are pure-test territory).
 
 Usage:
     cd ~/rl_ws/hdgp && PYTHONPATH=source/openarm ../IsaacLab/isaaclab.sh -p scripts/iker/grasp_smoke.py --headless
@@ -21,6 +25,7 @@ import argparse
 import os
 import sys
 import traceback
+from dataclasses import replace
 
 from isaaclab.app import AppLauncher
 
@@ -46,6 +51,7 @@ import torch  # noqa: E402
 import openarm.agnostic.tasks.iker_shoe.config  # noqa: E402,F401  (registers the gym ids)
 from openarm.agnostic.tasks.iker_shoe import grasp_stage as gs  # noqa: E402
 from openarm.agnostic.tasks.iker_shoe import layout  # noqa: E402
+from openarm.agnostic.tasks.iker_shoe import robot  # noqa: E402
 from openarm.agnostic.tasks.iker_shoe.iker_shoe_grasp_env_cfg import IkerShoeGraspEnvCfg  # noqa: E402
 
 START_GAP_RANGE_M = (0.05, 0.18)  # palm 8-12 cm above the shoe top and offset to its side: measured 105-142 mm
@@ -54,6 +60,10 @@ FORCED_LIFT_M = 0.06
 FORCED_SHIFT_X_M = 0.15  # clear of the open hand and of the rack footprint
 FORCED_HOLD_RADIUS_M = 0.5  # the palm-distance condition is covered by the pure tests; this check targets the wiring
 LATCH_CALL, SUCCESS_CALL = 2, 19  # zero-based: the third and the twentieth held call
+FORCED_THUMB_CURL_MIN_RAD = -1.0  # switches the thumb condition off for the wiring checks
+BACKSTOP_PUSH_RAD = 0.8
+BACKSTOP_STEPS = 20
+BACKSTOP_SLACK_RAD = 0.02  # probe 2026-09-15 measured 0.0003 rad past the limit
 
 
 def forced_hold(env, calls: int):
@@ -85,6 +95,29 @@ def forced_hold(env, calls: int):
     return latch_calls, success_calls, paid
 
 
+def backstop_check(env) -> tuple[str, float, list[float], list[float]]:
+    """(joint, worst travel past the open pose in the opening direction, simulator limit, boot metadata limit) after
+    ``BACKSTOP_STEPS`` policy steps with the joint's target ``BACKSTOP_PUSH_RAD`` past the open pose."""
+    prof = robot.profile()
+    backstop = env._boot_metadata["hand_backstop"]
+    name = next(iter(backstop))
+    k = prof.hand_joint_names.index(name)
+    j = list(env._robot.data.joint_names).index(name)
+    open_q, grip_q = float(prof.hand_open_pose[k]), float(prof.hand_grip_pose[k])
+    opening = -1.0 if grip_q > open_q else 1.0
+    env.reset()
+    env._pre_physics_step = lambda actions: None  # hold the written targets; the hand law would pull them back into range
+    try:
+        env._joint_targets[:] = env._robot.data.joint_pos_target
+        env._joint_targets[:, j] = open_q + opening * BACKSTOP_PUSH_RAD
+        for _ in range(BACKSTOP_STEPS):
+            env.step(torch.zeros(env.num_envs, env.cfg.action_space, device=env.device))
+    finally:
+        del env._pre_physics_step
+    past = float(((env._robot.data.joint_pos[:, j] - open_q) * opening).max())
+    return name, past, env._robot.data.joint_pos_limits[0, j].tolist(), backstop[name]
+
+
 def main() -> int:
     cfg = IkerShoeGraspEnvCfg()
     cfg.scene.num_envs = args.num_envs
@@ -92,6 +125,8 @@ def main() -> int:
     cfg.add_noise = False
     cfg.wrench_prob_range = (1e-9, 1e-9)
     cfg.grasp_reward.hold_radius_m = FORCED_HOLD_RADIUS_M
+    cfg.grasp_reward.hold_xy_radius_m = FORCED_HOLD_RADIUS_M  # the forced hold shifts the shoe 15 cm (clear of the hand)
+    cfg.grasp_reward.thumb_curl_min_rad = FORCED_THUMB_CURL_MIN_RAD
     cfg.capture_success_states = True
     env = gym.make("open-sens_l_iker_shoe_grasp", cfg=cfg).unwrapped
     n, dev = env.num_envs, env.device
@@ -172,6 +207,20 @@ def main() -> int:
           f"{joint_error:.2e}, hand target error {hand_error:.2e}, episode length {length}", flush=True)
     if not bool(capture.valid.all()) or pose_error > 1e-4 or joint_error > 1e-5 or hand_error > 1e-6 or length != 0:
         failures.append("the success capture or its restore does not reproduce the captured state")
+
+    name, past, sim_limit, meta_limit = backstop_check(env)
+    print(f"SMOKE thumb backstop: {name} worst travel past the open pose {past:+.4f} rad, simulator limit "
+          f"{[round(v, 4) for v in sim_limit]}, boot metadata {meta_limit}", flush=True)
+    if past > BACKSTOP_SLACK_RAD or [round(v, 4) for v in sim_limit] != meta_limit:
+        failures.append(f"thumb backstop: {past:+.4f} rad past the open pose or simulator limit {sim_limit} != {meta_limit}")
+
+    env._reward_cfg = replace(env._reward_cfg, thumb_curl_min_rad=gs.Stage1RewardCfg().thumb_curl_min_rad)
+    env.reset()
+    latch_calls, success_calls, _ = forced_hold(env, 5)
+    print(f"SMOKE open thumb under the default thumb condition ({env._reward_cfg.thumb_curl_min_rad} rad): "
+          f"latch calls {latch_calls}, success calls {success_calls}", flush=True)
+    if latch_calls or success_calls:
+        failures.append("a forced hold with the open thumb latched under the default thumb condition")
 
     for failure in failures:
         print(f"SMOKE CHECK FAILED: {failure}", flush=True)

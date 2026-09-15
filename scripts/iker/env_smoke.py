@@ -1,7 +1,7 @@
 """Smoke-check the IKER shoe environment before training (design spec §10, simulator checks).
 
 1. boots with the grasp bank and the gated interaction, observations (N, 38) are finite;
-2. with zero actions the shoe stays in the hand for 5 s;
+2. with zero actions for 5 s the shoe stays in the hand: its position in the palm frame moves < 3 cm (the arm's zero-action sag is reported, not judged — relative IK does not undo it, auto-loop spec §13);
 3. random actions for 25 s keep rewards finite and log episode-end metrics;
 4. a shoe placed at the interaction's target keypoints (robot moved home, out of the way) counts as a success;
 5. the grasping arm reaches the bank's grasp palm pose above the interaction's target slot (the mirrored slot on the
@@ -45,12 +45,23 @@ import openarm.agnostic.tasks.iker_shoe.config  # noqa: E402,F401  (registers th
 from openarm.agnostic.modules.iker.gate import kabsch  # noqa: E402
 from openarm.agnostic.tasks.iker_shoe.iker_shoe_env_cfg import IkerShoeEnvCfg  # noqa: E402
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg  # noqa: E402
-from isaaclab.utils.math import quat_from_matrix  # noqa: E402
+from isaaclab.utils.math import quat_apply_inverse, quat_from_matrix  # noqa: E402
 
 MAX_DROP_FRACTION_ZERO_ACTION = 0.25  # startup DR (friction down to 0.3, mass up to x2) loosens some grasps
+MAX_SLIP_M = 0.03
 MAX_SLOT_REACH_ERROR_M = 0.02
 PARKED_SHOE = (0.42, 0.40, 0.26)
 IK_REACH_STEPS = 360
+
+
+def shoe_in_palm(env) -> tuple[torch.Tensor, torch.Tensor]:
+    """((N, 3) shoe position in the palm frame, (N,) env-local palm height)."""
+    palm = env._robot.data.body_pose_w[:, env._palm]
+    return quat_apply_inverse(palm[:, 3:7], env._shoe.data.root_pos_w - palm[:, :3]), palm[:, 2] - env.scene.env_origins[:, 2]
+
+
+def quantiles_mm(values: torch.Tensor) -> list[int]:
+    return [round(float(v) * 1000) for v in torch.quantile(values.float(), torch.tensor([0.1, 0.5, 0.9], device=values.device))]
 
 
 def reach_slots(env) -> dict[str, float]:
@@ -107,14 +118,17 @@ def main() -> int:
     if policy.shape != (n, 38) or not torch.isfinite(policy).all():
         failures.append("observation shape or finiteness")
 
-    z0 = env._shoe.data.root_pos_w[:, 2].clone()
-    for _ in range(50):
+    env.step(torch.zeros(n, 6, device=dev))  # a pose written at reset is read back only after a physics step
+    rel0, palm_z0 = shoe_in_palm(env)
+    for _ in range(49):
         env.step(torch.zeros(n, 6, device=dev))
-    dz = env._shoe.data.root_pos_w[:, 2] - z0
-    dropped = float((dz < -0.03).float().mean())
-    print(f"SMOKE zero action 5 s: shoe dz mean {float(dz.mean()) * 1000:+.1f} mm, dropped fraction {dropped:.2f}", flush=True)
-    if not dropped <= MAX_DROP_FRACTION_ZERO_ACTION:
-        failures.append(f"zero-action drop fraction {dropped:.2f}")
+    rel, palm_z = shoe_in_palm(env)
+    slip = (rel - rel0).norm(dim=-1)
+    lost = float((slip > MAX_SLIP_M).float().mean())
+    print(f"SMOKE zero action 5 s: shoe slip in palm mm q10/50/90 {quantiles_mm(slip)}, lost fraction {lost:.2f}; "
+          f"palm dz mm q10/50/90 {quantiles_mm(palm_z - palm_z0)} (arm sag, reported only)", flush=True)
+    if not lost <= MAX_DROP_FRACTION_ZERO_ACTION:
+        failures.append(f"zero-action lost fraction {lost:.2f}")
 
     rewards, logs = [], []
     for _ in range(250):
