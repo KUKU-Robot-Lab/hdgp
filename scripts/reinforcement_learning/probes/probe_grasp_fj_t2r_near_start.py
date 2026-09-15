@@ -4,7 +4,8 @@
   부팅 → 기본 손 자세 유지 액션으로 워밍업(공통 스텝 > near_start_after_common_steps) → env.reset() 으로 전 env 리셋 →
   같은 유지 액션으로 N 스텝. 가까운 출발 env 가
     · 비율 ≈ near_start_frac,
-    · 첫 스텝에 C자 완료 조금 앞(손바닥면 3 cm · 컵 축 R+2.5 cm · 띠 0.8 H · 시작 방향)에 있고(컵 스폰 ±2 cm 포함),
+    · 첫 스텝에 C자 완료 조금 앞(손바닥면 4.5 cm · 컵 축 R+2.5 cm · 띠 0.8 H · 시작 방향)에 있고(컵 스폰 ±2 cm 포함),
+    · 손을 움직이지 않으면 접근 래치가 서지 않고(공짜 래치 없음),
     · 유지하는 동안 종료·abnormal 없이, 손가락·엄지가 컵에 닿지 않고, 컵이 밀리지 않고, 팔이 목표를 따라가는지.
   먼 출발 env 는 여전히 0.38 m 쪽에서 시작하는지.
 
@@ -119,7 +120,9 @@ summary = {
 }
 nf = summary["near_first_step"]
 gate = (0.3 <= summary["near_frac"] <= 0.7
-        and bool(nf["plane_gap"]) and 0.005 <= nf["plane_gap"][0] and nf["plane_gap"][2] <= 0.055
+        # ★손바닥면 4.5 cm ± 컵 스폰 2 cm — 하한 2.1 cm 는 접근 창(≤ 2 cm) 밖이라 공짜 래치가 없다(3 cm 판 스모크: 32 중 4 래치)
+        and bool(nf["plane_gap"]) and 0.021 <= nf["plane_gap"][0] and nf["plane_gap"][2] <= 0.07
+        and summary["near_approach_latched"] == 0
         and 0.0 <= nf["along_offset"][0] and nf["along_offset"][2] <= 0.05
         and 0.5 <= nf["height_frac"][0] and nf["height_frac"][2] <= 1.0
         and nf["orient"][0] >= 0.95

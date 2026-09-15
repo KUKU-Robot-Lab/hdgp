@@ -8,7 +8,7 @@
     시작 방향(법선 +y · 손가락 +x, cos ≥ 0.7) · 움직이는 손 관절 기본 자세 ±0.15 · 손가락·엄지 무접촉 — 여섯 동시.
   · 인벨롭 완료 = 접근 완료 **뒤에만** · 손바닥 + 엄지 + 닿은 손가락 ≥ 4 가 5 스텝 연속.
   · 둘 다 에피소드 래치(한 번 서면 리셋까지 유지) — 끊기면 연속 카운트만 0.
-  · 가까운 출발 IK 표(reach leaf cfg)가 컵 8종마다 C자 완료 자리 조금 앞(손바닥면 3 cm · 컵 축 R+2.5 cm · 띠 0.8 H)에 손을 둔다.
+  · 가까운 출발 IK 표(reach leaf cfg)가 컵 8종마다 C자 완료 자리 조금 앞(손바닥면 4.5 cm · 컵 축 R+2.5 cm · 띠 0.8 H)에 손을 둔다.
   · ctx 주석(생성기가 읽는 환경 설명)이 같은 수치를 적는다.
 
 실행:
@@ -109,6 +109,12 @@ def test_approach_conditions_name_each_check_for_the_log():
         assert c[i].tolist() == [j != i - 1 for j in range(6)], i
 
 
+def test_plane_gap_window_rejects_a_cup_behind_the_hand():
+    # ★09.15 서버 부팅 스모크: 먼 출발 무작위 행동에서 gap 조건이 0.28 통과 — 상한만 있으면 컵이 손등 뒤(음수 간극)여도 선다.
+    c = G.approach_conditions(**_ok(4, plane_gap=torch.tensor([-0.02, -0.009, 0.019, 0.021])))
+    assert c[:, G.APPROACH_CONDITIONS.index("gap")].tolist() == [False, True, True, False]
+
+
 def test_along_window_keeps_the_cup_clear_of_the_thumb_and_under_the_fingers():
     c = G.approach_conditions(**_ok(4, along_offset=torch.tensor([-0.006, -0.004, 0.019, 0.021])))
     assert c[:, G.APPROACH_CONDITIONS.index("along")].tolist() == [False, True, True, False]
@@ -183,8 +189,9 @@ def test_gate_directions_are_the_hand_orientation_of_the_reach_start_pose():
 
 
 def test_near_start_poses_put_the_hand_just_short_of_the_c_pregrasp_for_every_cup():
-    # ★09.15 사용자 "시작 상태 커리큘럼 + env 고정" — 컵 8종마다 IK 한 자세. 컵 스폰 xy 는 매 리셋 ±2 cm 흔들리므로
-    #   손바닥면 3 cm · 컵 축 R+2.5 cm 는 컵과 손이 겹치지 않을 여유다(±2 cm 에도 손바닥면 ≥ 1 cm · 컵 축 ≥ R+0.5 cm).
+    # ★09.15 사용자 "시작 상태 커리큘럼 + env 고정" — 컵 8종마다 IK 한 자세. 컵 스폰 xy 는 매 리셋 ±2 cm 흔들린다.
+    #   ★서버 스모크(32 중 4 env 가 첫 스텝에 접근 래치): 손바닥면 3 cm 는 −2 cm 흔들림에 1 cm 가 돼 공짜 래치였다 →
+    #   손바닥면 4.5 cm(흔들려도 ≥ 2.5 cm > 2 cm 창) · 컵 축 R+2.5 cm(≥ R+0.5 cm 라 엄지와 겹치지 않음).
     from openarm.agnostic.modules import object_bank as ob
     from openarm.agnostic.modules.robot_profiles import TESOLLO_RIGHT_SHORT_TL as prof
 
@@ -201,7 +208,7 @@ def test_near_start_poses_put_the_hand_just_short_of_the_c_pregrasp_for_every_cu
         gap, along, height = G.c_pregrasp_geometry(
             palm.unsqueeze(0), R[:, 0].unsqueeze(0), R[:, 2].unsqueeze(0), cup,
             torch.tensor([[0.0, 0.0, 1.0]], dtype=torch.float64), torch.tensor([spec.grasp_radius_m], dtype=torch.float64))
-        assert abs(float(gap) - 0.03) < 0.002, (spec.id, float(gap))
+        assert abs(float(gap) - 0.045) < 0.002, (spec.id, float(gap))
         assert abs(float(along) - 0.025) < 0.002, (spec.id, float(along))
         assert abs(float(height) - 0.8 * spec.grasp_halfheight_m) < 0.002, (spec.id, float(height))
         assert float(R[1, 0]) > 0.99 and float(R[0, 2]) > 0.99, (spec.id, "시작 방향")
@@ -209,11 +216,13 @@ def test_near_start_poses_put_the_hand_just_short_of_the_c_pregrasp_for_every_cu
 
 def test_context_comments_state_the_same_gate_numbers():
     for tok in ("hand_default_q_norm", "approach_done", "envelope_done", "palm_finger_dir",
-                "within 2 cm of the cup's side", "cup_radius - 0.005 m", "cup_radius + 0.02 m",
+                "within 2 cm of the cup's side", "between -0.01 m and 0.02 m", "cup_radius - 0.005 m",
+                "cup_radius + 0.02 m",
                 "within about 45 degrees of +y", "within about 45 degrees of +x", "within 0.15",
                 "no finger or thumb link touched the cup", "about 0.12 m", "at least 4", "5 consecutive steps", "0.1 N"):
         assert tok in _CTX, tok
-    assert G.APPROACH_PLANE_GAP_M == 0.02 and G.APPROACH_POSE_TOL == 0.15 and G.APPROACH_ORIENT_MIN == 0.7
+    assert G.APPROACH_PLANE_GAP_M == 0.02 and G.APPROACH_PLANE_GAP_MIN_M == -0.01
+    assert G.APPROACH_POSE_TOL == 0.15 and G.APPROACH_ORIENT_MIN == 0.7
     assert G.APPROACH_ALONG_MIN_OFFSET_M == -0.005 and G.APPROACH_ALONG_MAX_OFFSET_M == 0.02
     assert G.APPROACH_PALM_NORMAL_DIR == (0.0, 1.0, 0.0) and G.APPROACH_FINGER_DIR == (1.0, 0.0, 0.0)
     assert G.ENVELOPE_MIN_DIGITS == 4 and G.ENVELOPE_HOLD_STEPS == 5 and G.TOUCH_N == 0.1

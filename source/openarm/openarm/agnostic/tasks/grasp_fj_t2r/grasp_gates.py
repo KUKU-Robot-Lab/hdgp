@@ -18,6 +18,9 @@ import torch
 
 #: 접근 완료 — palm_ee(손바닥면, collider 면과 0.5 mm)에서 컵 옆면까지 손바닥 법선 방향 거리 상한 [m]
 APPROACH_PLANE_GAP_M = 0.02
+#: 접근 완료 — 같은 거리의 하한 [m]. ★09.15 서버 부팅 스모크: 상한만 두면 컵이 손등 뒤(음수 간극)여도 조건이 섰다
+#:   (먼 출발 무작위 행동에서 gap 통과 0.28). 손바닥면은 컵을 뚫지 못하므로 −1 cm 아래는 "컵이 손바닥 앞이 아니다".
+APPROACH_PLANE_GAP_MIN_M = -0.01
 #: 접근 완료 — 컵 축이 palm_ee 보다 손가락 방향으로 `R + 이 값` 만큼 앞 [m], 하한·상한.
 #:   하한: 기본 자세 엄지 collider 는 palm_ee 보다 손목 쪽(손가락 방향 −38~−10 mm)에서 뻗는다 → 컵 단면이 엄지를 5 mm 이상 비킨다.
 #:   상한: 네 손가락(손가락 방향 +16~+176 mm)이 감쌀 수 있는 자리.
@@ -79,8 +82,9 @@ def approach_conditions(*, plane_gap: torch.Tensor, along_offset: torch.Tensor, 
                         half_height: torch.Tensor, orient: torch.Tensor, pose_dev: torch.Tensor,
                         digit_touch: torch.Tensor) -> torch.Tensor:
     """접근 조건별 통과 (N,6) bool — 열 순서 = `APPROACH_CONDITIONS`. digit_touch (N,) = 손가락·엄지 마디 중 하나라도 컵에 닿음."""
+    gap_ok = (plane_gap >= APPROACH_PLANE_GAP_MIN_M) & (plane_gap <= APPROACH_PLANE_GAP_M)
     along_ok = (along_offset >= APPROACH_ALONG_MIN_OFFSET_M) & (along_offset <= APPROACH_ALONG_MAX_OFFSET_M)
-    return torch.stack([plane_gap <= APPROACH_PLANE_GAP_M, along_ok, height.abs() <= half_height,
+    return torch.stack([gap_ok, along_ok, height.abs() <= half_height,
                         orient >= APPROACH_ORIENT_MIN, pose_dev <= APPROACH_POSE_TOL, ~digit_touch], dim=1)
 
 
