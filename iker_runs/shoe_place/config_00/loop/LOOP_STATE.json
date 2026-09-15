@@ -1,0 +1,52 @@
+{
+ "schema": 1,
+ "track": "iker_shoe_c00_r3",
+ "phase": "stage1_a",
+ "status": "running",
+ "awaiting": null,
+ "stage": 1,
+ "policy": {
+  "gate_epoch": 200,
+  "gate_latched": 0.02,
+  "calibrate_latched": 0.1,
+  "bin_epochs": 10,
+  "b_g_min": 0.5,
+  "b_max_epochs": 1000,
+  "harvest_min": 64,
+  "vlm_max_attempts": 3,
+  "stage2_env_smoke": true,
+  "stage2_epochs": 750,
+  "stage2_num_envs": 4096,
+  "eval_every": 250,
+  "success_target": 0.5,
+  "side_gpu_limit_mib": 20000,
+  "minibatch_size": 0,
+  "grasp_bank_path": "",
+  "labels": {
+   "stage1_a": "iker_grasp_c00_r3_a",
+   "stage1_b": "iker_grasp_c00_r3_b",
+   "stage2": "iker_vlm_c00_r3_s1"
+  }
+ },
+ "runs": {
+  "stage1_a": {
+   "label": "iker_grasp_c00_r3_a",
+   "log": "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/train_iker_grasp_c00_r3_a.log",
+   "pid": 854286,
+   "started_s": 1789451850.950243,
+   "started": "2026-09-15T14:57:30+09:00",
+   "commit": null,
+   "key": "iker_grasp_c00_r3_a",
+   "adopted": "2026-09-15T14:57:47+09:00"
+  }
+ },
+ "gate1": null,
+ "calibration": null,
+ "bank": null,
+ "attempts": {
+  "1": 0
+ },
+ "eval": {},
+ "vlm_requests": {},
+ "updated": "2026-09-15T14:57:47+09:00"
+}
