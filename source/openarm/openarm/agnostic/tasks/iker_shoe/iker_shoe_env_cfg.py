@@ -87,6 +87,9 @@ class IkerShoeEnvCfg(DirectRLEnvCfg):
     grasp_bank_path = ""
     eval_success_distance_m = 0.05
 
+    # learned-grasp spec §16: these hand joint roles cannot bend back past the profile's open pose (both stages)
+    hand_backstop_joints = ("thumb_3",)
+
     reward: IkerRewardCfg = reward_cfg_for_start_support(layout.TABLE_TOP_Z, max_episode_length=EPISODE_STEPS)
     events: IkerShoeEventCfg = IkerShoeEventCfg()
 

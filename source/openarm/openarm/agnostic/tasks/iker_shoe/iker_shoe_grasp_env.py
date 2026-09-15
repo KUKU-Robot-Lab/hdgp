@@ -87,6 +87,7 @@ class IkerShoeGraspEnv(DirectRLEnv):
         self._thumb_grip = torch.tensor(float(prof.hand_grip_pose[curl]), device=dev)
         gs.closing_travel(self._thumb_open, self._thumb_open, self._thumb_grip)  # boot error when the role has no closing direction
 
+        backstop = robot.apply_hand_backstop(self._robot, cfg.hand_backstop_joints)  # before the action limits read the hard limits
         hard = self._robot.data.joint_pos_limits[0, self._hand_ids]
         self._hand_lo, self._hand_hi = gs.stage1_hand_limits(prof.hand_joint_names, hard[:, 0], hard[:, 1], prof.hand_action_limit_override,
                                                              prof.hand_open_pose, cfg.frozen_hand_joints)
@@ -113,7 +114,9 @@ class IkerShoeGraspEnv(DirectRLEnv):
         }))
         bank_doc = run_files.read_json(_artifact(cfg.pregrasp_bank_path, run_dir / PREGRASP_BANK_FILE))
         self._bank = gb.load_bank(bank_doc, joint_names, expected, dev)
-        self._boot_metadata = expected  # harvest_grasp_bank.py writes these comparison keys into the learned bank
+        # harvest_grasp_bank.py writes these comparison keys into the learned bank; the pre-grasp bank above is compared
+        # without the backstop (grasp_bank.LEARNED_BOOT_KEYS)
+        self._boot_metadata = {**expected, "hand_backstop": backstop}
 
         reward_cfg = replace(cfg.grasp_reward)
         calibration_path = _artifact(cfg.quality_calibration_path, run_dir / QUALITY_CALIBRATION_FILE)

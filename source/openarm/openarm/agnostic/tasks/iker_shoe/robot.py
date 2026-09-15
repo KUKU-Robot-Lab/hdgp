@@ -9,14 +9,16 @@ DG-5F Isaac USD, and DG-5F hand gains proportional to joint inertia (the vendor 
 from __future__ import annotations
 
 import re
+from typing import Sequence
 
 import isaaclab.sim as sim_utils
+import torch
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg
 
 from openarm.agnostic.modules import robot_profiles, vendor_gains
 
-from . import layout
+from . import grasp_stage, layout
 
 ROBOT_PRIM_PATH = "/World/envs/env_.*/Robot"
 SOLVER_POSITION_ITERATIONS = 32
@@ -69,3 +71,18 @@ def robot_cfg() -> ArticulationCfg:
         actuators=_actuators(prof, str(usd.parent)),
         soft_joint_pos_limit_factor=1.0,
     )
+
+
+def apply_hand_backstop(articulation, roles: Sequence[str]) -> dict[str, list[float]]:
+    """Write the learned-grasp spec §16 backstop (``grasp_stage.backstop_limits``) into the simulator and return it as boot
+    metadata, ``{joint: [lo, hi]}`` rounded to 4 decimals. A runtime-written limit holds against the joint's own drive
+    (probe 2026-09-15: thumb_3 target 0.8 rad past the open pose, measured -0.0003 rad)."""
+    prof = profile()
+    names = list(articulation.data.joint_names)
+    hand = [names.index(name) for name in prof.hand_joint_names]
+    hard = articulation.data.joint_pos_limits[0, hand]
+    limits = grasp_stage.backstop_limits(prof.hand_joint_names, hard[:, 0], hard[:, 1], prof.hand_open_pose, prof.hand_grip_pose, roles)
+    for name, bounds in limits.items():
+        value = torch.tensor(bounds, device=articulation.device).repeat(articulation.num_instances, 1, 1)
+        articulation.write_joint_position_limit_to_sim(value, joint_ids=[names.index(name)])
+    return {name: [round(lo, 4), round(hi, 4)] for name, (lo, hi) in limits.items()}

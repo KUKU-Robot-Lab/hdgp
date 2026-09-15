@@ -75,6 +75,22 @@ def test_stage1_hand_limits_keep_the_profile_narrowing_on_frozen_joints():
     assert hi.tolist() == pytest.approx([1.58, 0.0])
 
 
+def test_backstop_limits_move_the_opening_side_limit_to_the_open_pose():
+    names = ("l_hj_thumb_3", "l_hj_index_3")
+    lo, hi = torch.tensor([-1.5708, -1.5708]), torch.tensor([1.5708, 1.5708])
+    open_pose, grip_pose = (0.0, 0.0), (-1.8, 1.8)
+    thumb = gs.backstop_limits(names, lo, hi, open_pose, grip_pose, ("thumb_3",))
+    assert list(thumb) == ["l_hj_thumb_3"] and thumb["l_hj_thumb_3"] == pytest.approx((-1.5708, 0.0))
+    index = gs.backstop_limits(names, lo, hi, open_pose, grip_pose, ("index_3",))
+    assert index["l_hj_index_3"] == pytest.approx((0.0, 1.5708))
+    with pytest.raises(ValueError, match="matches 0"):
+        gs.backstop_limits(names, lo, hi, open_pose, grip_pose, ("pinky_3",))
+    with pytest.raises(ValueError, match="closing direction"):
+        gs.backstop_limits(names, lo, hi, open_pose, (0.0, 1.8), ("thumb_3",))
+    with pytest.raises(ValueError, match="outside"):
+        gs.backstop_limits(names, lo, hi, (2.0, 0.0), grip_pose, ("thumb_3",))
+
+
 def test_hand_targets_map_linearly_filter_and_clamp():
     lo, hi = torch.tensor([0.0, -1.0]), torch.tensor([2.0, 1.0])
     previous = torch.tensor([[1.0, 0.0]])

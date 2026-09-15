@@ -363,6 +363,9 @@ BOOT_METADATA_KEYS = (
     "config_index", "physics_dt", "friction", "solver_position_iterations", "solver_velocity_iterations", "gains",
     "robot_usd", "shoe_meta_sha256", "scene_config",
 )
+# A learned bank also records the thumb backstop its stage-1 environment ran with (learned-grasp spec §16); the pre-grasp
+# bank keeps the nine keys — its hand is open, clear of the backstop.
+LEARNED_BOOT_KEYS = BOOT_METADATA_KEYS + ("hand_backstop",)
 JOINT_COLUMNS = ("joint_pos", "joint_target")
 
 
@@ -387,15 +390,15 @@ def learned_bank_metadata(
     verified: int,
 ) -> dict:
     """Metadata of a bank harvested from a stage-1 checkpoint: the environments' boot comparison keys and its origin."""
-    missing = [key for key in BOOT_METADATA_KEYS if key not in boot]
-    extra = sorted(set(boot) - set(BOOT_METADATA_KEYS))
+    missing = [key for key in LEARNED_BOOT_KEYS if key not in boot]
+    extra = sorted(set(boot) - set(LEARNED_BOOT_KEYS))
     if missing or extra:
-        raise ValueError(f"boot metadata keys differ from {BOOT_METADATA_KEYS}: missing {missing}, extra {extra}")
+        raise ValueError(f"boot metadata keys differ from {LEARNED_BOOT_KEYS}: missing {missing}, extra {extra}")
     _check_side_sign(float(side_sign))
     if not 0 <= verified <= captured:
         raise ValueError(f"verified {verified} must lie within 0..captured {captured}")
     return {
-        **{key: boot[key] for key in BOOT_METADATA_KEYS},
+        **{key: boot[key] for key in LEARNED_BOOT_KEYS},
         "source": LEARNED_BANK_SOURCE,
         "side_sign": float(side_sign),
         "checkpoint": str(checkpoint),

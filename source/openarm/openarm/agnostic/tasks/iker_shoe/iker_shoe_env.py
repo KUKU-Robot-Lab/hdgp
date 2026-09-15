@@ -2,7 +2,8 @@
 
 Episodes start from a grasp-bank state (shoe already in the closed hand on the table). The policy moves the
 palm with a 6-D delta pose through damped least-squares IK at 10 Hz; the hand keeps the bank's commanded
-targets. The reward is the fixed IKER reward toward the target keypoints of one interaction file.
+targets, with the stage-1 thumb backstop (learned-grasp spec §16). The reward is the fixed IKER reward toward
+the target keypoints of one interaction file.
 """
 
 from __future__ import annotations
@@ -60,6 +61,7 @@ class IkerShoeEnv(DirectRLEnv):
         self._gravity_ids, _ = self._robot.find_joints(robot.GRAVITY_COMPENSATION_JOINTS)
         self._palm = self._robot.find_bodies(prof.palm_body)[0][0]
         self._palm_jacobian = self._palm - 1  # fixed-base Jacobians omit the root body
+        backstop = robot.apply_hand_backstop(self._robot, cfg.hand_backstop_joints)
         scene_config = layout.sample_configs(cfg.config_index + 1)[cfg.config_index]
         expected = {
             "config_index": cfg.config_index,
@@ -71,6 +73,7 @@ class IkerShoeEnv(DirectRLEnv):
             "robot_usd": str(prof.usd_relpath),
             "shoe_meta_sha256": hashlib.sha256(layout.SHOE_META_PATH.read_bytes()).hexdigest(),
             "scene_config": vars(scene_config),
+            "hand_backstop": backstop,
         }
         expected = json.loads(json.dumps(expected))
         bank_doc = run_files.read_json(_artifact(cfg.grasp_bank_path, run_dir / "grasp_bank.json"))

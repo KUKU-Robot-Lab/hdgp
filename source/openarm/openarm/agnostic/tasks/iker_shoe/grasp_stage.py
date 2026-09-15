@@ -154,6 +154,36 @@ def stage1_hand_limits(
     return hand_action_limits(joint_names, lo, hi, frozen_hand_override(joint_names, open_pose, frozen_roles))
 
 
+def backstop_limits(
+    joint_names: Sequence[str],
+    hard_lo: torch.Tensor,
+    hard_hi: torch.Tensor,
+    open_pose: Sequence[float],
+    grip_pose: Sequence[float],
+    roles: Sequence[str],
+) -> dict[str, tuple[float, float]]:
+    """Joint position limits that keep the hand joint ``roles`` from bending back past the profile's open pose (spec §16):
+    the limit opposite each role's closing direction (open -> grip) moves to the open pose, the other stays hard.
+
+    ``joint_names`` are the profile's hand joints, ``hard_lo``/``hard_hi`` their (J,) simulator limits, the poses (J,)
+    profile values. Returns ``{joint name: (lo, hi)}`` in ``roles`` order.
+    """
+    names = list(joint_names)
+    if hard_lo.shape != (len(names),) or hard_hi.shape != (len(names),):
+        raise ValueError(f"limits must be ({len(names)},), got {tuple(hard_lo.shape)} and {tuple(hard_hi.shape)}")
+    limits = {}
+    for role in roles:
+        index = role_joint_index(names, role)
+        lo, hi = float(hard_lo[index]), float(hard_hi[index])
+        q_open, q_grip = float(open_pose[index]), float(grip_pose[index])
+        if q_grip == q_open:
+            raise ValueError(f"{names[index]} has no closing direction: its open and grip poses are both {q_open}")
+        if not lo <= q_open <= hi:
+            raise ValueError(f"{names[index]} open pose {q_open} lies outside its limits [{lo}, {hi}]")
+        limits[names[index]] = (lo, q_open) if q_grip < q_open else (q_open, hi)
+    return limits
+
+
 def hand_targets(
     action: torch.Tensor, lo: torch.Tensor, hi: torch.Tensor, previous: torch.Tensor, alpha: float = HAND_EMA_ALPHA
 ) -> torch.Tensor:

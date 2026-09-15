@@ -240,7 +240,7 @@ def test_gains_metadata_rounds_for_exact_comparison():
     assert meta == {"stiffness": {"a": 400.0, "b": 10.0}, "damping": {"a": 80.0, "b": 0.1235}}
 
 
-BOOT = {key: index for index, key in enumerate(gb.BOOT_METADATA_KEYS)}
+BOOT = {key: index for index, key in enumerate(gb.LEARNED_BOOT_KEYS)}
 
 
 def test_sorted_joint_columns_load_back_in_articulation_order():
@@ -259,7 +259,7 @@ def test_sorted_joint_columns_load_back_in_articulation_order():
 def test_learned_bank_metadata_keeps_the_boot_keys_and_records_the_origin():
     meta = gb.learned_bank_metadata(BOOT, side_sign=-1.0, checkpoint="/b/ep350.pth", checkpoint_sha256="ab",
                                     stage1_reward={"g_min": 0.5}, seeds=(0, 1), captured=90, verified=70)
-    assert {key: meta[key] for key in gb.BOOT_METADATA_KEYS} == BOOT
+    assert {key: meta[key] for key in gb.LEARNED_BOOT_KEYS} == BOOT
     assert (meta["source"], meta["side_sign"], meta["seeds"], meta["captured"], meta["verified"]) == ("learned_grasp", -1.0, [0, 1], 90, 70)
     without_gains = {key: value for key, value in BOOT.items() if key != "gains"}
     with pytest.raises(ValueError, match="missing"):
@@ -268,3 +268,8 @@ def test_learned_bank_metadata_keeps_the_boot_keys_and_records_the_origin():
     with pytest.raises(ValueError, match="verified"):
         gb.learned_bank_metadata(BOOT, side_sign=-1.0, checkpoint="c", checkpoint_sha256="s", stage1_reward={},
                                  seeds=(0,), captured=1, verified=2)
+    nine_keys = {key: BOOT[key] for key in gb.BOOT_METADATA_KEYS}  # a boot without the hand backstop (spec §16)
+    with pytest.raises(ValueError, match="hand_backstop"):
+        gb.learned_bank_metadata(nine_keys, side_sign=-1.0, checkpoint="c", checkpoint_sha256="s", stage1_reward={},
+                                 seeds=(0,), captured=1, verified=1)
+    assert gb.LEARNED_BOOT_KEYS == gb.BOOT_METADATA_KEYS + ("hand_backstop",)
