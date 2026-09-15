@@ -39,3 +39,18 @@ for _suffix, _cfg_name in (("", "IkerShoeGraspEnvCfg"), ("-play", "IkerShoeGrasp
             "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_grasp_ppo_cfg.yaml",
         },
     )
+
+# Stage-1 grasp with a t2r-generated reward (spec 2026-09-15-iker-stage1-t2r); logs go to log/rl_games/open-sens/left/iker-shoe-grasp-t2r/.
+_GRASP_T2R_ENTRY = "openarm.agnostic.tasks.iker_shoe.iker_shoe_grasp_t2r_env:IkerShoeGraspT2rEnv"
+_GRASP_T2R_CFG_MODULE = "openarm.agnostic.tasks.iker_shoe.iker_shoe_grasp_t2r_env_cfg"
+
+for _suffix, _cfg_name in (("", "IkerShoeGraspT2rEnvCfg"), ("-play", "IkerShoeGraspT2rPlayEnvCfg")):
+    gym.register(
+        id=f"open-sens_l_iker_shoe_grasp_t2r{_suffix}",
+        entry_point=_GRASP_T2R_ENTRY,
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{_GRASP_T2R_CFG_MODULE}:{_cfg_name}",
+            "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_grasp_ppo_cfg.yaml",
+        },
+    )
