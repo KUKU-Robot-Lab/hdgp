@@ -45,5 +45,17 @@
    "action": "조건 모두 참이면 advance 절차: 학습 PID 종료(명령줄 iter_03 확인, SIGTERM 후 남으면 kill -9) → 최신 체크포인트 play 영상(PYTHONUNBUFFERED 불필요, play.py) → our_source 시트·양손 확대 → notes_round4 초안 → 사용자 승인 후 advance/iter_04 생성",
    "else": "조건 하나라도 거짓이면 continue(extended) 요약"
   }
+ },
+ "video_rule_0915": {
+  "decided": "09.15 사용자 '접근을 해도 엄지가 자꾸 걸리게 접근하는지도 확인 · 접근을 못하면 파지가 안됨' → 영상 시점 'epoch 300 에서 확인'",
+  "trigger": "t2r_rh_i03_a2 epoch >= 300 이고 nn/last_open-rh_b_pour_fab_mimic_ep_300_*.pth 존재",
+  "procedure": [
+   "RUN_LABEL=t2r_rh_i03_a2 로 train.py PID 확정 후 kill <pid>(pkill 금지)",
+   "ep_300 체크포인트 play 영상(단일 GPU 라 학습 종료 후) — 양손 확대, our_source 에 저장",
+   "틱마다 보고 지표: reward/rim_hook_pen · task/src,rcv_palm_to_cup · contact/src,rcv_max (엄지 걸림 접근 여부)",
+   "영상·지표를 사용자에게 보고하고 판단을 받는다(보상 변경·iter 생성은 승인 전 금지)",
+   "이어 학습: pour_t2r_rh_train.sh t2r_rh_i03_a2 reward_gen/pour_bi_rh/iter_03 --num_envs 1024 --checkpoint <ep_300.pth> --no-reset_epoch"
+  ],
+  "baseline_epoch_114": "rim_hook_pen −0.067(이전 런 −0.044) · src_palm_to_cup 17.2 cm(이전 17.3) · 접촉 0 — epoch 80 부터 palm<20 cm 에서 벌점 증가"
  }
 }
