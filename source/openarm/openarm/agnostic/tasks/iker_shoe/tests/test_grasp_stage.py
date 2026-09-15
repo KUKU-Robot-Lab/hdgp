@@ -219,6 +219,16 @@ def test_lift_progress_is_paid_only_inside_the_hold_zone():
     assert back.state.best_lift.item() == pytest.approx(0.03 - CFG.lift_deadband_m)
 
 
+def test_lift_progress_needs_the_thumb_closing():
+    state = gs.Stage1State.start(1)
+    open_thumb = _step(state, dz_free=torch.tensor([0.03]), thumb_curl=torch.tensor([0.0]))
+    assert open_thumb.terms["lift_progress"].item() == 0.0
+    bent_back = _step(open_thumb.state, dz_free=torch.tensor([0.03]), thumb_curl=torch.tensor([-0.4]))
+    assert bent_back.terms["lift_progress"].item() == 0.0
+    closing = _step(bent_back.state, dz_free=torch.tensor([0.03]), thumb_curl=torch.tensor([0.06]))
+    assert closing.terms["lift_progress"].item() == pytest.approx(2000 * (0.03 - CFG.lift_deadband_m))
+
+
 def test_lift_bonus_needs_three_consecutive_held_steps_and_pays_once():
     state = gs.Stage1State.start(1)
     paid = []
