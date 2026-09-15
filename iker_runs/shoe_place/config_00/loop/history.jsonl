@@ -1,1 +1,2 @@
 {"time": "2026-09-15T16:29:49+09:00", "phase": "stage1_a", "action": "init", "adopted": ["stage1_a"]}
+{"time": "2026-09-15T17:47:28+09:00", "phase": "stage1_a", "action": "record_gate", "reason": "epoch 200 latched 0.14 % vs 2.00 %", "params": {"epoch": 200, "latched": 0.001418514660326764, "passed": false}, "result": {}}
