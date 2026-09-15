@@ -1,0 +1,114 @@
+{
+ "ok": true,
+ "errors": [],
+ "warnings": [],
+ "term_stats": {
+  "approach": {
+   "mean": 0.6329216162363688,
+   "abs_max": 1.0
+  },
+  "envelope": {
+   "mean": 0.37657098968823755,
+   "abs_max": 1.5
+  },
+  "lift": {
+   "mean": 0.0033957716829415103,
+   "abs_max": 0.44732168316841125
+  },
+  "success_bonus": {
+   "mean": 0.20833333333333334,
+   "abs_max": 10.0
+  },
+  "final_success_bonus": {
+   "mean": 2.6041844685872397,
+   "abs_max": 250.00173950195312
+  },
+  "touch_penalty": {
+   "mean": -0.1109375034769376,
+   "abs_max": 0.30000001192092896
+  },
+  "table_penalty": {
+   "mean": -0.07503711059689522,
+   "abs_max": 0.5
+  },
+  "action_rate_penalty": {
+   "mean": -0.013276806101202965,
+   "abs_max": 0.024069031700491905
+  },
+  "arm_vel_penalty": {
+   "mean": -0.011814993495742481,
+   "abs_max": 0.023333212360739708
+  },
+  "diag_stage": {
+   "mean": 0.84375,
+   "abs_max": 2.0
+  },
+  "diag_approach_pos_err": {
+   "mean": 0.44421228766441345,
+   "abs_max": 0.8980164527893066
+  },
+  "diag_orientation": {
+   "mean": 0.002024128276389092,
+   "abs_max": 0.3342567980289459
+  },
+  "diag_pose_max_dev": {
+   "mean": 0.6958494583765666,
+   "abs_max": 0.9525763988494873
+  },
+  "diag_cup_still": {
+   "mean": 2.3106161724702663e-08,
+   "abs_max": 2.2757137685402995e-06
+  },
+  "diag_contact_score": {
+   "mean": 0.990079402923584,
+   "abs_max": 1.0
+  },
+  "diag_envelope_now": {
+   "mean": 0.9791666666666667,
+   "abs_max": 1.0
+  },
+  "diag_grasp_quality": {
+   "mean": 0.9867725570996602,
+   "abs_max": 1.0
+  },
+  "diag_lift_frac": {
+   "mean": 0.4292880892753601,
+   "abs_max": 1.0
+  }
+ },
+ "total_stats": {
+  "mean": 3.614339967568715,
+  "abs_max": 262.4880065917969
+ },
+ "fields_used": [
+  "actions",
+  "approach_done",
+  "arm_qd",
+  "cup_ang_vel",
+  "cup_axis",
+  "cup_half_height",
+  "cup_lin_vel",
+  "cup_pos",
+  "cup_radius",
+  "cup_spawn_pos",
+  "cup_tilt",
+  "envelope_done",
+  "goal_dist",
+  "goal_pos",
+  "hand_default_q_norm",
+  "hand_q_norm",
+  "hand_z_min",
+  "link_cup_force",
+  "link_pos",
+  "max_successes",
+  "num_successes",
+  "palm_cup_force",
+  "palm_finger_dir",
+  "palm_normal",
+  "palm_pos",
+  "prev_actions",
+  "success",
+  "success_tol",
+  "table_z"
+ ]
+}
