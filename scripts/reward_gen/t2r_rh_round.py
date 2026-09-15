@@ -103,6 +103,21 @@ def summarize(events_dir: Path, last_n: int = 50) -> dict:
     return out
 
 
+def _round_policy_for(label: str) -> dict:
+    """LOOP_STATE.round_extension(사용자 결정 라운드 연장)이 이 라벨에 걸려 있으면 라운드 길이만 늘린 정책을 돌려준다."""
+    p = _HDGP / "reward_gen" / "pour_bi_rh" / "LOOP_STATE.json"
+    try:
+        st = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"[round] LOOP_STATE 읽기 실패 — 기본 정책 사용: {e}", file=sys.stderr)
+        return dict(ROUND_POLICY)
+    ext = st.get("round_extension") if st.get("label") == label else None
+    if not ext:
+        return dict(ROUND_POLICY)
+    return {**ROUND_POLICY, "ROUND_EPOCHS": int(ext["round_epochs"]), "ROUND_HOURS": float(ext["round_hours"]),
+            "EXTENDED": ext.get("decided", "")}
+
+
 def cmd_status(a) -> int:
     st = tail_state(a.label)
     mirror = sync(a.label)
@@ -114,19 +129,24 @@ def cmd_status(a) -> int:
     # ★nohup 리다이렉트는 stdout 이 블록 버퍼라 로그의 epoch 줄이 크게 뒤처진다 — TB 점 개수가 진실.
     n_tb = max((v["n"] for v in summ.values()), default=0)
     st["epoch"] = max(st["epoch"] or 0, n_tb)
+    policy = _round_policy_for(a.label)
+    base_over = (st["epoch"] or 0) >= ROUND_POLICY["ROUND_EPOCHS"] or (hours or 0) >= ROUND_POLICY["ROUND_HOURS"]
+    over = (st["epoch"] or 0) >= policy["ROUND_EPOCHS"] or (hours or 0) >= policy["ROUND_HOURS"]
     if st["crashed"] or (not st["alive"] and (st["epoch"] or 0) < 10):
         verdict = "crashed"
     elif succ >= ROUND_POLICY["KEEP_SUCCESS"]:
         verdict = "continue(success)"
-    elif (st["epoch"] or 0) >= ROUND_POLICY["ROUND_EPOCHS"] or (hours or 0) >= ROUND_POLICY["ROUND_HOURS"]:
+    elif over:
         verdict = "advance"
+    elif base_over and st["alive"]:
+        verdict = "continue(extended)"
     elif not st["alive"]:
         verdict = "dead"
     else:
         verdict = "continue"
     rep = {"label": a.label, "verdict": verdict, "epoch": st["epoch"], "alive": st["alive"],
            "pids": st["pids"], "hours": round(hours, 2) if hours else None, "mirror": str(mirror),
-           "metrics": summ, "policy": ROUND_POLICY}
+           "metrics": summ, "policy": policy}
     print(json.dumps(rep, indent=1, ensure_ascii=False))
     (Path(a.iter) / "status.json").write_text(json.dumps(rep, indent=1, ensure_ascii=False))
     return 0

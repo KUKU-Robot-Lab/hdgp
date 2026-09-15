@@ -17,5 +17,11 @@
  "decisions_round2": "09.15 사용자 '승인' — notes_round2 초안 그대로(접근 보상 수치 추가 없음). iter_02 생성 시작",
  "round3_end": "09.15 advance 판정(epoch 674, 3.69 h) — 사용자 지시 'epoch 600 까지 진행되면 영상추출'. 학습 PID 487734 종료, 영상 체크포인트 ep_600. 정체: 파지 0, 접촉 보상 ≤0.011, reward/total 0.56→0.62(epoch 320→670)",
  "decisions_round3": "09.15 사용자 영상 평가 '손을 돌려서 다가가고 손이 펴지지 않아 컵 앞에서 멈춤' 반영 후 '진행' — notes_round3(iter_05 참고 사실·사용자 판단 포함) 승인, iter_03 생성 시작",
- "palm_axes_fix_0915": "env palm_axes = [열2 법선, 열1] (5ce10644). vision-3090 프로브: ctx==열2 오차 0, 손 닫을 때 손끝 +25.6/+25.8 mm(열2) vs ±2.4 mm(옛 열0) — 양손 확인 후 iter_03 기동"
+ "palm_axes_fix_0915": "env palm_axes = [열2 법선, 열1] (5ce10644). vision-3090 프로브: ctx==열2 오차 0, 손 닫을 때 손끝 +25.6/+25.8 mm(열2) vs ±2.4 mm(옛 열0) — 양손 확인 후 iter_03 기동",
+ "round_extension": {
+  "decided": "09.15 사용자 '라운드 연장' — epoch 597 에서 오른손 파지 1.2%→7.9%(epoch 520→590) 상승 중",
+  "round_epochs": 1200,
+  "round_hours": 10,
+  "stop_rule": "오른손 파지(task/src_grasped)가 150 epoch 동안 평탄하면 advance 를 사용자에게 제안(자동 advance 금지)"
+ }
 }

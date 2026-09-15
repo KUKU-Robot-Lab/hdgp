@@ -12,6 +12,9 @@
 2. verdict 별 행동 — 원본 LOOP_PROMPT.md 2 와 같다. 추가로 **`ctrl/mimic_err_max`** 가 10 rad 을 넘는 epoch 이 반복되면
    보상이 아니라 물리(종속 한계)가 문제다 → `env.mimic_dep_limit_margin_rad` 를 올려 같은 iter 재기동(라벨 `_m2` 등).
    OOM/PhysX overflow 면 env 를 절반으로(1024 → 512).
+   **`continue(extended)`**(09.15): `LOOP_STATE.round_extension` 이 이 라벨에 걸려 기본 600 epoch 을 넘겼지만 연장 기준 안이다 —
+   continue 와 같이 한 줄 요약만 하되, `task/src_grasped`(와 이후 `rcv_grasped`)가 150 epoch 동안 평탄하면 **자동 advance 하지 말고**
+   사용자에게 advance 를 제안한다. 연장 기준(epoch/시간)을 넘으면 판정기가 `advance` 를 낸다.
 3. `python3 scripts/reward_gen/t2r_rh_round.py advance --label <label> --iter reward_gen/pour_bi_rh/iter_NN`
    → `iter_NN/feedback.md` + `iter_(NN+1)/prompt.md`. best 갱신 규칙은 원본과 같다.
    ★원본 text2reward 의 피드백은 **사람이 학습된 정책을 보고 쓴 관찰**이다(관측 #0233). 지표 표만으로 advance 하지 말고
