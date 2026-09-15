@@ -118,7 +118,7 @@ def make_fake_context(n: int = 16, *, device: str = "cpu", seed: int = 0) -> Rew
     axis = unit(n, 3)
     return RewardContext(
         table_z=0.205, lift_latch_height=0.10, success_hold_steps=10, max_successes=5,
-        palm_pos=r(n, 3, lo=0.0, hi=0.6), palm_normal=unit(n, 3), palm_side=unit(n, 3),
+        palm_pos=r(n, 3, lo=0.0, hi=0.6), palm_normal=unit(n, 3), palm_side=unit(n, 3), palm_finger_dir=unit(n, 3),
         link_pos=r(n, NUM_FINGERS, NUM_LINKS, 3, lo=0.0, hi=0.6),
         link_cup_force=r(n, NUM_FINGERS, NUM_LINKS, lo=0.0, hi=5.0), palm_cup_force=r(n, lo=0.0, hi=5.0),
         hand_q=r(n, NUM_HAND, lo=0.0, hi=1.6), hand_q_norm=r(n, NUM_HAND, lo=0.0, hi=1.0),

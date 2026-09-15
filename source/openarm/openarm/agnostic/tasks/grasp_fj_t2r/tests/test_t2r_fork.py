@@ -42,7 +42,7 @@ def _write(tmp_path, src: str) -> str:
 def test_context_stub_is_the_prompt_environment_description():
     stub = C.context_stub_source()
     assert "class RewardContext" in stub
-    for name in ("palm_pos", "palm_normal", "link_pos", "link_cup_force", "palm_cup_force",
+    for name in ("palm_pos", "palm_normal", "palm_finger_dir", "link_pos", "link_cup_force", "palm_cup_force",
                  "hand_q_norm", "cup_axis", "cup_radius", "cup_half_height", "goal_dist",
                  "success_tol", "success", "lifted", "actions", "prev_actions"):
         assert name in stub, name
@@ -66,6 +66,8 @@ def test_fake_context_matches_the_documented_layout():
     assert ctx.hand_default_q_norm.shape == (8, 19)
     assert ctx.approach_done.shape == (8,) and ctx.approach_done.dtype == torch.bool
     assert ctx.envelope_done.shape == (8,) and ctx.envelope_done.dtype == torch.bool
+    # ★09.15 사용자 "손가락 방향(palm_ee_z)" — 접근 방향 게이트가 쓰는 손바닥 프레임 z 축
+    assert ctx.palm_finger_dir.shape == (8, 3)
     assert ctx.num_envs == 8
 
 

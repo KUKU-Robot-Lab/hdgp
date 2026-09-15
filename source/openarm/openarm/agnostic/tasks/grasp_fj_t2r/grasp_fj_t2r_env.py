@@ -26,7 +26,8 @@ from ..grasp_fj.grasp_fj_env import GraspFJEnv
 from ..grasp_fj.robot_profiles import PROFILES
 from .grasp_fj_t2r_env_cfg import GraspFJT2RRightShortEnvCfg
 from .grasp_gates import TOUCH_N as _GATE_TOUCH_N
-from .grasp_gates import palm_facing, pose_deviation, update_gates
+from .grasp_gates import (APPROACH_CONDITIONS, approach_conditions, hand_orientation, palm_facing, pose_deviation,
+                          update_gates)
 from .palm_frame import palm_center_offset
 from .stage_funnel import STAGES, palm_band_gap, step_flags
 from .t2r.context import RewardContext
@@ -164,12 +165,16 @@ class GraspFJT2REnv(GraspFJEnv):
         axis = quat_apply(cup_quat, torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(n, 3))
         raw = getattr(self, "_act_raw", self.actions).clamp(-1.0, 1.0)
         # ★09.15 보상 게이트 래치 — 이 스텝 상태로 접근 완료·인벨롭 완료를 갱신한다(한 번 서면 리셋까지 유지).
-        #   접근 = 손바닥 중심↔파지 띠 · 손바닥 방향 · 기본 손 자세, 인벨롭 = 접근 뒤 손바닥+엄지+손가락 수 연속. 수치는 grasp_gates.
-        self._t2r_gate_approach, self._t2r_gate_env_count, self._t2r_gate_envelope = update_gates(
-            self._t2r_gate_approach, self._t2r_gate_env_count, self._t2r_gate_envelope,
+        #   접근 = 손바닥 중심↔파지 띠 · 손바닥 방향 · 손 방향 · 기본 손 자세, 인벨롭 = 접근 뒤 손바닥+엄지+손가락 수 연속. 수치는 grasp_gates.
+        #   ★09.15 사용자 "컵에 다가가는 palm_ee_x · 손가락 방향(palm_ee_z)" — 손 방향 = palm_ee 프레임 x(법선)·z(손가락)가 시작 자세 그대로.
+        gate_in = dict(
             gap=palm_band_gap(palm_center, cup_local, axis, self._obj_grasp_r, self._obj_grasp_h),
             facing=palm_facing(palm_center, R[:, :, 0], cup_local, axis),
-            pose_dev=pose_deviation(q_norm, self._t2r_default_q_norm, self._t2r_movable),
+            orient=hand_orientation(palm_center, R[:, :, 0], R[:, :, 2], cup_local, axis),
+            pose_dev=pose_deviation(q_norm, self._t2r_default_q_norm, self._t2r_movable))
+        self._t2r_approach_ok = approach_conditions(**gate_in).float().mean(dim=0)
+        self._t2r_gate_approach, self._t2r_gate_env_count, self._t2r_gate_envelope = update_gates(
+            self._t2r_gate_approach, self._t2r_gate_env_count, self._t2r_gate_envelope, **gate_in,
             palm_touch=palm_f > _GATE_TOUCH_N, finger_touch=(links_f > _GATE_TOUCH_N).any(dim=2))
         vals = dict(
             table_z=float(self.cfg.table_surface_z),
@@ -177,7 +182,7 @@ class GraspFJT2REnv(GraspFJEnv):
             success_hold_steps=int(self.cfg.goal_success_steps),
             max_successes=int(self.cfg.goal_max),
             palm_pos=palm_center,
-            palm_normal=R[:, :, 0], palm_side=R[:, :, 1],
+            palm_normal=R[:, :, 0], palm_side=R[:, :, 1], palm_finger_dir=R[:, :, 2],
             link_pos=link_pos, link_cup_force=links_f, palm_cup_force=palm_f,
             hand_q=q,
             hand_q_norm=q_norm,
@@ -244,6 +249,9 @@ class GraspFJT2REnv(GraspFJEnv):
             ex[f"stage/{name}_gate_ep"] = self._t2r_gate_ema[k]
         ex["stage/approach_gate_now"] = ctx.approach_done.to(touching.dtype).mean()
         ex["stage/envelope_gate_now"] = ctx.envelope_done.to(touching.dtype).mean()
+        # 접근 래치가 안 설 때 네 조건 중 무엇이 막는지 — 이 스텝에 조건별로 통과한 env 비율(09.15 틱: 퍼널 접근 0.56 · 래치 0).
+        for k, name in enumerate(APPROACH_CONDITIONS):
+            ex[f"stage/approach_ok_{name}_now"] = self._t2r_approach_ok[k]
 
     def _reset_idx(self, env_ids) -> None:
         ids = self.robot._ALL_INDICES if env_ids is None else env_ids

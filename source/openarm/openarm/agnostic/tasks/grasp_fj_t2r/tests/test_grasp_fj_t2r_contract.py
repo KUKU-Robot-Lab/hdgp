@@ -120,12 +120,17 @@ def test_reward_gate_latches_follow_the_user_three_stages_of_0915():
                 "self._t2r_gate_envelope", "self._t2r_gate_ema"):
         assert tok in init, tok
     bc = _fn_block(_ENV, "_build_context")
-    _ordered(bc, ["update_gates(", "vals = dict(", "hand_default_q_norm=", "approach_done=self._t2r_gate_approach",
+    # ★09.15 사용자 "컵에 다가가는 palm_ee_x · 손가락 방향(palm_ee_z)" — 접근 래치는 시작 자세의 손 방향(palm_ee 프레임 x·z)을 본다.
+    _ordered(bc, ["orient=hand_orientation(palm_center, R[:, :, 0], R[:, :, 2]", "update_gates(", "vals = dict(",
+                  "palm_finger_dir=R[:, :, 2]", "hand_default_q_norm=", "approach_done=self._t2r_gate_approach",
                   "envelope_done=self._t2r_gate_envelope", "v.clone() if isinstance(v, torch.Tensor) else v"])
     rs = _fn_block(_ENV, "_reset_idx")
     _ordered(rs, ["self._event_ema(self._t2r_gate_ema", "self._t2r_gate_approach[ids] = False",
                   "self._t2r_gate_envelope[ids] = False", "super()._reset_idx(env_ids)"])
-    assert 'f"stage/{name}_gate_ep"' in _fn_block(_ENV, "_log_fabric_metrics")
+    log = _fn_block(_ENV, "_log_fabric_metrics")
+    assert 'f"stage/{name}_gate_ep"' in log
+    # 접근 래치가 0 일 때 네 조건 중 무엇이 막는지(09.15 틱: 퍼널 접근 0.56 인데 래치 0 — 로그로 구분 불가)
+    assert 'f"stage/approach_ok_{name}_now"' in log and "APPROACH_CONDITIONS" in log
 
 
 def test_reward_code_path_defaults_empty_and_leaf_is_the_short_tl_hand():

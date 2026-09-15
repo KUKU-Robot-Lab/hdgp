@@ -57,6 +57,8 @@
 5. 사용자가 승인하면(대화에서 — 수정 요청이면 파일을 고쳐 다시 승인받는다):
    a. `python3 scripts/reward_gen/t2r_fj_round.py advance --track <track> --label <label> --iter reward_gen/<track>/iter_NN --description reward_gen/<track>/iter_NN/observation.md --feedback reward_gen/<track>/iter_NN/improvement.md [--no-metrics]`
       → `history.jsonl` 갱신 + `iter_(NN+1)/prompt.md`(전 이력 + 참고 지표 표, 환경 변종은 meta 의 variant).
+   과제 문장(`scripts/reward_gen/tasks/<track>.txt`)을 사용자 결정으로 바꾼 라운드만 `--task-file` 을 붙인다 — 없으면 지난 meta 의 task 승계
+   (★09.15 사용자 "컵에 다가가는 palm_ee_x · 손가락 방향" → grasp_fj_stage 접근 손 방향).
    b. 생성: Agent(general-purpose, 새 에이전트)에게 **`iter_(NN+1)/prompt.md` 경로만** —
       "그 파일만 읽고 요청대로 답을 `iter_(NN+1)/response.md` 에 써라. 저장소의 다른 파일을 열거나 실행하지 마라."
    c. `../IsaacLab/isaaclab.sh -p scripts/reward_gen/t2r_fj.py ingest --iter reward_gen/<track>/iter_(NN+1)` (cpu+cuda 드라이런).

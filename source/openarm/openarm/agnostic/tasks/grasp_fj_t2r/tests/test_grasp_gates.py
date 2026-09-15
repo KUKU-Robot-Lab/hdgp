@@ -1,7 +1,10 @@
 """보상 게이트용 에피소드 단계 래치 — 순수 torch (Isaac 불요).
 
 잠그는 것(09.15 사용자 "기본 핸드 자세에서 컵으로 접근 → 접근한 상태에서 인벨롭 파지 → 리프트"):
-  · 접근 완료 = 손바닥 중심 ↔ 파지 띠 ≤ 2 cm · 손바닥이 컵 축을 향함(cos ≥ 0.7) · 움직이는 손 관절이 기본 자세 ±0.15 안 — 셋 동시.
+  · 접근 완료 = 손바닥 중심 ↔ 파지 띠 ≤ 2 cm · 손바닥이 컵 축을 향함(cos ≥ 0.7) · 손 방향(시작 자세 그대로) ·
+    움직이는 손 관절이 기본 자세 ±0.15 안 — 넷 동시.
+  · ★09.15 사용자 "컵에 다가가는 palm_ee_x · 손가락 방향(palm_ee_z)" → 손 방향 = 손바닥이 컵의 −y 쪽 · 법선 +y · 손가락 +x
+    (cos ≥ 0.7 셋 다). 리셋 자세 FK 가 이미 이 방향이라 접근은 회전 없는 이동이다.
   · 인벨롭 완료 = 접근 완료 **뒤에만** · 손바닥 + 엄지 + 닿은 손가락 ≥ 4 가 5 스텝 연속.
   · 둘 다 에피소드 래치(한 번 서면 리셋까지 유지) — 끊기면 연속 카운트만 0.
   · ctx 주석(생성기가 읽는 환경 설명)이 같은 수치를 적는다.
@@ -13,13 +16,20 @@
 
 from __future__ import annotations
 
+import importlib.util
+import re
 from pathlib import Path
 
+import pytest
 import torch
 
 from openarm.agnostic.tasks.grasp_fj_t2r import grasp_gates as G
 
-_CTX = (Path(__file__).resolve().parent.parent / "t2r" / "context.py").read_text(encoding="utf-8")
+_HERE = Path(__file__).resolve().parent.parent
+_CTX = (_HERE / "t2r" / "context.py").read_text(encoding="utf-8")
+_CFG = (_HERE / "grasp_fj_t2r_env_cfg.py").read_text(encoding="utf-8")
+_URDF_TOOL = Path.home() / "rl_ws" / "urdf" / "tools" / "solve_arm_reset_pose.py"
+_URDF = Path.home() / "rl_ws" / "urdf" / "generated" / "rl" / "openarm_dg5f-m-short-tl_bi_rl.urdf"
 
 
 def test_palm_facing_is_plus_one_when_the_palm_normal_points_at_the_cup_axis():
@@ -29,6 +39,19 @@ def test_palm_facing_is_plus_one_when_the_palm_normal_points_at_the_cup_axis():
     normal = torch.tensor([[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]])
     f = G.palm_facing(palm, normal, cup, axis)
     assert torch.allclose(f, torch.tensor([1.0, -1.0, 0.0]), atol=1e-6)
+
+
+def test_hand_orientation_is_the_worst_of_side_normal_and_finger_alignment():
+    cup = torch.zeros(3, 3)
+    axis = torch.tensor([[0.0, 0.0, 1.0]]).expand(3, 3)
+    # env 0: 컵 −y 쪽 · 법선 +y · 손가락 +x (시작 자세 방향) → 1
+    # env 1: 같은 자리에서 손을 z 축으로 90° 돌림(법선 +x · 손가락 −y) → 0
+    # env 2: 방향은 시작 그대로지만 컵 −x 쪽 → 0
+    palm = torch.tensor([[0.0, -0.08, 0.02], [0.0, -0.08, 0.0], [-0.08, 0.0, 0.0]])
+    normal = torch.tensor([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    finger = torch.tensor([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0]])
+    o = G.hand_orientation(palm, normal, finger, cup, axis)
+    assert torch.allclose(o, torch.tensor([1.0, 0.0, 0.0]), atol=1e-6)
 
 
 def test_pose_deviation_ignores_locked_joints():
@@ -43,16 +66,24 @@ def _zeros(n):
     return (torch.zeros(n, dtype=torch.bool), torch.zeros(n, dtype=torch.long), torch.zeros(n, dtype=torch.bool))
 
 
-def test_approach_needs_gap_facing_and_default_pose_together():
-    n = 4
-    gap = torch.tensor([0.01, 0.05, 0.01, 0.01])
-    facing = torch.tensor([0.9, 0.9, 0.3, 0.9])
-    pose_dev = torch.tensor([0.05, 0.05, 0.05, 0.40])
+def test_approach_conditions_name_each_check_for_the_log():
+    c = G.approach_conditions(gap=torch.tensor([0.03]), facing=torch.tensor([0.9]),
+                              orient=torch.tensor([0.1]), pose_dev=torch.tensor([0.0]))
+    assert G.APPROACH_CONDITIONS == ("gap", "facing", "orient", "pose")
+    assert c.shape == (1, 4) and c.tolist() == [[False, True, False, True]]
+
+
+def test_approach_needs_gap_facing_orientation_and_default_pose_together():
+    n = 5
+    gap = torch.tensor([0.01, 0.05, 0.01, 0.01, 0.01])
+    facing = torch.tensor([0.9, 0.9, 0.3, 0.9, 0.9])
+    orient = torch.tensor([0.9, 0.9, 0.9, 0.9, 0.2])
+    pose_dev = torch.tensor([0.05, 0.05, 0.05, 0.40, 0.05])
     no_touch = torch.zeros(n, dtype=torch.bool)
     fingers = torch.zeros(n, 5, dtype=torch.bool)
-    appr, cnt, env = G.update_gates(*_zeros(n), gap=gap, facing=facing, pose_dev=pose_dev,
+    appr, cnt, env = G.update_gates(*_zeros(n), gap=gap, facing=facing, orient=orient, pose_dev=pose_dev,
                                     palm_touch=no_touch, finger_touch=fingers)
-    assert appr.tolist() == [True, False, False, False]
+    assert appr.tolist() == [True, False, False, False, False]
     assert not env.any() and not cnt.any()
 
 
@@ -71,7 +102,7 @@ def test_envelope_only_after_approach_and_after_consecutive_hold_steps():
     no_thumb[2, 0] = False
     no_thumb[2, 4] = True
     for step in range(G.ENVELOPE_HOLD_STEPS):
-        appr, cnt, env = G.update_gates(appr, cnt, env, gap=far, facing=face, pose_dev=dev,
+        appr, cnt, env = G.update_gates(appr, cnt, env, gap=far, facing=face, orient=face, pose_dev=dev,
                                         palm_touch=palm, finger_touch=no_thumb)
         if step < G.ENVELOPE_HOLD_STEPS - 1:
             assert not env.any(), step
@@ -81,7 +112,8 @@ def test_envelope_only_after_approach_and_after_consecutive_hold_steps():
 
 def test_a_break_resets_the_hold_count_but_a_set_latch_stays():
     n = 1
-    kw = dict(gap=torch.tensor([0.10]), facing=torch.tensor([0.9]), pose_dev=torch.tensor([0.0]))
+    kw = dict(gap=torch.tensor([0.10]), facing=torch.tensor([0.9]), orient=torch.tensor([0.9]),
+              pose_dev=torch.tensor([0.0]))
     held = torch.ones(n, 5, dtype=torch.bool)
     loose = torch.zeros(n, 5, dtype=torch.bool)
     appr, cnt, env = torch.tensor([True]), torch.zeros(n, dtype=torch.long), torch.tensor([False])
@@ -98,16 +130,36 @@ def test_a_break_resets_the_hold_count_but_a_set_latch_stays():
 
 def test_update_returns_new_tensors_without_mutating_inputs():
     appr, cnt, env = _zeros(2)
-    out = G.update_gates(appr, cnt, env, gap=torch.tensor([0.0, 0.0]), facing=torch.tensor([1.0, 1.0]),
+    one = torch.tensor([1.0, 1.0])
+    out = G.update_gates(appr, cnt, env, gap=torch.tensor([0.0, 0.0]), facing=one, orient=one,
                          pose_dev=torch.tensor([0.0, 0.0]), palm_touch=torch.tensor([True, True]),
                          finger_touch=torch.ones(2, 5, dtype=torch.bool))
     assert not appr.any() and not cnt.any() and not env.any()
     assert out[0].all() and (out[1] == 1).all()
 
 
+def test_gate_directions_are_the_hand_orientation_of_the_reach_start_pose():
+    # ★09.15 사용자 "palm_ee_x(컵 쪽)·손가락 방향(palm_ee_z)" — 리셋 자세 FK(short-tl URDF)가 이미 법선 +y·손가락 +x 다.
+    #   게이트 방향 상수가 시작 자세와 어긋나면 "시작 방향 유지"가 아니라 회전을 요구하는 게이트가 된다.
+    if not (_URDF_TOOL.exists() and _URDF.exists()):
+        pytest.skip("urdf 도구·자산이 없는 호스트")
+    spec = importlib.util.spec_from_file_location("_solve_arm_reset_pose", _URDF_TOOL)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    q = [float(v) for v in re.search(r"arm_reset_joint_pos_override: tuple = \(([^)]*)\)", _CFG).group(1).split(",")]
+    T = mod.Urdf(_URDF).pose("r_hl_palm", {f"r_aj_{i + 1}": v for i, v in enumerate(q)})
+    R = torch.tensor(T[:3, :3], dtype=torch.float64)
+    assert float(R[:, 0] @ torch.tensor(G.APPROACH_PALM_NORMAL_DIR, dtype=torch.float64)) > 0.99
+    assert float(R[:, 2] @ torch.tensor(G.APPROACH_FINGER_DIR, dtype=torch.float64)) > 0.99
+
+
 def test_context_comments_state_the_same_gate_numbers():
-    for tok in ("hand_default_q_norm", "approach_done", "envelope_done",
-                "within 2 cm", "about 45 degrees", "within 0.15", "at least 4", "5 consecutive steps", "0.1 N"):
+    for tok in ("hand_default_q_norm", "approach_done", "envelope_done", "palm_finger_dir",
+                "within 2 cm", "about 45 degrees", "the cup's -y side", "within about 45 degrees of +y",
+                "within about 45 degrees of +x", "within 0.15", "at least 4", "5 consecutive steps", "0.1 N"):
         assert tok in _CTX, tok
     assert G.APPROACH_GAP_M == 0.02 and G.APPROACH_FACING_MIN == 0.7 and G.APPROACH_POSE_TOL == 0.15
+    assert G.APPROACH_ORIENT_MIN == 0.7
+    assert G.APPROACH_PALM_NORMAL_DIR == (0.0, 1.0, 0.0) and G.APPROACH_FINGER_DIR == (1.0, 0.0, 0.0)
+    assert G.APPROACH_SIDE_DIR == (0.0, -1.0, 0.0)
     assert G.ENVELOPE_MIN_DIGITS == 4 and G.ENVELOPE_HOLD_STEPS == 5 and G.TOUCH_N == 0.1

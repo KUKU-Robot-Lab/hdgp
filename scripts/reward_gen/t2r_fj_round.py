@@ -443,6 +443,8 @@ def cmd_advance(a) -> int:
     """사용자 승인한 관찰·개선 피드백으로 다음 iter 프롬프트(원본 t2r interactive). 지표 표는 참고로 붙인다."""
     cmd = [sys.executable, str(_HDGP / "scripts" / "reward_gen" / "t2r_fj.py"), "reflect",
            "--iter", a.iter, "--description", a.description, "--feedback", a.feedback]
+    if getattr(a, "task_file", None):
+        cmd += ["--task-file", a.task_file]
     if not a.no_metrics:
         mirror = sync(a.label, track(a.track))
         files = sorted(glob.glob(str(mirror / "summaries" / "events.out.tfevents.*")))
@@ -557,6 +559,7 @@ def main(argv=None) -> int:
     v.add_argument("--description", required=True, help="영상 관찰(사용자 승인본)")
     v.add_argument("--feedback", required=True, help="개선 피드백(사용자 승인본)")
     v.add_argument("--no-metrics", action="store_true", help="참고 지표 표를 붙이지 않는다(원본 t2r 그대로)")
+    v.add_argument("--task-file", default=None, help="(선택) 과제 문장을 바꾼 라운드 — 없으면 지난 iter meta 의 task 승계")
     v.set_defaults(fn=cmd_advance)
     vd = sub.add_parser("video")
     vd.add_argument("--label", required=True)

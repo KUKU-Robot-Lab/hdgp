@@ -164,10 +164,15 @@ def cmd_reflect(a) -> int:
         + entry["feedback"] + "\n" + ("\n" + metrics if metrics else ""), encoding="utf-8")
     nd.mkdir(parents=True, exist_ok=True)
     variant = meta.get("variant", "envelope")
-    spec = P.PromptSpec(task=meta["task"], history=tuple(history), metrics=metrics, variant=variant)
+    # ★09.15 사용자 "컵에 다가가는 palm_ee_x · 손가락 방향" — 과제 문장을 바꾼 라운드는 --task-file, 아니면 지난 meta 승계
+    task = Path(a.task_file).read_text(encoding="utf-8").strip() if a.task_file else meta["task"]
+    if not task:
+        raise SystemExit("[t2r_fj] 과제 문장이 비었다")
+    spec = P.PromptSpec(task=task, history=tuple(history), metrics=metrics, variant=variant)
     (nd / "prompt.md").write_text(P.render_prompt(spec), encoding="utf-8")
     (nd / "meta.json").write_text(json.dumps({
-        "track": track, "iter": n_next, "task": meta["task"], "variant": variant, "created": datetime.now().isoformat(),
+        "track": track, "iter": n_next, "task": task, "task_file": a.task_file, "variant": variant,
+        "created": datetime.now().isoformat(),
         "context": meta.get("context"), "prev_iter": str(d), "history_iters": [int(h["iter"]) for h in history],
         "description": a.description, "feedback": a.feedback, "events": a.events},
         indent=1, ensure_ascii=False), encoding="utf-8")
@@ -202,6 +207,7 @@ def main(argv=None) -> int:
     f.add_argument("--feedback", required=True, help="개선 피드백(사용자 승인본)")
     f.add_argument("--events", nargs="+", default=None, help="(선택) 참고 지표 표를 붙인다")
     f.add_argument("--points", type=int, default=10)
+    f.add_argument("--task-file", default=None, help="(선택) 과제 문장을 바꾼 라운드 — 없으면 지난 iter meta 의 task 승계")
     f.add_argument("--next-iter", type=int, default=None)
     f.add_argument("--force", action="store_true")
     f.set_defaults(fn=cmd_reflect)

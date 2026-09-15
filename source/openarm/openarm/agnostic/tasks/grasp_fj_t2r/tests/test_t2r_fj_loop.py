@@ -293,6 +293,33 @@ def test_reflect_carries_the_variant_into_the_next_prompt(tmp_path, fake_events)
     assert json.loads((nxt / "meta.json").read_text())["variant"] == "reach"
 
 
+def test_reflect_can_replace_the_task_text_and_records_it(tmp_path, fake_events):
+    # ★09.15 사용자 "컵에 다가가는 palm_ee_x · 손가락 방향" → 과제 문장에 접근 손 방향을 적는다. reflect 는 meta 의 task 를
+    #   승계하므로 과제 문장이 바뀐 라운드는 --task-file 로 넘기고 새 meta 에 남긴다(지난 iter 의 meta 는 그대로).
+    d0 = _iter(tmp_path, 0)
+    o0, f0 = _texts(tmp_path, "R0")
+    task = tmp_path / "task_v2.txt"
+    task.write_text("THE NEW TASK: keep the start orientation.\n")
+    assert T.main(["--root", str(tmp_path), "reflect", "--iter", str(d0), "--description", o0, "--feedback", f0,
+                   "--task-file", str(task)]) == 0
+    nxt = tmp_path / "grasp_fj_envelope" / "iter_01"
+    txt = (nxt / "prompt.md").read_text()
+    assert "THE NEW TASK: keep the start orientation." in txt and "THE TASK" not in txt
+    meta = json.loads((nxt / "meta.json").read_text())
+    assert meta["task"] == "THE NEW TASK: keep the start orientation." and meta["task_file"] == str(task)
+    assert json.loads((d0 / "meta.json").read_text())["task"] == "THE TASK"
+
+
+def test_round_advance_passes_the_task_file_through(monkeypatch):
+    seen = []
+    monkeypatch.setattr(R.subprocess, "call", lambda cmd: seen.append(cmd) or 0)
+    base = dict(iter="it", description="o.md", feedback="f.md", no_metrics=True, label="l", track="grasp_fj_stage")
+    assert R.cmd_advance(types.SimpleNamespace(**base, task_file="tasks/x.txt")) == 0
+    assert seen[-1][seen[-1].index("--task-file") + 1] == "tasks/x.txt"
+    assert R.cmd_advance(types.SimpleNamespace(**base, task_file=None)) == 0
+    assert "--task-file" not in seen[-1]
+
+
 def test_reach_ppo_agent_yaml_builds_under_the_vendored_rl_games_fork():
     # ★09.14 fj_reach_i01 크래시: run_fj.sh 는 PPO 여도 vendor/rl_games_sapg 를 PYTHONPATH 앞에 둔다. fork 는 fixed_sigma 가
     #   문자열('fixed' 공유 Parameter · 'coef_cond' 블록별 · 그 밖 = Linear)이라 상류 불리언 True 는 sigma 를 Linear 로 만들어
