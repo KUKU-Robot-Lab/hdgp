@@ -230,3 +230,20 @@ Isaac: `t2r_smoke.py --mode wire` GATE PASS, `--mode round` 를 테스트 전용
 - 라운드마다 새로 학습해 라운드당 ≈ 3 h, 6 라운드 최대 ≈ 18 h.
 - 범위 밖: 2단계 보상(IKER 고정 5항)·VLM 목표, 손설계 `grasp_stage` 보상 항 코드 삭제(부모 env 에서 계속 계산만 된다),
   서버 학습, SAPG.
+
+## 14. 구현 계획 판정 (2026-09-15, `docs/superpowers/plans/2026-09-15-iker-stage1-t2r.md`)
+
+구현 계획을 쓰며 위 절을 이렇게 구체화한다(설계 결정은 그대로):
+- §5 상수: 받침 범위는 스칼라 `rack_x_min`·`rack_x_max`·`rack_y_min`·`rack_y_max`(검증기의 스칼라 필드는 float·int), 래치 연속 수
+  `latch_steps` 를 더한다(추가 사실 6 의 래치 정의가 읽는다).
+- §7 훅: 생성 보상·로그 교체는 `_get_rewards` 에서 한다(`DirectRLEnv.step` 은 `_get_dones` → `_get_rewards` → 리셋 순이라 같은 스텝
+  상태다). `_get_dones` 는 덮지 않는다. 부모 `__init__` 의 무행동 부팅 검사는 부모 코드 그대로 돌고(기본 cfg 에서 통과), t2r env 는
+  자기 부팅 줄(코드 경로·sha256·센서 수·필터)을 찍는다.
+- §3.3 3 번: ingest 실패 때 `response.md`·`validation.json`·`compute_reward.py` 를 `*_attempt_K` 로 옮긴다 — 다음 판정이 파일 유무만
+  보고 재생성한다.
+- §4 파일: 라운드 파일 단계(render·ingest·reflect)는 순수 모듈 `tasks/iker_shoe/t2r/pipeline.py`, 루프 쪽 생성기 브리프·기록·이름은
+  `modules/iker/loop_t2r.py`(torch 없음).
+- §10 수확: 부모 1단계 태스크(`open-sens_l_iker_shoe_grasp`)로 돈다 — 관측·행동·종료·성공 캡처가 t2r env 와 같고 접촉 센서는 보상
+  전용이다. `--g-min` 을 빼고(g_min < 1 은 보정 파일을 요구한다) `--t2r-iter`·`--reward-code` 로 `stage1_reward` 메타데이터를 쓴다.
+- 프롬프트 손 관절표는 관절 이름을 profile(`TESOLLO_LEFT_SHORT.hand_joint_names`)에서 읽고 범위는 순서대로 상수로 둔다(생산 코드에
+  관절 이름 리터럴 금지).
