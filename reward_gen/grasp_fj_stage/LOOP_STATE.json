@@ -1,26 +1,26 @@
 {
  "track": "grasp_fj_stage",
- "iter": 2,
- "label": "fj_stage_i02",
+ "iter": 3,
+ "label": "fj_stage_i03",
  "label_prefix": "fj_stage_i",
- "round": 3,
- "status": "stopped",
- "awaiting": "iter_03_smoke_and_launch_approval",
- "stop_i02": "e339 사용자 결정으로 중지(09.16 00:37 SIGTERM, 멈춤). 원인: 가까운 출발을 접근 창 밖에 둬 1단계로 시작 -> 닫기 보상 미점등 + 자세 조건 0.15 가 탐색 sigma 1 에서 통과 0.8%. 수정 7d9ac94f(가까운 출발 = 접근 래치로 시작, 자세 0.3). iter_03 제로샷.",
+ "round": 4,
+ "status": "running",
+ "awaiting": null,
  "best": null,
  "success_ticks": 0,
- "started": 1789484776,
- "pid": 1116159,
- "commit": "e3fcebb3",
+ "started": 1789487519,
+ "pid": 1159118,
+ "commit": "d4c1a38e",
  "algo": {
   "from_iter_00": "PPO-LSTM 4096 (open-short_r_grasp_fj_t2r_reach-lstm)"
  },
  "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY + TRACKS.grasp_fj_stage.early_stop False (체크포인트, 막힘, 단계 연장 없음 — 3000 epoch 또는 4 h 끝까지)",
- "env_frozen_from": "e823e080 (C자 사전파지 접근 래치 + 가까운 출발 50%). 이후 env/래치/과제 문장 변경 금지.",
+ "env_frozen_from": "7d9ac94f (C자 사전파지 접근 래치 + 가까운 출발 50% = 접근 완료 래치로 시작 + 자세 허용치 0.3). 이후 env/래치/과제 문장 변경 금지.",
  "history": [
   "i00 (c51b93b3): e~180 사용자 중지 — 방향 항이 시작부터 손을 ~68도 돌림, 손가락 오므림, 접근 래치 0. SIGKILL 21:33.",
   "i01 (ee3dbf5a): e1010 사용자 결정(커리큘럼 재설계)으로 중지. 접근 래치 150ep 평균 0.48(최고 0.96)이나 엄지로 컵을 누르며 선 래치, e800~ 붕괴. SIGKILL 23:23. 기하 조사: 기본 자세 엄지가 손바닥면 118 mm 앞.",
-  "i02 (e3fcebb3): 제로샷(이력 미포함) — C자 사전파지 env. 9항. 위험: final_success_bonus 100x(2.5+r3) 가 value_bootstrap 과 이중 계산(3단계 성공 전 0)."
+  "i02 (e3fcebb3): e339 사용자 중지 — 가까운 출발을 접근 창 밖(1단계)에 둬 닫기 보상 미점등 + 자세 조건 0.15 가 탐색 sigma 1 에서 통과 0.8%. SIGKILL 00:40.",
+  "i03 (d4c1a38e): 제로샷 19항 — 래치 기본값 2단계 3.5/3단계 10(래치만으로 지급, 틱 감시), 성공 20, 전체 x0.1. 생성 에이전트가 task-observer 시작 점검으로 관찰 로그 제목을 읽음(독립성 한계)."
  ],
- "note": "09.15 사용자 재구성: 1) 기본 핸드 자세로 컵 접근 2) 접근한 상태에서 인벨롭 파지 3) 리프트. 23:0x 사용자 'T2R 제대로?' -> 시작 상태 커리큘럼 + env 고정 + 라운드 끝까지. 틱 보고는 출발 그룹별(stage/far_*, stage/near_*)과 조건별 통과율(stage/approach_ok_{gap,along,height,orient,pose,no_touch}_now). 콘솔 our_source/fj_t2r_runs/fj_stage_i02.out."
+ "note": "09.15 사용자 재구성: 1) 기본 핸드 자세로 컵 접근 2) 접근한 상태에서 인벨롭 파지 3) 리프트. 틱 보고는 출발 그룹별(stage/far_*, stage/near_*)과 조건별 통과율(stage/approach_ok_{gap,along,height,orient,pose,no_touch}_now). 콘솔 our_source/fj_t2r_runs/fj_stage_i03.out."
 }
