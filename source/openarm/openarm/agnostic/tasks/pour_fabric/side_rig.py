@@ -152,6 +152,26 @@ class SideRig:
               f"가동 {int(self.syn_movable.sum())} · grip 한계clamp "
               f"{int((self.syn_grip != _grip_c).sum())}개 · oppose {d:+.2f}", flush=True)
 
+    def expand_grip3(self, a3: torch.Tensor) -> torch.Tensor:
+        """손 액션 3칸 → 시너지 입력 (N, 손가락×채널). ★09.15 i05 오른손 굴림 대책.
+
+        [0] 엄지 대향(ch1) · [1] 엄지 닫힘(ch2) · [2] 네 손가락 닫힘 — `_2`(ch1)·`_3`·`_4`(ch2) 같은 값.
+        i05 궤적: 정책이 4지 ch1 을 내리고 ch2 를 올려 뿌리는 펴고 끝은 굽혔다(손끝 누름·손바닥 접촉 7→2 N).
+        한 값으로 묶으면 그 굴림이 표현되지 않는다. ch0(`_1`)은 short 프로필에서 가동 안 함 → 0.
+        """
+        p = self.profile
+        if self.syn_nch != 3 or len(p.contact_group_a) != 1:
+            raise RuntimeError(f"[{p.name}] grip3 는 채널 3·엄지 1개 손만 지원: "
+                               f"채널 {self.syn_nch}, contact_group_a {p.contact_group_a}")
+        n, nf = a3.shape[0], len(self.fingers)
+        thumb = self.fingers.index(p.contact_group_a[0])
+        a = torch.zeros(n, nf, 3, device=a3.device, dtype=a3.dtype)
+        a[:, :, 1] = a3[:, 2:3]
+        a[:, :, 2] = a3[:, 2:3]
+        a[:, thumb, 1] = a3[:, 0]
+        a[:, thumb, 2] = a3[:, 1]
+        return a.reshape(n, nf * 3)
+
     def synergy_targets(self, a_hand: torch.Tensor, close_gate: torch.Tensor) -> torch.Tensor:
         """액션(손가락×채널) → 관절 목표 (N, n). grasp_s2r contact 모드 그대로."""
         cfg, N, nf = self.env.cfg, self.N, len(self.fingers)

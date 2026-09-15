@@ -82,10 +82,11 @@ class PourFabricEnv(DirectRLEnv):
                            delta_lo=cfg.rcv_palm_delta_lo, delta_hi=cfg.rcv_palm_delta_hi,
                            oppose_sign=-1.0)
         self.rigs = (self.src, self.rcv)
-        w_src, w_rcv = self.src.hand_action_width, self.rcv.hand_action_width
-        if 6 + w_src != cfg.num_actions_per_side or 6 + w_rcv != cfg.num_actions_per_side:
-            raise RuntimeError(f"손 액션 폭 불일치: cfg {cfg.num_actions_per_side - 6} vs "
-                               f"src {w_src} / rcv {w_rcv}")
+        for rig in self.rigs:
+            w = 3 if cfg.hand_action_mode == "grip3" else rig.hand_action_width
+            if 6 + w != cfg.num_actions_per_side:
+                raise RuntimeError(f"손 액션 폭 불일치({cfg.hand_action_mode}): cfg "
+                                   f"{cfg.num_actions_per_side - 6} vs {rig.role} {w}")
 
         # ---- 시작 자세 전체(두 팔 + 두 손 + head) ---------------------------------------------
         self._reset_q = self.robot.data.default_joint_pos[0].clone()
@@ -120,6 +121,7 @@ class PourFabricEnv(DirectRLEnv):
         self.actions = torch.zeros(N, A, device=dev)
         self.prev_actions = torch.zeros(N, A, device=dev)
         self._policy_dt = float(cfg.sim.dt) * int(cfg.decimation)
+        self._palm_cmd = torch.zeros(N, 2, 6, device=dev)     # EMA 로 거른 palm 6D 지령 (src, rcv)
 
         # ---- 비드 판정 상태 ------------------------------------------------------------------
         k = int(cfg.bead_count)
@@ -338,14 +340,19 @@ class PourFabricEnv(DirectRLEnv):
         self.actions = actions.clamp(-1.0, 1.0)
         active = ~self._hold_mask()
         h = self._half
+        alpha = float(self.cfg.palm_action_ema_alpha)
+        grip3 = self.cfg.hand_action_mode == "grip3"
         for i, (rig, cup, grasped) in enumerate(
                 ((self.src, self.source_cup, self._src_grasped),
                  (self.rcv, self.receiver_cup, self._rcv_grasped))):
             a = self.actions[:, i * h:(i + 1) * h]
-            rig.compose_palm_target(a[:, :6], active)
+            # ★09.15 palm 6D EMA — 실기 정책 노드도 같은 α 로 거른 값을 fabric 에 넣는다.
+            self._palm_cmd[:, i] = alpha * a[:, :6] + (1.0 - alpha) * self._palm_cmd[:, i]
+            rig.compose_palm_target(self._palm_cmd[:, i], active)
             prev = rig.syn_target
             gate = self._close_gate(rig, cup, grasped) * active.float()
-            rig.syn_target = rig.synergy_targets(a[:, 6:], gate)
+            a_hand = rig.expand_grip3(a[:, 6:]) if grip3 else a[:, 6:]
+            rig.syn_target = rig.synergy_targets(a_hand, gate)
             rig.syn_vel = (rig.syn_target - prev) / self._policy_dt
             rig.sync_fabric_hand()
             q_pin = rig.fabric_q
@@ -359,6 +366,14 @@ class PourFabricEnv(DirectRLEnv):
         if self._grav_comp > 0.0:
             tau = self.robot.root_physx_view.get_gravity_compensation_forces()
             self.robot.set_joint_effort_target(self._grav_comp * tau[:, : self.robot.num_joints])
+
+    def _obs_prev_actions(self) -> torch.Tensor:
+        """관측의 이전 액션. palm 칸은 **EMA 로 거른** 지령 — 필터 상태가 관측에 있어야 MLP 정책이 Markov."""
+        pa = self.prev_actions.clone()
+        h = self._half
+        pa[:, 0:6] = self._palm_cmd[:, 0]
+        pa[:, h:h + 6] = self._palm_cmd[:, 1]
+        return pa
 
     # ==================================================================
     def _side_obs(self, rig: SideRig, cup_p: torch.Tensor, cup_q: torch.Tensor,
@@ -404,14 +419,14 @@ class PourFabricEnv(DirectRLEnv):
         rp, rq = self._perceive("rcv", self.receiver_cup)
         self._perc_flush[:] = False
         parts = self._side_obs(self.src, sp, sq, noisy=True) + self._side_obs(self.rcv, rp, rq, noisy=True)
-        parts += [rp - sp, self._mouth_from(rp, rq) - self._mouth_from(sp, sq), self.prev_actions]
+        parts += [rp - sp, self._mouth_from(rp, rq) - self._mouth_from(sp, sq), self._obs_prev_actions()]
         obs = torch.cat(parts, dim=1)
 
         # ---- critic: 참값(clean) + hand_qd + 비드 GT + 속도 + 접촉력 -------------------------
         tp_s, tq_s = self._local(self.source_cup.data.root_pos_w), self.source_cup.data.root_quat_w
         tp_r, tq_r = self._local(self.receiver_cup.data.root_pos_w), self.receiver_cup.data.root_quat_w
         clean = self._side_obs(self.src, tp_s, tq_s, noisy=False) + self._side_obs(self.rcv, tp_r, tq_r, noisy=False)
-        clean += [tp_r - tp_s, self._mouth(self.receiver_cup) - self._mouth(self.source_cup), self.prev_actions]
+        clean += [tp_r - tp_s, self._mouth(self.receiver_cup) - self._mouth(self.source_cup), self._obs_prev_actions()]
         qd = self.robot.data.joint_vel
         bead_fracs = torch.stack([self._prev_in_src, self._prev_in_tgt, self._prev_spill,
                                   self._crossed.float().mean(dim=-1)], dim=1)
@@ -493,10 +508,13 @@ class PourFabricEnv(DirectRLEnv):
         center_d = (self.source_cup.data.root_pos_w - self.receiver_cup.data.root_pos_w).norm(dim=-1)
         self._cups_nested = center_d < float(cfg.cups_nested_dist)
         self._cups_center_dist = center_d
+        # ★09.15 리시버는 입구가 하늘을 향하게(사용자 요구) — 기울기 한계를 넘으면 성공 무효.
+        rcv_tilt = torch.acos(self._cup_up(self.receiver_cup)[:, 2].clamp(-1.0, 1.0))
         self._success_now = ((flags.in_target_frac >= float(cfg.success_fill_ratio))
                              & (flags.spill_frac <= float(cfg.success_spill_max))
                              & (xy < float(cfg.success_xy_thresh))
-                             & (~self._cups_nested))
+                             & (~self._cups_nested)
+                             & (rcv_tilt <= math.radians(float(cfg.success_rcv_tilt_max_deg))))
         self._success_streak = torch.where(self._success_now, self._success_streak + 1,
                                            torch.zeros_like(self._success_streak))
 
@@ -524,7 +542,7 @@ class PourFabricEnv(DirectRLEnv):
         def _np(t: torch.Tensor):
             return t.detach().float().cpu().numpy()
 
-        snap = {"actions": _np(self.actions),
+        snap = {"actions": _np(self.actions), "palm_cmd": _np(self._palm_cmd),
                 "in_target": _np(self._prev_in_tgt), "spill": _np(self._prev_spill),
                 "success": _np(self._success_now)}
         for tag, rig in (("src", self.src), ("rcv", self.rcv)):
@@ -659,6 +677,7 @@ class PourFabricEnv(DirectRLEnv):
         self._cup_mass["rcv"] = self._read_cup_mass(self.receiver_cup)
         self.actions[env_ids] = 0.0
         self.prev_actions[env_ids] = 0.0
+        self._palm_cmd[env_ids] = 0.0
         self._success_now[env_ids] = False
         self._success_streak[env_ids] = 0
         self._dropped[env_ids] = False

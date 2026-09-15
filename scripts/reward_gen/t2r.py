@@ -148,7 +148,7 @@ def cmd_reflect(a) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", type=Path, default=DEFAULT_ROOT)
-    ap.add_argument("--num-actions", type=int, default=42)
+    ap.add_argument("--num-actions", type=int, default=18)   # 09.15 pour_bi grip3(palm 6 + 손 3)×2
     ap.add_argument("--num-beads", type=int, default=20)
     ap.add_argument("--num-fingers", type=int, default=5)
     ap.add_argument("--num-arm", type=int, default=7)

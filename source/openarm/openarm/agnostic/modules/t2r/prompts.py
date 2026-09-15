@@ -24,12 +24,21 @@ The table top is at z = table_z.
 The action space is a normalized `Box(-1, 1, ({num_actions},), float32)`:
   actions[0:6]   = source palm 6-DoF target offset (xyz + yaw/pitch/roll) — the arm is moved \
 by a geometric-fabrics controller toward this target
-  actions[6:21]  = source hand closure commands (5 fingers × 3 channels, 0 = open, 1 = closed)
-  actions[21:27] = receiver palm 6-DoF target offset
-  actions[27:42] = receiver hand closure commands
-The hand controller stops a finger joint automatically once that finger link touches its own \
-cup (contact freeze), so a closing command produces a wrap-around power grasp; opening is \
-always allowed. Fingers can only close when the palm is near its cup.
+  actions[6]     = source thumb opposition command
+  actions[7]     = source thumb closure command
+  actions[8]     = source four-finger closure command (index, middle, ring and pinky close \
+together; all flexion joints of a finger share this one command)
+  actions[9:15]  = receiver palm 6-DoF target offset
+  actions[15]    = receiver thumb opposition command
+  actions[16]    = receiver thumb closure command
+  actions[17]    = receiver four-finger closure command
+Hand commands: -1 = open, +1 = fully closed. The hand controller stops a finger joint \
+automatically once that finger link touches its own cup (contact freeze), so a closing command \
+produces a wrap-around power grasp; opening is always allowed. Fingers can only close when the \
+palm is near its cup. The environment low-pass filters the palm commands (exponential moving \
+average) before they reach the arm controller, so switching a palm command between extremes from \
+one step to the next barely moves the arm. `ctx.actions` / `ctx.prev_actions` are the raw policy \
+outputs before that filter.
 """
 
 REWARD_STRUCTURE = """\
@@ -65,7 +74,8 @@ press on that hand's own cup — this is the grasp-established signal. \
 `d_spill` are this step's increments — reward INCREMENTS of beads transferred rather than \
 the level, otherwise the policy is paid for standing still with a filled cup.
 7. `ctx.success` is computed by the environment (enough beads in the receiver cup, little \
-spill, cups close together, and the cups NOT nested). You may add a bonus on it but you cannot \
+spill, cups close together, the receiver cup held nearly upright — `ctx.rcv_cup_tilt` at most \
+20° — and the cups NOT nested). You may add a bonus on it but you cannot \
 redefine it. Beads only count as "in the receiver" once they have LEFT the source cup — pushing \
 the source cup into the receiver cup (`ctx.cups_nested`) transfers nothing and is never a success; \
 the beads must fall out of the tilted source cup through the air.
@@ -128,7 +138,7 @@ Then write the improved function following the same output rules as before.
 @dataclass(frozen=True)
 class PromptSpec:
     task: str
-    num_actions: int = 42
+    num_actions: int = 18
     num_beads: int = 20
     previous_code: str | None = None
     feedback: str | None = None       # 렌더된 지표 표(reflect 가 만든다)

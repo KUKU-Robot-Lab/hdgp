@@ -159,7 +159,8 @@ def test_dims_from_resolve_cfg():
         a, h, f = p.num_arm_joints, p.num_hand_joints, len(p.finger_sensor_bodies)
         per += 2 * a + h + 3 + 6 + 3 * f + 3 + 3 * f + h + 3     # hand_qd 는 actor 에 없다(09.14)
         hqd += h
-    assert cfg.action_space == 2 * (6 + 15)
+    assert cfg.hand_action_mode == "grip3"
+    assert cfg.action_space == 2 * (6 + 3)
     assert cfg.observation_space == per + 6 + cfg.action_space
     assert cfg.state_space == cfg.observation_space + hqd + 4 + 3 + 12 + 1 + 10
 
@@ -167,7 +168,9 @@ def test_dims_from_resolve_cfg():
 def test_short_reference_dimensions():
     C = _cfg_module()
     cfg = C.PourFabricEnvCfg()
-    assert (cfg.action_space, cfg.observation_space, cfg.state_space) == (42, 246, 316)
+    assert (cfg.action_space, cfg.observation_space, cfg.state_space) == (18, 222, 292)
+    legacy = C.PourFabricEnvCfg(hand_action_mode="synergy15")      # t2r_i05 보관 체크포인트 재생
+    assert (legacy.action_space, legacy.observation_space, legacy.state_space) == (42, 246, 316)
 
 
 def test_registered_cfg_classes_keep_own_pair_name():

@@ -91,7 +91,7 @@ def static_check(src: str) -> ValidationReport:
 
 
 def make_fake_context(n: int = 16, *, num_fingers: int = 5, num_arm: int = 7,
-                      num_actions: int = 42, device: str = "cpu", seed: int = 0) -> RewardContext:
+                      num_actions: int = 18, device: str = "cpu", seed: int = 0) -> RewardContext:
     """형태만 맞춘 무작위 ctx. 값의 물리적 정합은 보장하지 않는다(드라이런 전용)."""
     g = torch.Generator(device="cpu").manual_seed(seed)
 

@@ -231,6 +231,10 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     src_palm_delta_hi: tuple = (0.15, 0.40, 0.25, 45.0, 45.0, 45.0)
     rcv_palm_delta_lo: tuple = (-0.15, -0.40, -0.12, -30.0, -30.0, -30.0)
     rcv_palm_delta_hi: tuple = (0.15, 0.10, 0.25, 30.0, 30.0, 30.0)
+    # ★09.15 팔 진동: i05 소스 팔 회전 액션이 매 스텝 부호 교대(81~84 %) → palm 목표가 스텝당 68° 튀었다.
+    #   palm 6D 액션에 EMA(y ← α·a + (1−α)·y)를 건다. 0.25 = 60 Hz 에서 시정수 약 58 ms,
+    #   매 스텝 교대 성분 이득 α/(2−α)=0.14. 1.0 이면 필터 없음. ★실기 정책 노드도 같은 α 를 적용해야 한다.
+    palm_action_ema_alpha: float = 0.25
     # 위치는 프로필 palm 박스로 추가 clamp(회전은 델타 박스만).
 
     # ---- 손: 관절공간 시너지 (= grasp_s2r 현행 coupled3) --------------------------------
@@ -239,6 +243,10 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     synergy_freeze_scope: str = "joint"       # "joint" | "finger"
     couple_four_fingers: bool = True          # 엄지 독립, 나머지 4지 채널별 평균
     finger_residual_scale: float = 0.0
+    # ★09.15 손 액션 모드. "grip3" = 손당 3칸(엄지 대향·엄지 닫힘·4지 닫힘, 4지는 `_2`·`_3`·`_4` 한 값),
+    #   "synergy15" = 구 손가락×채널 15칸(t2r_i05 까지 — 보관 체크포인트 재생용).
+    #   i05 궤적: 4지 ch1 을 내리고 ch2 를 올려 손끝으로 누르는 굴림, 42 중 22 차원 null → grip3.
+    hand_action_mode: str = "grip3"
     # 대향 관절(엄지 ch1) grip = open + delta — grasp_s2r D3 기본. **소스 팔 부호 기준**,
     # 리시버(좌)는 미러 부호(thumb_2 축 Z → −1)를 env 가 적용한다.
     oppose_grip_delta_rad: float = -0.6
@@ -260,6 +268,9 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     success_spill_max: float = 0.40
     success_xy_thresh: float = 0.20           # 두 컵 중심 xy 거리
     success_hold_steps: int = 10
+    # ★09.15 사용자 요구 "리시버는 입구가 하늘을 향하게, 살짝만 기울여": i05 는 붓는 동안 리시버 46°(최대 55°).
+    #   리시버 기울기가 이보다 크면 성공 무효(보상이 우회할 수 없는 판정).
+    success_rcv_tilt_max_deg: float = 20.0
     # ★09.13 hacking 차단: 소스 컵을 리시버 입구에 끼워 넣으면 소스 안 비드가 리시버 원통 안에 들어와
     #   in_target 로 세어졌다(ep 600 영상: 붓기 없이 성공 0.73). 원점 거리가 이보다 짧으면 성공 무효.
     #   붓는 자세(소스 입구가 리시버 림 위)에서는 원점 거리가 ≥ 12~15 cm 다.
@@ -348,7 +359,12 @@ def resolve_cfg(cfg: "PourFabricEnvCfg") -> None:
     for p in (pair.source, pair.receiver):
         if _hand_action_width(p) != _hand_action_width(pair.source):
             raise ValueError("양팔 손 액션 폭이 다르다 — 같은 손 자산이어야 한다")
-    hand_w = _hand_action_width(pair.source)
+    mode = str(cfg.hand_action_mode)
+    if mode not in ("grip3", "synergy15"):
+        raise ValueError(f"hand_action_mode 는 'grip3' | 'synergy15': {mode!r}")
+    if not 0.0 < float(cfg.palm_action_ema_alpha) <= 1.0:
+        raise ValueError(f"palm_action_ema_alpha 는 (0, 1]: {cfg.palm_action_ema_alpha}")
+    hand_w = 3 if mode == "grip3" else _hand_action_width(pair.source)
     cfg.num_actions_per_side = 6 + hand_w
     cfg.action_space = 2 * cfg.num_actions_per_side
 

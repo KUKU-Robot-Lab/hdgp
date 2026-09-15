@@ -6,7 +6,8 @@
 
 **양팔 잡기 → 들기 → 붓기.** 테이블 위 컵 2개(소스=우, 비드 20개 / 리시버=좌, 빈 컵)에서
 시작한다. 팔은 Fabrics(palm 6D = 시작자세 앵커 + 비대칭 델타), 손은 grasp_s2r 의 관절공간
-시너지(접촉 동결)를 양팔로 복제했다. 액션 42 = (palm 6 + 손 15) × 2. obs 286 / critic 316.
+시너지(접촉 동결)를 양팔로 복제했다. 액션 18 = (palm 6 + 손 3) × 2, obs 222 / critic 292
+(09.15 grip3. 구 `hand_action_mode="synergy15"` 는 액션 42 = (palm 6 + 손 15) × 2, obs 246 / critic 316).
 
 **보상은 이 트랙에 없다.** `cfg.reward_code_path` 의 생성 코드가 `RewardContext`
 (`modules/t2r/context.py`)를 읽어 `(reward (N,), {항: (N,)})` 를 돌려준다. 성공 판정
@@ -48,6 +49,17 @@ reflect → feedback.md + 다음 iter prompt.md          (TFEvents reward/* · t
 - ADR 트리거 = 순간 성공률 ≥ 0.3, 30단계, 3000 스텝 간격(`modules/adr.TaskADR`). 로그 `adr/*`, `dr/*`.
 - 충돌 신호: `ctx.cup_cup_force`(소스 컵 센서→리시버 필터), `ctx.*_hand_foreign_force`(net − 자기컵 필터),
   지표 `task/cup_collision_rate`·`task/*_hand_foreign_rate`. 벌점은 생성 보상이 넣는다(프롬프트 지식 11).
+
+## 액션 처리·성공 판정 (09.15 라운드 7 — t2r_i05 궤적 계측 근거)
+
+- **손 grip3**: 손당 3칸 = [엄지 대향(thumb ch1), 엄지 닫힘(thumb ch2), 4지 닫힘]. 4지 닫힘은 `_2`(ch1)·`_3`·`_4`(ch2)
+  에 같은 값(`side_rig.expand_grip3`). i05 는 4지 ch1 을 내리고 ch2 를 올려 손끝으로 누르는 굴림(손바닥 접촉 7→2 N)을
+  보였고 42 중 22 차원이 null 이었다. ★실기 정책 노드도 같은 3→15 매핑을 써야 한다.
+- **palm EMA**: palm 6D 액션 y ← α·a + (1−α)·y, `palm_action_ema_alpha=0.25`. i05 소스 회전 액션이 매 스텝 부호 교대
+  (81~84 %)해 palm 목표가 스텝당 68° 튀고 팔에 4~5 Hz 진동. actor 관측의 이전 palm 액션 칸은 **거른 값**(Markov),
+  `ctx.actions` 는 거르기 전 원출력. ★실기 노드도 같은 α·같은 관측 규약.
+- **리시버 직립 성공 조건**: 리시버 기울기 ≤ `success_rcv_tilt_max_deg=20°`. i05 는 붓는 동안 46°(최대 55°).
+- i05 보관 체크포인트 재생: `env.hand_action_mode=synergy15 env.palm_action_ema_alpha=1.0`.
 
 ## 알려진 함정
 

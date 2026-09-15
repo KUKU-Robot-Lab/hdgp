@@ -39,10 +39,10 @@ def test_context_fields_split_and_stub_has_every_field():
 
 
 def test_fake_context_shapes():
-    ctx = V.make_fake_context(8, num_fingers=5, num_arm=7, num_actions=42)
+    ctx = V.make_fake_context(8, num_fingers=5, num_arm=7, num_actions=18)
     assert ctx.num_envs == 8
     assert tuple(ctx.src_tips_pos.shape) == (8, 5, 3)
-    assert tuple(ctx.actions.shape) == (8, 42)
+    assert tuple(ctx.actions.shape) == (8, 18)
     assert ctx.success.dtype == torch.bool
     with pytest.raises(Exception):
         ctx.src_palm_pos = None    # frozen
@@ -83,7 +83,8 @@ def test_prompt_contains_stub_task_and_signature():
     txt = P.render_prompt(P.PromptSpec(task="Pour the beads."))
     assert "class RewardContext" in txt and "Pour the beads." in txt
     assert "def compute_reward(ctx: RewardContext)" in txt
-    assert "Box(-1, 1, (42,)" in txt
+    assert "Box(-1, 1, (18,)" in txt
+    assert "four-finger closure" in txt and "rcv_cup_tilt` at most" in txt
     assert "previous reward function" not in txt
 
 
