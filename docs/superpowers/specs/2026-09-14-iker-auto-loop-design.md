@@ -168,3 +168,6 @@ API·Qwen 백엔드, 루프의 코드 자동 수정.
 - **r4 재시작(2026-09-15).** r3 루프는 A epoch 200 게이트 미달로 멈췄다(파지 스펙 §16 개정 3-2). r3 상태를
   `config_00/archive/2026-09-15_r3_thumb_overpowered/loop/` 로 옮기고 트랙 `iker_shoe_c00_r4`, 라벨 `iker_grasp_c00_r4_a`·
   `iker_grasp_c00_r4_b`·`iker_vlm_c00_r4_s1` 로 같은 절차를 다시 밟는다.
+- **r5 재시작(2026-09-15).** r4 루프는 A epoch 200 게이트 미달로 멈췄다(파지 스펙 §16 개정 3-3). r4 상태를
+  `config_00/archive/2026-09-15_r4_shoe_slips_in_hand/loop/` 로 옮기고 트랙 `iker_shoe_c00_r5`, 라벨 `iker_grasp_c00_r5_a`·
+  `iker_grasp_c00_r5_b`·`iker_vlm_c00_r5_s1` 로 같은 절차를 다시 밟는다.
