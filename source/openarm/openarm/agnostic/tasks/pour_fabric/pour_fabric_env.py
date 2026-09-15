@@ -516,6 +516,33 @@ class PourFabricEnv(DirectRLEnv):
         self._log(total, terms, flags, ctx)
         return total
 
+    def trace_snapshot(self) -> dict:
+        """play `--trace_steps` 용 스텝 스냅샷(전 env, CPU float32). 09.15 파지 붕괴·팔 진동·리시버 기울기 진단.
+
+        학습 경로는 부르지 않는다 — 읽기 전용이라 동작에 영향이 없다.
+        """
+        def _np(t: torch.Tensor):
+            return t.detach().float().cpu().numpy()
+
+        snap = {"actions": _np(self.actions),
+                "in_target": _np(self._prev_in_tgt), "spill": _np(self._prev_spill),
+                "success": _np(self._success_now)}
+        for tag, rig in (("src", self.src), ("rcv", self.rcv)):
+            mid, dist, tip = rig.finger_link_forces()
+            snap.update({
+                f"{tag}_palm_tgt": _np(rig.palm_targets), f"{tag}_palm_pose": _np(rig.palm_pose_6d()),
+                f"{tag}_arm_q": _np(self.robot.data.joint_pos[:, rig.arm_t]),
+                f"{tag}_arm_qd": _np(self.robot.data.joint_vel[:, rig.arm_t]),
+                f"{tag}_hand_q": _np(self.robot.data.joint_pos[:, rig.syn_t]),
+                f"{tag}_syn_close": _np(rig.syn_close), f"{tag}_syn_target": _np(rig.syn_target),
+                f"{tag}_f_mid": _np(mid), f"{tag}_f_dist": _np(dist), f"{tag}_f_tip": _np(tip),
+                f"{tag}_f_palm": _np(rig.palm_force()), f"{tag}_foreign": _np(rig.foreign_force()),
+            })
+        for tag, cup in (("src", self.source_cup), ("rcv", self.receiver_cup)):
+            snap[f"{tag}_cup_pos"] = _np(cup.data.root_pos_w - self.scene.env_origins)
+            snap[f"{tag}_cup_up"] = _np(self._cup_up(cup))
+        return snap
+
     def _log(self, total, terms, flags, ctx: RewardContext) -> None:
         cfg = self.cfg
         for k, v in terms.items():

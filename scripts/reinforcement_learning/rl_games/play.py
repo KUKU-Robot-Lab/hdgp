@@ -135,6 +135,10 @@ parser.add_argument(
     help="손 20관절 실측/목표를 매 스텝 npz 로 적는다(경로). 파지 형태를 관절값으로 판정하기 위한 것 — "
          "렌더 프레임으로는 벌림(_1) 각도를 못 잰다.")
 parser.add_argument(
+    "--trace_steps", type=int, default=0,
+    help="env 가 trace_snapshot() 을 가지면 매 스텝 스냅샷을 쌓아 N 스텝 뒤 --trace_out 에 npz 로 저장하고 종료(pour_fabric).")
+parser.add_argument("--trace_out", type=str, default=None, help="--trace_steps 저장 경로(.npz).")
+parser.add_argument(
     "--dump_extras", type=str, default=None,
     help="쉼표로 구분한 부분문자열에 걸리는 env.extras 키를 30스텝마다 출력한다. "
          "학습 로그(TFEvents)에만 있고 play 에는 안 나오던 계측을 체크포인트 단위로 "
@@ -817,6 +821,20 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             # ★09.07 4번째 반환값은 extras 다. `--probe_steps` 가 이걸 누적한다
             #   (env.unwrapped.extras 를 따로 읽으려 하면 래퍼 체인에 따라 비어 보인다).
             obs, _rew, dones, _step_extras = env.step(actions)
+            if args_cli.trace_steps > 0:
+                _te = env.unwrapped
+                while hasattr(_te, "env"):
+                    _te = _te.env.unwrapped
+                if not hasattr(_te, "trace_snapshot"):
+                    raise SystemExit(f"[TRACE] {type(_te).__name__} 에 trace_snapshot() 이 없다")
+                _tr = globals().setdefault("_TRACE_ROWS", [])
+                _tr.append(_te.trace_snapshot())
+                if len(_tr) >= args_cli.trace_steps:
+                    import numpy as _npt
+                    _out_t = args_cli.trace_out or os.path.join(log_dir, "trace.npz")
+                    _npt.savez_compressed(_out_t, **{k: _npt.stack([r[k] for r in _tr]) for k in _tr[0]})
+                    print(f"[TRACE] {len(_tr)} 스텝 저장: {_out_t}", flush=True)
+                    os._exit(0)
             if _goal_marker is not None:
                 _gm = env.unwrapped
                 while hasattr(_gm, "env"):
