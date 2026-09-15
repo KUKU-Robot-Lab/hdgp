@@ -32,6 +32,8 @@ parser.add_argument("--hand_kd", type=float, default=None, help="손 구동관�
 parser.add_argument("--joint", default="r_hj_index_1")
 parser.add_argument("--hi", type=float, default=1.2, help="스윕 최대 각 [rad]")
 parser.add_argument("--rate", type=float, default=1.5, help="스윕 속도 [rad/s] (벤더 최대 ≈ 1.5)")
+parser.add_argument("--mimic_nf", type=float, default=None, help="PhysX mimic naturalFrequency 덮어쓰기(미지정=USD 값)")
+parser.add_argument("--mimic_dr", type=float, default=None, help="PhysX mimic dampingRatio 덮어쓰기(미지정=USD 값)")
 parser.add_argument("--label", default="")
 AppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(headless=True)
@@ -71,6 +73,28 @@ def build_robot() -> Articulation:
     ))
 
 
+def override_mimic(root: str = "/World/robot") -> dict:
+    """spawn 직후·sim.reset 전에 PhysX mimic 스프링 속성을 덮어쓴다. 바꾼 개수와 실제 값(첫 관절)을 돌려준다."""
+    import omni.usd
+    from pxr import Usd
+    stage = omni.usd.get_context().get_stage()
+    changed, seen = 0, {}
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(root), Usd.TraverseInstanceProxies()):
+        for at in prim.GetAttributes():
+            nm = at.GetName()
+            if not nm.startswith("physxMimicJoint:"):
+                continue
+            if nm.endswith(":naturalFrequency"):
+                if args.mimic_nf is not None and not prim.IsInstanceProxy():
+                    at.Set(float(args.mimic_nf)); changed += 1
+                seen.setdefault("naturalFrequency", at.Get())
+            elif nm.endswith(":dampingRatio"):
+                if args.mimic_dr is not None and not prim.IsInstanceProxy():
+                    at.Set(float(args.mimic_dr)); changed += 1
+                seen.setdefault("dampingRatio", at.Get())
+    return {"changed": changed, **seen}
+
+
 def schedule(n_hold: int, n_ramp: int, hi: float) -> list[float]:
     up = [hi * (i + 1) / n_ramp for i in range(n_ramp)]
     return [0.0] * n_hold + up + [hi] * n_hold + up[::-1] + [0.0] * n_hold
@@ -79,6 +103,7 @@ def schedule(n_hold: int, n_ramp: int, hi: float) -> list[float]:
 def main() -> dict:
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=DT))
     robot = build_robot()
+    mimic = override_mimic()
     sim.reset()
     robot.update(DT)
     names = robot.joint_names
@@ -97,6 +122,7 @@ def main() -> dict:
     p0 = robot.data.body_pos_w[:, palm].clone()
     n_ramp = max(1, int(round(args.hi / args.rate / DT)))
     dev = torch.zeros(len(names), device=q0.device); vel = torch.zeros_like(dev)
+    vel_sq = torch.zeros_like(dev); n_steps = 0
     track_err = 0.0; mimic_err = 0.0; palm_dev = 0.0; sat = 0.0
     effort = robot.data.joint_effort_limits[0, ji].item() if hasattr(robot.data, "joint_effort_limits") else float("nan")
     for tgt in schedule(60, n_ramp, args.hi):
@@ -104,6 +130,7 @@ def main() -> dict:
         robot.set_joint_position_target(target); robot.write_data_to_sim(); sim.step(); robot.update(DT)
         q, qd = robot.data.joint_pos[0], robot.data.joint_vel[0]
         dev = torch.maximum(dev, (q - q0[0]).abs()); vel = torch.maximum(vel, qd.abs())
+        vel_sq += qd ** 2; n_steps += 1
         track_err = max(track_err, abs(q[ji].item() - tgt))
         if follower is not None:
             mimic_err = max(mimic_err, abs(q[follower].item() - mult * q[ji].item()))
@@ -120,6 +147,8 @@ def main() -> dict:
         "sweep_track_err_max_rad": round(track_err, 4), "mimic_follower_err_max_rad": round(mimic_err, 4),
         "others_dev_max_rad": round(max(d for d, _ in worst), 5), "others_vel_max_rad_s": round(max(vel[i].item() for i in others), 4),
         "others_worst5": [(n, round(d, 5)) for d, n in worst], "palm_pos_dev_mm": round(1000 * palm_dev, 3),
+        "others_vel_rms_rad_s": round(float((vel_sq[others] / max(n_steps, 1)).sqrt().mean().item()), 5),
+        "mimic": mimic,
     }
 
 
