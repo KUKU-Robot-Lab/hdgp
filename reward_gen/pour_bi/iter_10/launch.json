@@ -1,0 +1,14 @@
+{
+ "label": "t2r_i10",
+ "num_envs": 4096,
+ "started": 1789588904.0,
+ "started_local": "2026-09-17 04:55",
+ "commit": "a188e154",
+ "gpu": 1,
+ "server_pids": [
+  2079372,
+  2079379
+ ],
+ "env_round": 10,
+ "reward": "reward_gen/pour_bi/iter_10/compute_reward.py (41 terms, ingest PASS)"
+}

@@ -1,7 +1,7 @@
 {
- "iter": 9,
- "label": "t2r_i09",
- "round": 10,
+ "iter": 10,
+ "label": "t2r_i10",
+ "round": 11,
  "round10_note": "env 수정 b3a07d0e(래치를 접촉 기반 소스 파지 성립 시에만) 뒤 재학습. 보상 iter_09(37항, raise_src 추가). 그 외 env 는 라운드 9 와 동일. 틱 예약 은 아래 launch_i09.cron",
  "launch_i09": {
   "label": "t2r_i09",
@@ -454,5 +454,29 @@
     }
    ]
   }
+ },
+ "ended_i09": {
+  "epoch": 546,
+  "hours": 4.42,
+  "reason": "루프 규칙 advance(4 h, 성공 0). 소스 파지 0.002(e177)→0.20(e292)→0.86(e546) 늦게 회복, 들기 S/R 0.056/0.098 m 저조, 리시버 이물 19 %. 계측(ep150): 소스 팔 바깥 포화(py −0.99, palm–cup 0.25 > 게이트 0.22), 리시버 컵–컵 144 N",
+  "server_pids_killed": [
+   1931511,
+   1931518
+  ],
+  "trace": "log/server_mirror/pour-fab/t2r_i09/trace_i09_ep150_adr0.npz"
+ },
+ "launch_i10": {
+  "label": "t2r_i10",
+  "num_envs": 4096,
+  "gpu": 1,
+  "commit": "a188e154",
+  "server_pids": [
+   2079372,
+   2079379
+  ],
+  "started": 1789588904.0,
+  "started_local": "2026-09-17 04:55",
+  "cron": "b60ea453 (2h, :23) — 프롬프트 라벨은 i10 으로 갱신",
+  "reward": "iter_10 41항(reach_src/rcv·palm_sat_src/rcv 추가)"
  }
 }
