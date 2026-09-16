@@ -4,12 +4,16 @@
 The stage-2 round is driven by hand (spec §0: no loop/round machinery here), so this CLI takes plain file
 paths rather than an iteration directory.
 
-    python3 scripts/iker/t2r2_reward.py render --out prompt.md [--previous compute_reward.py] [--feedback events.json]
+    python3 scripts/iker/t2r2_reward.py render --out prompt.md [--previous compute_reward.py] \\
+        [--feedback events.json] [--notes notes.md]
     ../IsaacLab/_isaac_sim/python.sh scripts/iker/t2r2_reward.py ingest \\
         --response response.md --out compute_reward.py --report validation.json
 
 --feedback names a JSON file of {tag: [values, ...]} (already extracted from TFEvents), rendered through
-render_feedback_table. ingest exits 1 when the generated reward fails validation (the report also holds the errors).
+render_feedback_table. --notes names a plain-text file of VERIFIED observations (PromptSpec.user_notes): things
+the logged tags cannot say, such as a probe's measurement of a predicate the environment does not log. Never put
+a hypothesis there — the generator reads it as fact (see memory t2r-notes-verified-facts-only). ingest exits 1
+when the generated reward fails validation (the report also holds the errors).
 """
 
 from __future__ import annotations
@@ -42,8 +46,9 @@ def cmd_render(args: argparse.Namespace) -> int:
     if args.feedback:
         series = json.loads(Path(args.feedback).read_text(encoding="utf-8"))
         feedback = P.render_feedback_table(series)
+    notes = Path(args.notes).read_text(encoding="utf-8") if args.notes else None
     cfg = PlaceRewardCfg()
-    spec = P.PromptSpec(task=P.task_text(cfg), previous_code=previous_code, feedback=feedback)
+    spec = P.PromptSpec(task=P.task_text(cfg), previous_code=previous_code, feedback=feedback, user_notes=notes)
     Path(args.out).write_text(P.render_prompt(spec, cfg=cfg), encoding="utf-8")
     print(f"[t2r2] prompt -> {args.out}")
     return 0
@@ -71,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     render.add_argument("--out", required=True)
     render.add_argument("--previous")
     render.add_argument("--feedback")
+    render.add_argument("--notes")
 
     ingest = commands.add_parser("ingest")
     ingest.add_argument("--response", required=True)
