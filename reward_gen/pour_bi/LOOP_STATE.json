@@ -3,6 +3,18 @@
  "label": "t2r_i08",
  "round": 9,
  "round9_note": "env 라운드 9(사용자 결정 09.16 권장안 A): 비드 30 mm·스폰 20·활성 6~20(ADR 상한 12→20)·파킹, 채움 정도 obs(actor·critic +1 → 223/293), 조준 전 틸트 래치(30°·입구 xy 0.10 m → 성공 무효), hold 45, 바닥 판정 여유 3 mm. 보상 iter_08(36항, upright_src·premature_latch·rcv_still 추가, tilt_premature 제거). MAX_ROUNDS 8→12. 프로브: 게이트 3종 PASS, 흘림 가득 69°/조금 89°(iter_08 prompt 는 95° 표기, 5° 차이 방향 동일)",
+ "ended_i08": {
+  "epoch": 159,
+  "hours": 1.3,
+  "reason": "사용자 결정 09.17 '수정후 재시작': 소스 파지 0.000 — 조준 전 틸트 래치에 파지 조건이 없어 탐색이 넘어뜨린 컵까지 래치(첫 epoch 19.8 %, 파지 0) → 정책이 소스 컵 회피(이물 15→2 %, 기울기 16.6→0.1°). 리시버 쪽은 파지 0.78·들기 0.22 m 로 정상",
+  "fix": "b3a07d0e — 래치를 그 스텝의 접촉 기반 소스 파지 성립 시에만(리시버 규칙과 같은 원칙). 게이트 프로브 PASS(정착 0.951)",
+  "server_pids_killed": [
+   1873810,
+   1873817
+  ],
+  "final_ckpt": "last_open-short_b_pour_fab_ep_150_rew_2020.0004.pth",
+  "reward_terms_at_159": "lift_rcv +1.44 · grasp_rcv +0.90 · approach_rcv +0.66 · approach_src +0.44 · grasp_src +0.02 (총 2.8; i07 e160 8.0, i05 10.2)"
+ },
  "launch_i08": {
   "label": "t2r_i08",
   "num_envs": 4096,
