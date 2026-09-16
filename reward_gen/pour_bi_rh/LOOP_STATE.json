@@ -68,5 +68,8 @@
  "round6_end_t2r_rh_i04": "09.16 advance 판정(epoch 687, 3.71 h) — ep_700 저장 후 학습 PID 1487026/1487035/1487041 종료(RUN_LABEL 확인, 1487041 은 SIGTERM 무응답 → kill -9). 영상 our_source/pour_t2r_rh_i04_ep700_0916.mp4 (+_frames sheet·hands_zoom). 접근 해결(rcv 8.2 cm·near 93 %, src 10.6 cm·63 %, 엄지 입구 아래) · 접촉 rcv 2.25 N·src 0 · 파지·들기 0",
  "decisions_round6": "09.16 사용자 notes_round6 '승인·iter_05 생성' — 접근 해결, 다음 병목 = 엄지+맞은편 손가락 동시 파지(>1 N)·들기",
  "loop_stopped_round6": "cron 38095edd 삭제(advance 중 틱 오판정 방지) — iter_05 기동 후 재등록",
- "loop_resumed_round7": "07:53 t2r_rh_i05 기동(9790eb76) — cron 재등록"
+ "loop_resumed_round7": "07:53 t2r_rh_i05 기동(9790eb76) — cron 재등록",
+ "round7_end_t2r_rh_i05": "09.16 advance 판정(epoch 651, 3.45 h) — 학습 PID 2098604/2098611/2098616 종료(RUN_LABEL=t2r_rh_i05 확인, 2098616 은 SIGTERM 무응답 → kill -9). 마지막 체크포인트 ep_650. 오른손: pinch_geo 0.001→0.167·접촉 0.005→0.20 N·엄지 입구 아래 −16.7 mm, 왼손: pinch_geo 0.094·접촉 0.10 N·엄지 −3.2 mm. 양손 파지(엄지>1 N + 맞은편 손가락>1 N) 0·들기 0·pinch_force 0",
+ "loop_stopped_round7": "cron 7dee0eb3 삭제(advance 중 틱 오판정 방지) — 다음 iter 기동 후 재등록",
+ "decisions_round7": "09.16 사용자 notes_round7 '승인·iter_06 생성' — 파지 기하(엄지 입구 아래·컵을 엄지와 검지/중지 사이) 유지, 다음 병목 = 손끝이 벽면을 눌러 엄지와 맞은편 손가락이 동시에 1 N 초과(env 파지 플래그). 영상 our_source/pour_t2r_rh_i05_ep650_0916.mp4 (+_frames sheet·zoom f0400/f0800)"
 }
