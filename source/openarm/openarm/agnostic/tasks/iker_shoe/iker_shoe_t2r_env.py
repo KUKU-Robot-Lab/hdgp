@@ -45,6 +45,7 @@ from .t2r2.context import RewardContext
 from .t2r2.loader import call_reward_fn, load_reward_fn
 
 PALMAR_AXIS_LOCAL = (1.0, 0.0, 0.0)  # palm link +x is the grasping side (grasp_bank.palm_rotations, both hands)
+RETREAT_M = 0.15  # the palm within this of its start-of-episode pose counts as "returned" (spec: "원래 자리로 돌아오게")
 
 
 class IkerShoeT2rEnv(IkerShoeEnv):
@@ -71,6 +72,9 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         self._grip_scalar = -torch.ones(n, 1, device=dev)
         self._stable_count = torch.zeros(n, device=dev)
         self._t2r_prev_actions = torch.zeros(n, int(cfg.action_space), device=dev)
+        # fix round 1 (finding 3): env-local palm position captured at reset, for place/retreated ("did the
+        # hand come back near where it started"). Placeholder here; _reset_idx sets the real value.
+        self._palm_start = self._robot.data.body_pos_w[:, self._palm] - self.scene.env_origins
         self._t2r_last: dict[str, torch.Tensor] | None = None
 
         digest = hashlib.sha256(Path(cfg.reward_code_path).read_bytes()).hexdigest() if cfg.reward_code_path else "none"
@@ -157,6 +161,16 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         self._stable_count = step.stable_count
         self._keypoint_distance = keypoint_dist  # keep the parent's field valid for _log_episode_end / eval_iker.py
 
+        # fix round 1 (finding 3): the parent's own _log_episode_end (which this class cannot override — it is
+        # not one of the 7 allowed hooks) reads _success_count/_failure_count to log iker/sustained_success and
+        # iker/dropped. Nothing in this class's _get_dones updated them before, so both were always 0. Feed them
+        # from the new predicate instead: success from the consecutive stable count (place_step's own counter —
+        # its sustain_steps default (20) already matches cfg.place.stable_steps), failure by accumulating the
+        # fall condition below, the same "+= condition" shape the old compute_reward_and_termination used.
+        self._success_count = step.stable_count
+        dropped = shoe_pos[:, 2] < self.cfg.reward.fall_height  # fix round 1 (finding 1): inherited threshold, not a new drop_z
+        self._failure_count = self._failure_count + dropped.float()
+
         self._t2r_last = dict(
             palm_pos=palm_pos, palm_quat=palm_quat, arm_q=rd.joint_pos[:, self._arm_ids], arm_qd=rd.joint_vel[:, self._arm_ids],
             shoe_pos=shoe_pos, shoe_quat=shoe_quat, shoe_lin_vel=sd.root_lin_vel_w, shoe_ang_vel=sd.root_ang_vel_w,
@@ -167,7 +181,6 @@ class IkerShoeT2rEnv(IkerShoeEnv):
             stable_count=step.stable_count, success=step.success,
         )
 
-        dropped = shoe_pos[:, 2] < self.cfg.drop_z
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return (step.success | dropped) & ~truncated, truncated
 
@@ -189,6 +202,8 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         log["place/released"] = ctx.released.float().mean().item()
         log["place/resting"] = ctx.resting.float().mean().item()
         log["place/still"] = ctx.still.float().mean().item()
+        retreated = (self._t2r_last["palm_pos"] - self._palm_start).norm(dim=-1) <= RETREAT_M
+        log["place/retreated"] = retreated.float().mean().item()
         self.extras["log"] = log
         return total
 
@@ -226,3 +241,7 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         self._grip_targets[env_ids] = self._joint_targets[env_ids][:, self._hand_ids]  # the bank's hand target
         self._grip_scalar[env_ids] = -1.0
         self._stable_count[env_ids] = 0.0
+        # fix round 1 (finding 3): the parent's bank restore above already wrote the new joint state via
+        # write_joint_state_to_sim, so body_pos_w already reflects it (same idiom eval_iker.py's FirstEpisodeRecorder
+        # uses right after reset_player, no extra physics step needed).
+        self._palm_start[env_ids] = self._robot.data.body_pos_w[env_ids, self._palm] - self.scene.env_origins[env_ids]

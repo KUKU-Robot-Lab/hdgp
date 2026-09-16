@@ -59,7 +59,7 @@ from openarm.agnostic.tasks.iker_shoe.policy_player import load_player, reset_pl
 TASK = "open-sens_l_iker_shoe"
 HOLD_RADIUS_M = 0.15  # palm-to-shoe-root distance treated as "still in hand"
 NEAR_M = 0.10
-RETREAT_M = 0.15  # the palm this far from its start pose at episode end counts as "withdrawn"
+RETREAT_M = 0.15  # the palm within this of its start pose at episode end counts as "returned"
 ROW_KEYS = ("env", "length", "end_dist", "min_dist", "first_5cm", "sustained", "dropped", "centroid_err", "rot_deg",
             "shoe_z", "palm_shoe", "palm_start_dist")
 
@@ -69,7 +69,9 @@ def placed_mask(near: torch.Tensor, palm_shoe: torch.Tensor) -> torch.Tensor:
 
 
 def retreated_mask(palm_start_dist: torch.Tensor) -> torch.Tensor:
-    return palm_start_dist >= RETREAT_M
+    """True where the palm has returned near its start-of-episode pose (fix round 1: the brief's original
+    ``>= RETREAT_M`` fired on the opposite condition — far from start, not returned to it)."""
+    return palm_start_dist <= RETREAT_M
 
 
 def kabsch_angle_deg(current: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
