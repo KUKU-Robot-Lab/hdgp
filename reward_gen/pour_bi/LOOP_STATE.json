@@ -199,6 +199,27 @@
    "reward_total": 23.8
   },
   "breakout": "epoch 720 에 컵 거리 0.30 m 아래 → 799 첫 성공 → 836 성공률 0.5 (loop_ended 기록은 epoch 558 시점이라 낡음)",
-  "cron": "6da64236 (2h, :23)"
+  "cron": "6da64236 (2h, :23)",
+  "ticks": [
+   {
+    "epoch": 1480,
+    "hours": 11.53,
+    "episode_success": 0.7284,
+    "in_target": 0.6931,
+    "spill": 0.0623,
+    "aim_dist": 0.11,
+    "src_tilt_deg": 99.4,
+    "rcv_tilt_deg": 5.1,
+    "nested": 0.0,
+    "cup_collision": 0.0055,
+    "hand_foreign_src_rcv": [
+     0.0125,
+     0.0369
+    ],
+    "adr": 0.5,
+    "reward_total": 25.07,
+    "note": "adr 0.20→0.50 상승 중에도 성공 0.70→0.73·흘림 0.075→0.062·리시버 기울기 8→5° — 난이도 상승 하에서 개선. 성공 ≥0.5 두 틱 연속 ∧ nested 0 ∧ cup_collision 0.6 % → play 영상 확인 제안(승인 대기)"
+   }
+  ]
  }
 }
