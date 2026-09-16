@@ -23,7 +23,7 @@ class RewardContext:
     # ---- constants (python numbers, fixed for the whole run) ---------------------------
     table_z: float                 # height of the table top [m]
     lift_latch_height: float       # the env sets `lifted` once the cup has risen this far above its starting height [m]
-    success_hold_steps: int        # consecutive steps with goal_dist <= success_tol needed to count one success
+    success_hold_steps: int        # consecutive steps with goal_dist <= success_tol needed to count one success; a success also requires, on that step, that the fingers are wrapped around the cup (the env measures how far the finger links enclose the cup body and requires it above a threshold that starts low and rises as the policy succeeds more often)
     max_successes: int             # the episode ends after this many successes
 
     # ---- hand: right Tesollo DG-5F, finger index 0 thumb, 1 index, 2 middle, 3 ring, 4 pinky ----
@@ -39,7 +39,7 @@ class RewardContext:
     hand_target_norm: torch.Tensor  # (N,19) commanded finger joint targets (after filtering), same normalisation as hand_q_norm
     hand_default_q_norm: torch.Tensor  # (N,19) the hand's default pose: the finger joint angles every episode starts with, same normalisation as hand_q_norm (the same in every environment); in this pose the four fingers are straight, and the thumb, rotated into opposition, is straight and points along palm_normal, reaching about 0.12 m out from the palm surface at the wrist end of the palm (behind palm_pos along palm_finger_dir)
     hand_qd: torch.Tensor          # (N,19) finger joint velocities [rad/s]
-    hand_z_min: torch.Tensor       # (N,) height of the lowest hand link, palm excluded [m]; below table_z - 0.03 ends the episode wherever the hand is
+    hand_z_min: torch.Tensor       # (N,) height of the lowest hand link, palm excluded [m]; below table_z - 0.005 ends the episode wherever the hand is
 
     # ---- arm: 7-DOF ------------------------------------------------------------------------
     arm_q: torch.Tensor            # (N,7) arm joint angles [rad]
