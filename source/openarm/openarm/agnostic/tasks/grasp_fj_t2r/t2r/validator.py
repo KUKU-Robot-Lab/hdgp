@@ -125,6 +125,8 @@ def make_fake_context(n: int = 16, *, device: str = "cpu", seed: int = 0) -> Rew
         hand_target_norm=r(n, NUM_HAND, lo=0.0, hi=1.0), hand_qd=r(n, NUM_HAND),
         hand_default_q_norm=r(1, NUM_HAND, lo=0.0, hi=1.0).expand(n, NUM_HAND).clone(),
         hand_z_min=r(n, lo=0.15, hi=0.5),
+        # 음수(상판에 눌린 손바닥)까지 포함해야 드라이런이 그 가지를 밟는다 — i06 의 palm_low_pen 은 한 라운드 내내 0 이었다.
+        palm_clearance=r(n, lo=-0.01, hi=0.20),
         arm_q=r(n, NUM_ARM), arm_qd=r(n, NUM_ARM),
         cup_pos=r(n, 3, lo=0.0, hi=0.6), cup_quat=unit(n, 4), cup_axis=axis,
         cup_tilt=torch.acos(axis[:, 2].clamp(-1.0, 1.0)),

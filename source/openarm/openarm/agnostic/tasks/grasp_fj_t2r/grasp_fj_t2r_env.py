@@ -29,6 +29,14 @@ from .grasp_gates import TOUCH_N as _GATE_TOUCH_N
 from .grasp_gates import (APPROACH_CONDITIONS, approach_conditions, c_pregrasp_geometry, hand_orientation,
                           pose_deviation, update_gates)
 from .palm_frame import palm_center_offset
+
+#: 손바닥 collision 메시(`rl_dg_palm_c.STL`)의 바운딩박스 — `r_hl_palm` 링크 프레임 [m], collision origin = 0.
+#:   ★09.16 사용자 "핸드를 테이블에 부딪히면서 접근 — PALM_EE 접근이 아님". 부모의 `hand_z_min` 은 `"palm" not in nm`
+#:   으로 손바닥을 **빼고** 재므로(30 링크 중 palm·palm_ee 둘 제외) 손바닥으로 상판을 긁어도 종료도 진단도 보지 못했다.
+#:   palm_ee 는 표면에서 최대 65 mm 떨어진 **가상점**이라 그 z 로는 대신 못 잰다(i06 의 palm_low_pen 이 한 라운드 내내 0).
+#:   실측 STL 바운딩박스로 8꼭짓점을 만들어 회전시켜 **실제 최저점**을 구한다.
+_PALM_BBOX_LO = (-0.0366, -0.0394, 0.0)
+_PALM_BBOX_HI = (0.0275, 0.0429, 0.0991)
 from .stage_funnel import STAGES, palm_band_gap, step_flags
 from .t2r.context import RewardContext
 from .t2r.loader import call_reward_fn, load_reward_fn
@@ -176,6 +184,16 @@ class GraspFJT2REnv(GraspFJEnv):
         # 손바닥 중심(palm_ee) = 손바닥 링크 원점 + R·오프셋 — `__init__` 주석 참조
         palm_link = self._env_local(self.robot.data.body_pos_w[:, self.palm_idx])
         palm_center = palm_link + torch.einsum("nij,j->ni", R, self._t2r_palm_center_off)
+        # ★09.16 손바닥 **자체**의 상판 여유 — 부모 `hand_z_min` 은 손바닥을 빼고 재고(30 링크 중 palm·palm_ee 제외),
+        #   palm_ee 는 표면에서 최대 65 mm 떨어진 가상점이라 그 z 로도 못 잰다(i06 의 palm_low_pen 이 내내 0.0000).
+        #   bbox 8꼭짓점을 돌려 실제 최저점을 구한다. 종료는 B 계약이라 덮지 않는다 — 측정해서 보상에 넘기기만 한다.
+        corners = getattr(self, "_t2r_palm_corners", None)
+        if corners is None:
+            _lo, _hi = _PALM_BBOX_LO, _PALM_BBOX_HI
+            corners = torch.tensor([[x, y, z] for x in (_lo[0], _hi[0]) for y in (_lo[1], _hi[1])
+                                    for z in (_lo[2], _hi[2])], device=self.device, dtype=torch.float32)   # (8,3)
+            self._t2r_palm_corners = corners
+        palm_lowest_z = (palm_link[:, None, :] + torch.einsum("nij,kj->nki", R, corners))[:, :, 2].amin(dim=1)
         link_pos = (self.robot.data.body_pos_w[:, self._hull_all_t]
                     - self.scene.env_origins[:, None, :]).view(n, len(self._finger_names), -1, 3)
         q = self.robot.data.joint_pos[:, self._syn_ids]
@@ -214,6 +232,7 @@ class GraspFJT2REnv(GraspFJEnv):
             hand_default_q_norm=self._t2r_default_q_norm.unsqueeze(0).expand(n, -1),
             hand_qd=self.robot.data.joint_vel[:, self._syn_ids],
             hand_z_min=self._hand_z_min,
+            palm_clearance=palm_lowest_z - float(self.cfg.table_surface_z),
             arm_q=self.robot.data.joint_pos[:, self._arm_ids_t],
             arm_qd=self.robot.data.joint_vel[:, self._arm_ids_t],
             cup_pos=cup_local, cup_quat=cup_quat, cup_axis=axis,
@@ -247,6 +266,9 @@ class GraspFJT2REnv(GraspFJEnv):
         ex["contact/fingers_touching"] = touching.amax(dim=2).sum(dim=1).mean()
         ex["contact/palm_touching"] = (ctx.palm_cup_force > _TOUCH_LOG_N).to(touching.dtype).mean()
         ex["contact/link_force_mean"] = ctx.link_cup_force.mean()
+        # ★09.16 손바닥 상판 여유 — 부모 `hand_z_min` 의 사각지대(손바닥 제외)를 메우는 진단.
+        ex["diag/palm_clearance"] = ctx.palm_clearance.mean()
+        ex["diag/palm_on_table_frac"] = (ctx.palm_clearance < 0.0).to(touching.dtype).mean()
         for k, finger in enumerate(self._finger_names):
             ex[f"contact/finger_{finger}"] = touching[:, k].amax(dim=1).mean()
         # ★성공 **순간**의 접촉(09.14 t2r 루프) — "성공이 인벨롭이었나"는 스텝 평균으로 못 가른다(접근 중 env 가 뭉갠다).

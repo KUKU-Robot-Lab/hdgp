@@ -155,7 +155,7 @@ increases `goal_dist`. `ctx.success_tol` starts at 0.1125 m and shrinks towards 
 succeeds more often during training. You may add a bonus on `ctx.success`.
 8. An episode lasts at most {episode_steps} steps ({episode_s:g} s), and the step budget restarts after every success. The \
 episode ends early when the cup falls below z = 0.15 (off the table), leaves the allowed area around the table, or \
-tilts more than 60 degrees; when any hand link goes below z = table_z - 0.005 (wherever the hand is); or when an arm joint goes \
+tilts more than 60 degrees; when any hand link goes below z = table_z - 0.005 (wherever the hand is; this check does not include the palm, whose own clearance is ctx.palm_clearance); or when an arm joint goes \
 past its limit or moves faster than 20 rad/s. On that last kind of physics violation the environment \
 replaces the reward of that step with a fixed -1 (your function's value is not used on that step).
 9. Do not keep any state between calls (no globals, no attributes); the function must be pure.

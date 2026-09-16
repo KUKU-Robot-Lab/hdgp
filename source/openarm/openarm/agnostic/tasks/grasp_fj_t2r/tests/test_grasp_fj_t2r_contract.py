@@ -171,7 +171,8 @@ def test_reach_leaf_carries_the_user_decisions_of_0914():
                 "episode_length_s: float = 15.0", 'object_bank: str = "cup_family"', "start_palm_dist_band_m"):
         assert tok in blk, tok
     # ★09.15 사용자 "시작 상태 커리큘럼 50 %" — reach leaf 만 켠다(envelope 판은 0 = 기존 그대로)
-    for tok in ("near_start_frac: float = 0.5", "near_start_after_common_steps: int = 4",
+    # ★09.16: 비율은 0.5 → 0.25 로 내렸다(가까운 출발 쏠림이 먼 출발 접근을 붕괴시켰다) — 나머지 결정은 그대로다.
+    for tok in ("near_start_frac: float = 0.25", "near_start_after_common_steps: int = 4",
                 'near_start_species: tuple = ("cup_big_s085"', "near_start_arm_q: tuple = ("):
         assert tok in blk, tok
     base = _CFG.split("class GraspFJT2RReachEnvCfg", 1)[0]
@@ -200,6 +201,34 @@ def test_reach_leaf_carries_the_user_decisions_of_0916():
     assert "hand_floor_terminate_depth: float = 0.03" in parent
     grandparent = (_HERE.parent / "grasp_fj" / "grasp_fj_env_cfg.py").read_text(encoding="utf-8")
     assert "grasp_wrap_start: float = 0.0" in grandparent
+
+
+def test_palm_is_measured_against_the_table_because_the_parent_leaves_it_out():
+    # ★09.16 사용자 "핸드를 테이블에 부딪히면서 접근 — PALM_EE 접근이 아님".
+    #   부모 `hand_z_min` 은 손 링크 30개 중 palm·palm_ee 를 빼고 재므로, 손바닥으로 상판을 긁어도 종료도 진단도 못 봤다.
+    #   palm_ee 는 표면에서 최대 65 mm 떨어진 가상점이라 그 z 로는 대신 못 잰다(i06 palm_low_pen 이 내내 0.0000).
+    parent = (_HERE.parent / "grasp_fj" / "fj_core_env.py").read_text(encoding="utf-8")
+    assert '"palm" not in nm' in parent, "부모가 손바닥을 포함하게 바뀌면 이 트랙 오버라이드는 이중 계상이 된다"
+    # 실측 STL 바운딩박스(rl_dg_palm_c.STL, r_hl_palm 프레임) — 값이 바뀌면 최저점이 조용히 틀어진다.
+    assert "_PALM_BBOX_LO = (-0.0366, -0.0394, 0.0)" in _ENV
+    assert "_PALM_BBOX_HI = (0.0275, 0.0429, 0.0991)" in _ENV
+    # ★종료(`_get_dones`)는 덮지 않는다 — 이 트랙은 "B 에서 보상만 갈아끼운 판"이고 그 계약을 윗 테스트가 잠근다.
+    #   그래서 손바닥은 **측정해서 보상에 넘기는 것**까지가 이 트랙의 몫이다.
+    assert "def _get_dones" not in _ENV and "def _palm_lowest_z" not in _ENV
+    assert "palm_lowest_z" in _ENV and "_t2r_palm_corners" in _ENV
+    # 보상이 가상점 대신 실측 여유를 쓰게 ctx 로 넘긴다.
+    assert "palm_clearance=palm_lowest_z - float(self.cfg.table_surface_z)" in _ENV
+    ctx_src = (_HERE / "t2r" / "context.py").read_text(encoding="utf-8")
+    assert "palm_clearance: torch.Tensor" in ctx_src
+
+
+def test_wrap_ratchet_is_capped_where_the_policy_can_reach():
+    # ★09.16: i06 에서 wrap_tol 이 0.150 → 0.689 까지 올랐는데 실측 wrap_frac 은 0.189 였다.
+    #   래칫은 prev_episode_successes ≥ 2.0 으로 오르고 그 2.0 을 가까운 출발이 혼자 채워 멈추지 않는다.
+    blk = _CFG.split("class GraspFJT2RReachEnvCfg", 1)[1]
+    assert "grasp_wrap_max: float = 0.35" in blk
+    grandparent = (_HERE.parent / "grasp_fj" / "grasp_fj_env_cfg.py").read_text(encoding="utf-8")
+    assert "grasp_wrap_max: float = 0.85" in grandparent, "부모 상한이 바뀌면 이 오버라이드의 의미가 달라진다"
 
 
 def test_registration_reuses_track_b_agents_with_the_t2r_entry():

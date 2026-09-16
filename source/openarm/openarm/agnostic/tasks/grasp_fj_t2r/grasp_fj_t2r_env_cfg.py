@@ -62,7 +62,10 @@ class GraspFJT2RReachEnvCfg(GraspFJT2RRightShortEnvCfg):
     #:   (흔들려도 ≥ 2.5 cm, 창 밖). 컵 축 ≥ R+0.5 cm 라 엄지와 겹치지 않는다. 띠 중심 높이(0.5 H 이하)는 작은 컵에서 팔꿈치 한계로
     #:   IK 미수렴(최대 29 mm)이라 0.8 H. `tests/test_grasp_gates.py` 가 FK 로 대조한다.
     #:   ★09.16 사용자 "가까운 출발 = 접근 완료로 시작" — env 가 리셋에서 접근 래치를 세운다(2단계부터). 창 밖 4.5 cm 는 겹침 여유로만 남는다.
-    near_start_frac: float = 0.5
+    #: ★09.16 사용자 결정 — i06 에서 가까운 출발이 리셋에서 approach_done 을 공짜로 받아 2·3단계 전 구간(실측 ~0.9/step)을
+    #:   즉시 먹는 동안, 먼 출발은 래치 전까지 1단계 수입 0.006/step 뿐이었다. 정책이 공유되므로 기대수익이 가까운 출발로 쏠려
+    #:   far 접근 래치가 e530 의 0.669 에서 0.0014 로 붕괴했다. 비중을 낮춰 먼 출발이 기울기의 3/4 을 차지하게 한다.
+    near_start_frac: float = 0.25
     near_start_after_common_steps: int = 4
     near_start_species: tuple = ("cup_big_s085", "cup_big_s100", "cup_big_s115", "cup_big_s130", "shaker_closed",
                                  "cup_big_s090", "cup_big_s105", "cup_big_s120")
@@ -87,3 +90,7 @@ class GraspFJT2RReachEnvCfg(GraspFJT2RRightShortEnvCfg):
     #:   사다리는 `prev_episode_successes ≥ 2.0` 에서만 750 프레임마다 ×1.10 오르므로, 성공이 희박한 동안은
     #:   임계가 고정이라 fj_h2 의 "0.627 잠김"은 재발하지 않는다. 관측 wrap_frac 0.59 > 0.15 라 즉시 붕괴도 없다.
     grasp_wrap_start: float = 0.15
+    #: ★09.16 감쌈 래칫 상한 — i06 에서 wrap_tol 이 0.150 → 0.689 까지 올랐는데 실측 wrap_frac 은 0.189 였다(기준이 실력을
+    #:   3.6배 추월). 래칫은 `prev_episode_successes ≥ 2.0` 로 오르는데 그 2.0 을 가까운 출발 성공(0.87~0.94)이 혼자
+    #:   채우므로 멈추지 않는다. 승급 조건·간격·배율은 그대로 두고 **도달 가능한 범위에서 멈추도록 상한만** 내린다.
+    grasp_wrap_max: float = 0.35
