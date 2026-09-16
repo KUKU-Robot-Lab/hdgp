@@ -76,6 +76,9 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         # hand come back near where it started"). Placeholder here; _reset_idx sets the real value.
         self._palm_start = self._robot.data.body_pos_w[:, self._palm] - self.scene.env_origins
         self._t2r_last: dict[str, torch.Tensor] | None = None
+        # fix round 2: this step's t2r_reward/*+place/* log, so _log_episode_end can merge it back into
+        # self.extras["log"] after the parent's own _log_episode_end replaces that dict wholesale.
+        self._t2r_log: dict[str, float] | None = None
 
         digest = hashlib.sha256(Path(cfg.reward_code_path).read_bytes()).hexdigest() if cfg.reward_code_path else "none"
         print(f"[iker_t2r] reward {self._reward_origin} sha256 {digest} · hand joints {len(self._hand_ids)} · "
@@ -205,6 +208,7 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         retreated = (self._t2r_last["palm_pos"] - self._palm_start).norm(dim=-1) <= RETREAT_M
         log["place/retreated"] = retreated.float().mean().item()
         self.extras["log"] = log
+        self._t2r_log = log  # fix round 2: _log_episode_end re-merges this after the parent's own log write
         return total
 
     def _build_context(self) -> RewardContext:
@@ -230,6 +234,19 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         # the parent reads several of these buffers again after the reward: the generated code gets copies (its
         # in-place ops cannot leak into live buffers)
         return RewardContext(**{k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in values.items()})
+
+    # ------------------------------------------------------------------ log
+
+    def _log_episode_end(self, env_ids: torch.Tensor) -> None:
+        """fix round 2: the parent's own version (called from its _reset_idx, which our _reset_idx calls via
+        super()) does ``self.extras["log"] = {...iker/* keys...}`` — a full replace, not an update. Since
+        _reset_idx runs after _get_rewards within the same step(), that replace was silently dropping this
+        step's t2r_reward/*/place/* keys on every step that resets any env — with num_envs in the thousands
+        and 200-step episodes, that is nearly every step. Call the parent first so iker/* is produced exactly
+        as before, then merge our own log back in rather than letting the parent's replace stand alone."""
+        super()._log_episode_end(env_ids)
+        if self._t2r_log is not None:
+            self.extras.setdefault("log", {}).update(self._t2r_log)
 
     # ----------------------------------------------------------------- reset
 

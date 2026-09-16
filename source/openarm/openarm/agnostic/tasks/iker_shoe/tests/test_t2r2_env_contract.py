@@ -8,8 +8,10 @@ REG = (ROOT / "config" / "__init__.py").read_text(encoding="utf-8")
 
 def test_env_subclasses_the_stage2_env_and_overrides_only_the_listed_hooks():
     assert "class IkerShoeT2rEnv(IkerShoeEnv)" in ENV
+    # fix round 2: the boundary moved from 7 to 8 hooks — _log_episode_end was added to fix the parent's
+    # full-replace self.extras["log"] silently dropping t2r_reward/*+place/* on almost every reset step.
     allowed = {"__init__", "_pre_physics_step", "_get_observations", "_get_dones",
-               "_get_rewards", "_build_context", "_reset_idx"}
+               "_get_rewards", "_build_context", "_reset_idx", "_log_episode_end"}
     names = {line.split("def ")[1].split("(")[0] for line in ENV.splitlines() if line.strip().startswith("def ")}
     assert names <= allowed, names - allowed
 
