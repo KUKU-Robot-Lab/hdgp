@@ -189,6 +189,19 @@ def test_start_pose_override_is_read_by_both_validator_and_env():
     assert "tuple(self.cfg.arm_reset_joint_pos_override) or tuple(self.profile.arm_reset_joint_pos)" in env_src
 
 
+def test_reach_leaf_carries_the_user_decisions_of_0916():
+    # ★사용자 결정(09.16): ①"테이블과 접촉하는 정책은 사용불가" → 상판 관통 종료 3 cm → 5 mm.
+    #   ②"Task 성공 세팅 수정" → 감쌈 전제조건 복구. 부모는 둘 다 느슨하므로 leaf 에서 덮어야 과제가 성립한다.
+    blk = _CFG.split("class GraspFJT2RReachEnvCfg", 1)[1]
+    assert "hand_floor_terminate_depth: float = 0.005" in blk
+    assert "grasp_wrap_start: float = 0.15" in blk
+    # 부모 기본값이 느슨한 채로 남아 있어야 이 오버라이드가 의미를 갖는다(값이 같아지면 테스트가 무력해진다).
+    parent = (_HERE.parent / "grasp_fj" / "fj_kp_cfg.py").read_text(encoding="utf-8")
+    assert "hand_floor_terminate_depth: float = 0.03" in parent
+    grandparent = (_HERE.parent / "grasp_fj" / "grasp_fj_env_cfg.py").read_text(encoding="utf-8")
+    assert "grasp_wrap_start: float = 0.0" in grandparent
+
+
 def test_registration_reuses_track_b_agents_with_the_t2r_entry():
     assert "openarm.agnostic.tasks.grasp_fj_t2r.grasp_fj_t2r_env:GraspFJT2REnv" in _REG
     assert "from ...grasp_fj.config import agents" in _REG

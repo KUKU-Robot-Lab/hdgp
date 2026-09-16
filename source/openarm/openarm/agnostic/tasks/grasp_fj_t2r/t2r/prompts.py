@@ -5,7 +5,7 @@
   생성기는 이 세션의 설계 의견 없이 과제 문장과 환경 설명만으로 쓴다(09.14 사용자 결정).
 ★수치 출처(09.14 코드 대조): 제어 dt 1/120×2 · k_arm 0.025 · arm/hand EMA 0.1 (`grasp_fj_env_cfg`) ·
   에피소드 600 스텝 (`fj_core_cfg.episode_length_s` 10) · 종료 out_x/out_y/object_min_z 0.15/tilt 60°/
-  abnormal_qd 20 (`fj_core_cfg`) · 손 바닥 3cm (`fj_kp_cfg.hand_floor_terminate_depth`) · 목표 z 0.2125~0.28 ·
+  abnormal_qd 20 (`fj_core_cfg`) · 손 바닥 5mm (reach leaf 가 부모 3cm 을 덮는다 · `hand_floor_terminate_depth`, 09.16 사용자 "테이블 접촉 정책은 사용불가") · 목표 z 0.2125~0.28 ·
   xy ±0.05 · 기울임 0 · Δ0 (`grasp_fj_env_cfg` leaf · `fj_kp_cfg`) · 반경 29.2~43.8mm (`object_bank.shaker_sweep`) ·
   시작 손바닥→물체 150.4mm (`grasp_fj_env_cfg.start_palm_dist_band_m` 주석, 09.10 FK) ·
   액션 지연 = 최근 3개 중 env·스텝마다 무작위 1개(`fj_kp_cfg.action_delay_steps` 3 · `DelayQueue.push` randint(0, 3)).
@@ -144,14 +144,18 @@ starting height (0 while it rests on the table). `ctx.lifted` becomes True once 
 7. Goal and success are computed by the environment and cannot be redefined by the reward. The goal \
 position is 0.21 m to 0.28 m above the cup's starting position and at most 5 cm away from it \
 horizontally, with the cup upright. A success is counted when `ctx.goal_dist <= ctx.success_tol` for \
-`ctx.success_hold_steps` consecutive steps, and `ctx.success` is True on that step. After a success the \
+`ctx.success_hold_steps` consecutive steps and, on that same step, the fingers are wrapped around the \
+cup: the environment measures how far the finger links enclose the cup body and requires that measure \
+to be above a threshold, which starts low and rises as the policy succeeds more often. A cup that \
+reaches the goal without being held that way does not count as a success. `ctx.success` is True on the \
+step a success is counted. After a success the \
 next goal is at the same place, so holding the cup still there keeps producing successes until \
 `ctx.max_successes`, which ends the episode. The keypoints are fixed on the cup, so tilting the cup also \
 increases `goal_dist`. `ctx.success_tol` starts at 0.1125 m and shrinks towards 0.015 m as the policy \
 succeeds more often during training. You may add a bonus on `ctx.success`.
 8. An episode lasts at most {episode_steps} steps ({episode_s:g} s), and the step budget restarts after every success. The \
 episode ends early when the cup falls below z = 0.15 (off the table), leaves the allowed area around the table, or \
-tilts more than 60 degrees; when any hand link goes below z = table_z - 0.03 (wherever the hand is); or when an arm joint goes \
+tilts more than 60 degrees; when any hand link goes below z = table_z - 0.005 (wherever the hand is); or when an arm joint goes \
 past its limit or moves faster than 20 rad/s. On that last kind of physics violation the environment \
 replaces the reward of that step with a fixed -1 (your function's value is not used on that step).
 9. Do not keep any state between calls (no globals, no attributes); the function must be pure.
