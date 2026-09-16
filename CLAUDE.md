@@ -4,6 +4,7 @@
 >
 > **도메인 해석·진단 방법론·reward 구조·핵심 지표는 각 프로젝트 전용 CLAUDE.md를 기준으로 한다.**
 > - pour: `source/openarm/openarm/tesollo/right/pour_v5/CLAUDE.md` (v6는 `@import`)
+> - iker: @source/openarm/openarm/agnostic/tasks/iker_shoe/CLAUDE.md
 > - grasp 등: 해당 프로젝트 폴더의 CLAUDE.md
 >
 > hdgp는 **모든 학습 프로젝트 공통**만 담는다. 포괄적 지표·프로젝트 도메인 규칙은 여기 두지 않는다.
