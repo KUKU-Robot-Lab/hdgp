@@ -148,6 +148,9 @@ def summarize(rec: GateRecorder) -> dict:
             "p90": round(float(torch.quantile(rec.stable_max, 0.9)), 3),
             "max": round(float(rec.stable_max.max()), 3),
             "target": int(rec.u.cfg.place.stable_steps),
+            # 실제 성공률: 20스텝 연속을 끝까지 채운 env 의 비율. mean/p90 만으로는 "거의 다 온 것" 과
+            # "끝낸 것" 이 구분되지 않아, 학습 로그의 sustained_success 와 직접 비교할 수가 없었다.
+            "at_target_frac": round(float((rec.stable_max >= float(rec.u.cfg.place.stable_steps)).float().mean()), 4),
         },
         "gate_cfg": {
             "place_tolerance": float(rec.u.cfg.place.place_tolerance),

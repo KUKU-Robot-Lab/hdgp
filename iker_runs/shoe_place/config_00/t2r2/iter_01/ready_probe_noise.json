@@ -3,36 +3,37 @@
  "summary": {
   "checkpoint": "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe-t2r/iker_t2r2_c00_i01/nn/last_open-sens_l_iker_shoe_t2r_ep_250_rew_1391.0328.pth",
   "reward_code_path": "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/t2r2/iter_01/reward_fn.py",
-  "num_envs": 64,
+  "num_envs": 256,
   "noise": true,
-  "episode_steps_mean": 189.45,
+  "episode_steps_mean": 182.3,
   "step_rate": {
-   "ready": 0.6637,
-   "placed": 0.6693,
-   "resting": 0.8743,
-   "still": 0.4292,
-   "released": 0.7705,
-   "ok": 0.2477
+   "ready": 0.4634,
+   "placed": 0.4656,
+   "resting": 0.7144,
+   "still": 0.4588,
+   "released": 0.7968,
+   "ok": 0.1718
   },
   "ever_true_env_frac": {
-   "ready": 0.8281,
-   "placed": 0.8281,
-   "resting": 0.9844,
-   "still": 0.9688,
-   "released": 0.9688,
-   "ok": 0.7188
+   "ready": 0.5898,
+   "placed": 0.5938,
+   "resting": 0.957,
+   "still": 0.9023,
+   "released": 0.9922,
+   "ok": 0.5586
   },
   "open_frac": {
-   "mean_all_steps": 0.8772,
-   "max_per_env_mean": 0.9858,
+   "mean_all_steps": 0.7139,
+   "max_per_env_mean": 0.8683,
    "max_per_env_p90": 1.0,
-   "mean_on_ready_steps": 0.9792
+   "mean_on_ready_steps": 0.9948
   },
   "stable_count_max": {
-   "mean": 4.875,
-   "p90": 9.7,
+   "mean": 3.566,
+   "p90": 9.0,
    "max": 20.0,
-   "target": 20
+   "target": 20,
+   "at_target_frac": 0.0078
   },
   "gate_cfg": {
    "place_tolerance": 0.05,
