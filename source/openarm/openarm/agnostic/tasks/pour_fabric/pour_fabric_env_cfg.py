@@ -231,7 +231,8 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     fabric_table_obstacle: bool = True
     fabric_table_margin_xy: float = 0.10
     fabric_table_thickness: float = 0.05
-    fabric_fk_pos_tol: float = 0.005          # 부팅 게이트: fabric FK vs USD palm (2스텝 처짐 1~2mm 가 바닥 — 실측 0.5~1.7mm)
+    fabric_fk_pos_tol: float = 0.010          # 부팅 게이트: fabric FK vs USD palm. 구조 오류는 수십 mm — 09.17 4096 env 기동에서
+                                              #   같은 코드가 2.48 mm(i08)·5.43 mm(i09, 기동 실패)로 런마다 달라 5 mm 는 편차 바닥에 걸렸다
 
     # ---- 팔 액션: palm 6D = 앵커(시작 자세 palm 실측) + 델타 ---------------------------
     # 델타 박스 (x,y,z [m] · ez,ey,ex [deg]) — lo/hi 비대칭. a=0 이 앵커(=컵 옆 시작 자세).
