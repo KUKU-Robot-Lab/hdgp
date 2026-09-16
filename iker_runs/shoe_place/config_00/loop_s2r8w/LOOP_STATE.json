@@ -44,27 +44,27 @@
   },
   "eval": {
    "label": "iker_shoe_c00_s2r8w_eval",
-   "log": "/home/user/rl_ws/hdgp-iker/log/iker_loop/iker_shoe_c00_s2r8w/eval_ep750.log",
-   "pid": 4050998,
-   "started": "2026-09-16T19:19:43+09:00",
-   "started_s": 1789553983.9886608,
-   "commit": "8626f9b1",
+   "log": "/home/user/rl_ws/hdgp-iker/log/iker_loop/iker_shoe_c00_s2r8w/eval_ep1000.log",
+   "pid": 4138917,
+   "started": "2026-09-16T20:47:05+09:00",
+   "started_s": 1789559225.7316854,
+   "commit": "b5c83e12",
    "argv": [
     "scripts/iker/eval_iker.py",
     "--checkpoint",
-    "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe/iker_vlm_c00_s2r8w_s1/nn/last_open-sens_l_iker_shoe_ep_750_rew_541.00525.pth",
+    "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe/iker_vlm_c00_s2r8w_s1/nn/last_open-sens_l_iker_shoe_ep_1000_rew_479.8514.pth",
     "--config-index",
     "0",
     "--interaction",
     "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop_s2r8w/stage_01/interaction_vlm.json",
     "--out",
-    "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop_s2r8w/stage_01/eval_ep0750.json",
+    "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop_s2r8w/stage_01/eval_ep1000.json",
     "--rows-out",
-    "/home/user/rl_ws/hdgp-iker/log/iker_loop/iker_shoe_c00_s2r8w/eval_ep0750_rows.json",
+    "/home/user/rl_ws/hdgp-iker/log/iker_loop/iker_shoe_c00_s2r8w/eval_ep1000_rows.json",
     "--headless"
    ],
-   "key": "ep750",
-   "epoch": 750
+   "key": "ep1000",
+   "epoch": 1000
   }
  },
  "t2r": {
@@ -91,8 +91,13 @@
    "success": 0.2363,
    "checkpoint": "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe/iker_vlm_c00_s2r8w_s1/nn/last_open-sens_l_iker_shoe_ep_750_rew_541.00525.pth",
    "dropped": 0.0547
+  },
+  "1000": {
+   "success": 0.2676,
+   "checkpoint": "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe/iker_vlm_c00_s2r8w_s1/nn/last_open-sens_l_iker_shoe_ep_1000_rew_479.8514.pth",
+   "dropped": 0.0703
   }
  },
  "vlm_requests": {},
- "updated": "2026-09-16T19:47:14+09:00"
+ "updated": "2026-09-16T21:17:09+09:00"
 }
