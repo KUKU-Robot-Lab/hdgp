@@ -59,7 +59,17 @@ from openarm.agnostic.tasks.iker_shoe.policy_player import load_player, reset_pl
 TASK = "open-sens_l_iker_shoe"
 HOLD_RADIUS_M = 0.15  # palm-to-shoe-root distance treated as "still in hand"
 NEAR_M = 0.10
-ROW_KEYS = ("env", "length", "end_dist", "min_dist", "first_5cm", "sustained", "dropped", "centroid_err", "rot_deg", "shoe_z", "palm_shoe")
+RETREAT_M = 0.15  # the palm this far from its start pose at episode end counts as "withdrawn"
+ROW_KEYS = ("env", "length", "end_dist", "min_dist", "first_5cm", "sustained", "dropped", "centroid_err", "rot_deg",
+            "shoe_z", "palm_shoe", "palm_start_dist")
+
+
+def placed_mask(near: torch.Tensor, palm_shoe: torch.Tensor) -> torch.Tensor:
+    return near & (palm_shoe > HOLD_RADIUS_M)
+
+
+def retreated_mask(palm_start_dist: torch.Tensor) -> torch.Tensor:
+    return palm_start_dist >= RETREAT_M
 
 
 def kabsch_angle_deg(current: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -96,6 +106,9 @@ class FirstEpisodeRecorder:
         self.recorded = torch.zeros(n, dtype=torch.bool, device=dev)
         self.rows = {key: [] for key in ROW_KEYS}
         self.states = []
+        # set by main() right after the first reset (every env's first episode starts there); world-frame palm
+        # position, same convention as the un-origin-adjusted ``palm`` read in ``_record``.
+        self.palm_start = torch.zeros(n, 3, device=dev)
         self._get_dones, self._log_episode_end = u._get_dones, u._log_episode_end
         u._get_dones, u._log_episode_end = self.get_dones, self.log_episode_end
 
@@ -129,6 +142,7 @@ class FirstEpisodeRecorder:
             "sustained": u._success_count[finished] > sustain, "dropped": u._failure_count[finished] > sustain,
             "centroid_err": (current.mean(1) - target.mean(1)).norm(dim=-1), "rot_deg": kabsch_angle_deg(current, target),
             "shoe_z": shoe[:, 2] - origins[:, 2], "palm_shoe": (palm - shoe).norm(dim=-1),
+            "palm_start_dist": (palm - self.palm_start[finished]).norm(dim=-1),
         }
         for key, value in values.items():
             self.rows[key].extend(value.cpu().tolist() if value.dtype == torch.bool else value.float().cpu().tolist())
@@ -167,6 +181,8 @@ def summarize(rows: dict, steps: int, u) -> dict:
         "checkpoint": str(Path(args.checkpoint).resolve()), "num_envs": u.num_envs, "episodes": len(rows["env"]), "steps": steps,
         "noise": not args.no_noise, "success_5cm_end": frac(succeeded), "sustained": frac(table["sustained"]),
         "dropped": frac(table["dropped"]), "timeout": frac(timeout), "reached_5cm_ever": frac(table["min_dist"] <= distance),
+        "placed": frac(placed_mask(table["end_dist"] <= distance, table["palm_shoe"])),
+        "retreated": frac(retreated_mask(table["palm_start_dist"])),
         "failures": {
             "n": int(failed.sum()), "dropped": frac(table["dropped"][failed]), "timeout_holding": frac((timeout & holding)[failed]),
             "timeout_released": frac((timeout & ~holding)[failed]), "ever_reached_5cm": frac((table["min_dist"] <= distance)[failed]),
@@ -192,6 +208,7 @@ def main() -> int:
     steps = 0
     with torch.inference_mode():
         obs = reset_player(wrapped, agent)
+        recorder.palm_start = u._robot.data.body_pos_w[:, u._palm].clone()
         while not bool(recorder.recorded.all()) and steps < 3 * u.max_episode_length:
             obs, _ = step_player(wrapped, agent, obs)
             steps += 1
