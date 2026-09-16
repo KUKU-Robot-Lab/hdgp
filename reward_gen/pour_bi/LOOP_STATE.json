@@ -1,7 +1,22 @@
 {
- "iter": 8,
- "label": "t2r_i08",
- "round": 9,
+ "iter": 9,
+ "label": "t2r_i09",
+ "round": 10,
+ "round10_note": "env 수정 b3a07d0e(래치를 접촉 기반 소스 파지 성립 시에만) 뒤 재학습. 보상 iter_09(37항, raise_src 추가). 그 외 env 는 라운드 9 와 동일. 틱 예약 은 아래 launch_i09.cron",
+ "launch_i09": {
+  "label": "t2r_i09",
+  "num_envs": 4096,
+  "gpu": 1,
+  "commit": "25865920",
+  "server_pids": [
+   1926763,
+   1926770
+  ],
+  "started": 1789572040,
+  "started_local": "2026-09-17 00:20",
+  "cron": "b60ea453 (2h, :23)",
+  "note": "GPU1 단독(기동 전 21 MiB), 라벨·로그 폴더 중복 없음 확인 후 기동"
+ },
  "round9_note": "env 라운드 9(사용자 결정 09.16 권장안 A): 비드 30 mm·스폰 20·활성 6~20(ADR 상한 12→20)·파킹, 채움 정도 obs(actor·critic +1 → 223/293), 조준 전 틸트 래치(30°·입구 xy 0.10 m → 성공 무효), hold 45, 바닥 판정 여유 3 mm. 보상 iter_08(36항, upright_src·premature_latch·rcv_still 추가, tilt_premature 제거). MAX_ROUNDS 8→12. 프로브: 게이트 3종 PASS, 흘림 가득 69°/조금 89°(iter_08 prompt 는 95° 표기, 5° 차이 방향 동일)",
  "ended_i08": {
   "epoch": 159,
