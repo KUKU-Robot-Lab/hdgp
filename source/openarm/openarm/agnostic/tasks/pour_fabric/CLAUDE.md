@@ -6,8 +6,9 @@
 
 **양팔 잡기 → 들기 → 붓기.** 테이블 위 컵 2개(소스=우, 비드 20개 / 리시버=좌, 빈 컵)에서
 시작한다. 팔은 Fabrics(palm 6D = 시작자세 앵커 + 비대칭 델타), 손은 grasp_s2r 의 관절공간
-시너지(접촉 동결)를 양팔로 복제했다. 액션 18 = (palm 6 + 손 3) × 2, obs 222 / critic 292
-(09.15 grip3. 구 `hand_action_mode="synergy15"` 는 액션 42 = (palm 6 + 손 15) × 2, obs 246 / critic 316).
+시너지(접촉 동결)를 양팔로 복제했다. 액션 18 = (palm 6 + 손 3) × 2, obs 223 / critic 293
+(09.15 grip3 + 09.16 채움 정도 1칸. 구 `hand_action_mode="synergy15"` 는 액션 42, obs 247 / critic 317 —
+t2r_i05/i07 보관 체크포인트(obs 222)는 이 코드로 재생 불가, 커밋 1dc8e099 이전을 체크아웃).
 
 **보상은 이 트랙에 없다.** `cfg.reward_code_path` 의 생성 코드가 `RewardContext`
 (`modules/t2r/context.py`)를 읽어 `(reward (N,), {항: (N,)})` 를 돌려준다. 성공 판정
@@ -60,6 +61,20 @@ reflect → feedback.md + 다음 iter prompt.md          (TFEvents reward/* · t
   `ctx.actions` 는 거르기 전 원출력. ★실기 노드도 같은 α·같은 관측 규약.
 - **리시버 직립 성공 조건**: 리시버 기울기 ≤ `success_rcv_tilt_max_deg=20°`. i05 는 붓는 동안 46°(최대 55°).
 - i05 보관 체크포인트 재생: `env.hand_action_mode=synergy15 env.palm_action_ema_alpha=1.0`.
+
+## 비드 부피 DR · 조준 전 틸트 래치 (09.16 라운드 9 — t2r_i07 영상·계측 근거, 사용자 결정 A)
+
+- **왜**: i07 은 잡자마자 테이블 위에서 기울여(20° at step 77·입구 거리 0.30 m) 들면서 90° — 12 mm 비드 20개는 컵의
+  3 % 라 흘리지 않았을 뿐(계측: 첫 이탈 20개 82°·60개 90~93°). 실현 가능한 개수로는 흘림 각도가 안 변한다(기하 76→73°).
+- **비드 30 mm × 활성 개수 DR** (`pour_rules.py`, isaaclab 무관·로컬 테스트): 스폰 `bead_count`=26 고정, 리셋마다
+  `bead_active_range` 안에서 활성 n 을 뽑고(상한은 ADR `beads/active_hi` 12→26) 비활성은 env 별 테이블 뒤 지면 격자에
+  파킹(한 점에 모으면 브로드페이즈 폭발). `compute_bead_flags(active_mask=)` 가 비율·무게중심에서 파킹을 뺀다.
+  질량은 밀도 유지(1 g@12 mm → 15.6 g). 30 mm 4개/층·충전율 ≈ 0.45 → 26개 ≈ 87 %(흘림 예상 ≈ 40°).
+- **채움 정도 obs**(actor·critic +1): hold 끝에 활성 비드 평균 높이 × 2 / 내부 높이(0~1, 에피소드 고정). 실기에서는 사람이
+  어림잡아 넣는 명령 입력 — 센서가 아니라 sim2real 규칙과 충돌 없음. `ctx.bead_fill_level`.
+- **래치**: 입구 xy 거리 > `premature_lip_xy_m`(0.10) 인 동안 소스 > `premature_tilt_max_deg`(30°) 면 리셋까지 성공 무효
+  (`ctx.premature_tilt`, 지표 `task/premature_tilt_rate`·`task/tilt_far_deg`). 리시버 정지 대기는 `task/rcv_palm_speed` 로 본다.
+- 프롬프트 지식 5항의 "110°" 는 12 mm·20개에서만 참이라 채움별 각도(2/3 → 65°, 거의 가득 → 40°)로 바꿨다.
 
 ## 알려진 함정
 

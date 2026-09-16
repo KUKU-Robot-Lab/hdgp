@@ -70,6 +70,7 @@ class RewardContext:
     bead_centroid: torch.Tensor         # (N,3) 비드 무게중심 위치
     d_in_target: torch.Tensor           # (N,) 이번 스텝 bead_in_target_frac 증분 (Δ, 음수 가능)
     d_spill: torch.Tensor               # (N,) 이번 스텝 bead_spill_frac 증분
+    bead_fill_level: torch.Tensor       # (N,) 에피소드 시작 시 소스 컵이 부피로 얼마나 찼는지 [0,1] (정착 후 실측, 에피소드 동안 고정; 비드 양은 에피소드마다 다르다)
 
     # ---- 충돌 (실기 안전 — 09.14) ---------------------------------------------------------
     cup_cup_force: torch.Tensor         # (N,) 두 컵이 서로 부딪히는 접촉력 [N] (0 = 안 닿음)
@@ -78,7 +79,8 @@ class RewardContext:
 
     # ---- 과제 판정 / 시간 ------------------------------------------------------------
     cups_nested: torch.Tensor           # (N,) bool 두 컵 원점 거리 < 9 cm — 소스 컵이 리시버 컵에 끼워져 있음(붓기가 아니라 성공 무효)
-    success: torch.Tensor               # (N,) bool 성공 조건 충족 (env 가 판정, 보상이 바꿀 수 없음; cups_nested 면 항상 False)
+    premature_tilt: torch.Tensor        # (N,) bool 에피소드 래치 — 소스 입구가 리시버 입구에서 xy 10 cm 보다 멀 때 소스가 30° 를 넘은 적이 있음(성공 무효, 리셋 전까지 유지)
+    success: torch.Tensor               # (N,) bool 성공 조건 충족 (env 가 판정, 보상이 바꿀 수 없음; cups_nested·premature_tilt 면 항상 False)
     episode_progress: torch.Tensor      # (N,) 에피소드 진행도 [0,1]
 
     # ---- 액션 ------------------------------------------------------------------------

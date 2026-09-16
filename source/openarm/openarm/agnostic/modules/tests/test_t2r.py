@@ -35,7 +35,8 @@ def test_context_fields_split_and_stub_has_every_field():
     for f in C.TENSOR_FIELDS + C.SCALAR_FIELDS:
         assert f in stub, f
     assert "@property" not in stub
-    assert len(C.TENSOR_FIELDS) == 46 and len(C.SCALAR_FIELDS) == 5
+    # 09.16 +2: bead_fill_level(채움 정도 0~1) · premature_tilt(조준 전 틸트 래치)
+    assert len(C.TENSOR_FIELDS) == 48 and len(C.SCALAR_FIELDS) == 5
 
 
 def test_fake_context_shapes():
@@ -44,6 +45,9 @@ def test_fake_context_shapes():
     assert tuple(ctx.src_tips_pos.shape) == (8, 5, 3)
     assert tuple(ctx.actions.shape) == (8, 18)
     assert ctx.success.dtype == torch.bool
+    assert tuple(ctx.bead_fill_level.shape) == (8,) and float(ctx.bead_fill_level.min()) >= 0.0 \
+        and float(ctx.bead_fill_level.max()) <= 1.0
+    assert ctx.premature_tilt.dtype == torch.bool and tuple(ctx.premature_tilt.shape) == (8,)
     with pytest.raises(Exception):
         ctx.src_palm_pos = None    # frozen
 
@@ -85,6 +89,9 @@ def test_prompt_contains_stub_task_and_signature():
     assert "def compute_reward(ctx: RewardContext)" in txt
     assert "Box(-1, 1, (18,)" in txt
     assert "four-finger closure" in txt and "rcv_cup_tilt` at most" in txt
+    # 09.16 비드 부피 DR·조준 전 틸트 래치는 env 사실로 알린다(설계 의견 아님)
+    assert "bead_fill_level" in txt and "premature_tilt" in txt
+    assert "roughly 110°" not in txt                   # 비드 20개·12 mm 에서만 참이던 문장 제거
     assert "previous reward function" not in txt
 
 

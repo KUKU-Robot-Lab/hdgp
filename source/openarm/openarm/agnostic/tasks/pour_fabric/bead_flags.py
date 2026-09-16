@@ -35,10 +35,11 @@ class BeadFlagResult:
     in_target_frac: torch.Tensor      # (N,)
     crossed_frac: torch.Tensor        # (N,)  mouth 통과 이력 비율
     spill_frac: torch.Tensor          # (N,)
-    centroid_w: torch.Tensor          # (N,3) 비드 무게중심(world)
+    centroid_w: torch.Tensor          # (N,3) 비드 무게중심(world, 활성만)
     # 다음 스텝에 되넘길 상태
     target_local_z: torch.Tensor      # (N,k)
     crossed_mask: torch.Tensor        # (N,k) bool
+    source_local_z: torch.Tensor      # (N,k) 소스 컵 로컬 z — 채움 정도(pour_rules.fill_level_from_local_z) 계산용
 
 
 def _local(bead_pos_w: torch.Tensor, cup_pos_w: torch.Tensor,
@@ -61,6 +62,7 @@ def compute_bead_flags(
     geom_target: BeadGeometry,
     prev_target_local_z: torch.Tensor,  # (N,k)
     crossed_mask: torch.Tensor,         # (N,k) bool — 리셋 시 False 로 초기화할 것
+    active_mask: torch.Tensor | None = None,  # (N,k) bool — 09.16 비드 부피 DR: 파킹(비활성) 비드는 어느 비율에도 안 센다
 ) -> BeadFlagResult:
     p_tgt = _local(bead_pos_w, target_pos_w, target_quat_w)
     xy_tgt = p_tgt[..., :2].norm(dim=-1)
@@ -93,12 +95,23 @@ def compute_bead_flags(
     # source 밖 + target 로컬 z<z_min = 영구 손실. transit(공중) 비드는 제외된다.
     spilled = (~in_source) & (p_tgt[..., 2] < geom_target.inside_z_min)
 
+    # 활성 비드만 분모·분자에 넣는다(파킹 비드는 멀리 아래라 마스크 없이는 전부 spill 로 센다). 활성 0개면 0.
+    if active_mask is None:
+        a = torch.ones_like(in_source, dtype=bead_pos_w.dtype)
+    else:
+        a = active_mask.to(bead_pos_w.dtype)
+    n_active = a.sum(dim=-1).clamp(min=1.0)
+
+    def _frac(flag: torch.Tensor) -> torch.Tensor:
+        return (flag.to(bead_pos_w.dtype) * a).sum(dim=-1) / n_active
+
     return BeadFlagResult(
-        in_source_frac=in_source.float().mean(dim=-1),
-        in_target_frac=in_target.float().mean(dim=-1),
-        crossed_frac=crossed.float().mean(dim=-1),
-        spill_frac=spilled.float().mean(dim=-1),
-        centroid_w=bead_pos_w.mean(dim=1),
+        in_source_frac=_frac(in_source),
+        in_target_frac=_frac(in_target),
+        crossed_frac=_frac(crossed),
+        spill_frac=_frac(spilled),
+        centroid_w=(bead_pos_w * a.unsqueeze(-1)).sum(dim=1) / n_active.unsqueeze(-1),
         target_local_z=p_tgt[..., 2],
         crossed_mask=crossed,
+        source_local_z=p_src[..., 2],
     )

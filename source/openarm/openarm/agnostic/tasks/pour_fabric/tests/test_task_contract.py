@@ -132,7 +132,8 @@ def test_contact_sensors_one_per_body_own_cup_only():
 
 
 def test_beads_use_verified_layout():
-    assert "bead_offsets_in_cup" in _ENV
+    # 09.16 지름별 일반화(pour_rules.bead_layout_in_cup) — 새 배치를 손으로 만들지 말 것(08.17 겹침 사고)
+    assert "bead_layout_in_cup" in _ENV
 
 
 def test_cfg_has_no_warm_bank():
@@ -161,16 +162,45 @@ def test_dims_from_resolve_cfg():
         hqd += h
     assert cfg.hand_action_mode == "grip3"
     assert cfg.action_space == 2 * (6 + 3)
-    assert cfg.observation_space == per + 6 + cfg.action_space
+    # 09.16 채움 정도 1칸(actor·critic 공통) — 실기에서는 사람이 어림잡아 넣는 명령 입력
+    assert cfg.observation_space == per + 6 + 1 + cfg.action_space
     assert cfg.state_space == cfg.observation_space + hqd + 4 + 3 + 12 + 1 + 10
 
 
 def test_short_reference_dimensions():
     C = _cfg_module()
     cfg = C.PourFabricEnvCfg()
-    assert (cfg.action_space, cfg.observation_space, cfg.state_space) == (18, 222, 292)
-    legacy = C.PourFabricEnvCfg(hand_action_mode="synergy15")      # t2r_i05 보관 체크포인트 재생
-    assert (legacy.action_space, legacy.observation_space, legacy.state_space) == (42, 246, 316)
+    assert (cfg.action_space, cfg.observation_space, cfg.state_space) == (18, 223, 293)
+    legacy = C.PourFabricEnvCfg(hand_action_mode="synergy15")      # t2r_i05 보관 체크포인트 재생(obs +1 은 불가피)
+    assert (legacy.action_space, legacy.observation_space, legacy.state_space) == (42, 247, 317)
+
+
+# =============================================================================
+# 09.16 비드 부피 DR · 조준 전 틸트 래치 (사용자 결정: 권장안 A)
+# =============================================================================
+def test_bead_volume_dr_cfg_defaults():
+    C = _cfg_module()
+    cfg = C.PourFabricEnvCfg()
+    lo, hi = cfg.bead_active_range
+    assert 1 <= lo < hi <= cfg.bead_count                   # 활성 개수는 스폰 개수 안
+    assert lo <= cfg.adr_bead_active_hi_initial <= hi       # ADR 시작 상한
+    assert cfg.bead_diameter_m > 0.012                      # 12 mm 는 컵의 3 % 라 부피 DR 이 안 된다
+    assert cfg.cup_inside_z_min == pytest.approx(cfg.cup_bottom_z + cfg.bead_diameter_m / 2, abs=1e-6)
+    assert cfg.premature_tilt_max_deg == 30.0 and cfg.premature_lip_xy_m == 0.10
+
+
+def test_success_requires_no_premature_tilt():
+    blk = _ENV.split("self._success_now = (")[1].split("self._success_streak")[0]
+    assert "(~self._premature)" in blk
+    assert "self._premature[env_ids] = False" in _ENV            # 리셋에서 래치 해제
+
+
+def test_actor_observes_fill_level_and_flags_use_active_mask():
+    obs_part = _ENV.split("def _get_observations")[1].split("def ")[0]
+    assert "_fill_level" in obs_part
+    assert "active_mask=self._active" in _ENV
+    assert "sample_active_mask" in _ENV and "park_offsets" in _ENV
+
 
 
 def test_registered_cfg_classes_keep_own_pair_name():

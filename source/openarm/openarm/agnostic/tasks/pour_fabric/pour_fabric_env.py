@@ -29,7 +29,8 @@ from openarm.agnostic.modules.object_wrench import WrenchDR
 from openarm.agnostic.modules.perception_delay import noisy_pose
 from openarm.agnostic.modules.t2r.context import RewardContext
 from openarm.agnostic.modules.t2r.loader import call_reward_fn, load_reward_fn
-from openarm.common.bead_assets import bead_offsets_in_cup
+from .pour_rules import (bead_layout_in_cup, fill_level_from_local_z, park_offsets, premature_tilt_now,
+                         sample_active_mask)
 
 from . import bimanual as _bm
 from . import pour_fabric_env_cfg as _cfg
@@ -134,7 +135,18 @@ class PourFabricEnv(DirectRLEnv):
         self._prev_in_src = torch.ones(N, device=dev)
         self._prev_spill = torch.zeros(N, device=dev)
         self._flags_fresh = torch.ones(N, dtype=torch.bool, device=dev)
-        self._bead_offs = torch.tensor(bead_offsets_in_cup(k), device=dev)
+        # ★09.16 비드 부피 DR: 지름별 배치(아래층부터) + 비활성 파킹 격자 + 활성 마스크 + 채움 정도(정착 후 실측)
+        d = float(cfg.bead_diameter_m)
+        self._bead_offs = torch.tensor(bead_layout_in_cup(
+            k, diameter=d, inner_radius=float(cfg.cup_inner_radius), bottom_z=float(cfg.cup_bottom_z)), device=dev)
+        self._park_offs = torch.tensor(park_offsets(
+            k, diameter=d, origin_xy=tuple(cfg.bead_park_origin_xy),
+            z=float(cfg.ground_plane_z) + d / 2.0 + 0.002, per_row=int(cfg.bead_park_per_row)), device=dev)
+        self._active = torch.ones(N, k, dtype=torch.bool, device=dev)
+        self._fill_level = torch.zeros(N, device=dev)
+        # ★09.16 조준 전 틸트 래치(성공 무효) · 리시버 손바닥 이동 속도 지표용 이전 위치
+        self._premature = torch.zeros(N, dtype=torch.bool, device=dev)
+        self._rcv_palm_prev = torch.zeros(N, 3, device=dev)
 
         self._success_now = torch.zeros(N, dtype=torch.bool, device=dev)
         self._success_streak = torch.zeros(N, dtype=torch.long, device=dev)
@@ -166,7 +178,9 @@ class PourFabricEnv(DirectRLEnv):
                      "object_rot_deg": (float(cfg.obs_noise_object_rot_deg), float(cfg.adr_obs_noise_object_rot_max_deg)),
                      "delay_steps": (float(cfg.perception_delay_base_steps), float(cfg.perception_delay_max_steps))},
              "wrench": {"force_scale": (0.0, float(cfg.wrench_force_scale_max)),
-                        "torque_scale": (0.0, float(cfg.wrench_torque_scale_max))}},
+                        "torque_scale": (0.0, float(cfg.wrench_torque_scale_max))},
+             # 활성 비드 상한: 시작값 → bead_active_range[1] (부피 DR 폭을 성공률 따라 넓힌다, 09.16 사용자 결정)
+             "beads": {"active_hi": (float(cfg.adr_bead_active_hi_initial), float(cfg.bead_active_range[1]))}},
             num_increments=int(cfg.adr_num_increments), increment_interval=int(cfg.adr_increment_interval),
             trigger_threshold=float(cfg.adr_trigger_threshold), enabled=bool(cfg.enable_adr),
             event_manager=em, physics_cfg=phys)
@@ -419,18 +433,24 @@ class PourFabricEnv(DirectRLEnv):
         rp, rq = self._perceive("rcv", self.receiver_cup)
         self._perc_flush[:] = False
         parts = self._side_obs(self.src, sp, sq, noisy=True) + self._side_obs(self.rcv, rp, rq, noisy=True)
-        parts += [rp - sp, self._mouth_from(rp, rq) - self._mouth_from(sp, sq), self._obs_prev_actions()]
+        # 채움 정도 1칸(09.16): 실기에서는 사람이 어림잡아 넣는 0~1 명령 입력 — 센서 아님, sim2real 규칙과 무충돌
+        parts += [rp - sp, self._mouth_from(rp, rq) - self._mouth_from(sp, sq),
+                  self._fill_level.unsqueeze(1), self._obs_prev_actions()]
         obs = torch.cat(parts, dim=1)
 
         # ---- critic: 참값(clean) + hand_qd + 비드 GT + 속도 + 접촉력 -------------------------
         tp_s, tq_s = self._local(self.source_cup.data.root_pos_w), self.source_cup.data.root_quat_w
         tp_r, tq_r = self._local(self.receiver_cup.data.root_pos_w), self.receiver_cup.data.root_quat_w
         clean = self._side_obs(self.src, tp_s, tq_s, noisy=False) + self._side_obs(self.rcv, tp_r, tq_r, noisy=False)
-        clean += [tp_r - tp_s, self._mouth(self.receiver_cup) - self._mouth(self.source_cup), self._obs_prev_actions()]
+        clean += [tp_r - tp_s, self._mouth(self.receiver_cup) - self._mouth(self.source_cup),
+                  self._fill_level.unsqueeze(1), self._obs_prev_actions()]
         qd = self.robot.data.joint_vel
+        a = self._active.float()
+        n_active = a.sum(dim=1).clamp(min=1.0)
         bead_fracs = torch.stack([self._prev_in_src, self._prev_in_tgt, self._prev_spill,
-                                  self._crossed.float().mean(dim=-1)], dim=1)
-        centroid_rel = self.beads.data.object_pos_w.mean(dim=1) - self.receiver_cup.data.root_pos_w
+                                  (self._crossed.float() * a).sum(dim=-1) / n_active], dim=1)
+        centroid_w = (self.beads.data.object_pos_w * a.unsqueeze(-1)).sum(dim=1) / n_active.unsqueeze(-1)
+        centroid_rel = centroid_w - self.receiver_cup.data.root_pos_w
         centroid_local = quat_apply_inverse(self.receiver_cup.data.root_quat_w, centroid_rel)
         state = torch.cat(clean + [
             qd[:, self.src.hand_t], qd[:, self.rcv.hand_t],
@@ -482,7 +502,8 @@ class PourFabricEnv(DirectRLEnv):
             cup_cup_force=self._cup_cup_sensor.data.force_matrix_w.view(self.num_envs, -1, 3).sum(dim=1).norm(dim=-1),
             src_hand_foreign_force=self.src.foreign_force(),
             rcv_hand_foreign_force=self.rcv.foreign_force(),
-            cups_nested=self._cups_nested, success=self._success_now,
+            cups_nested=self._cups_nested, premature_tilt=self._premature,
+            bead_fill_level=self._fill_level, success=self._success_now,
             episode_progress=self.episode_length_buf.float() / float(self.max_episode_length),
             actions=self.actions, prev_actions=self.prev_actions,
         )
@@ -494,7 +515,13 @@ class PourFabricEnv(DirectRLEnv):
             source_pos_w=self.source_cup.data.root_pos_w, source_quat_w=self.source_cup.data.root_quat_w,
             target_pos_w=self.receiver_cup.data.root_pos_w, target_quat_w=self.receiver_cup.data.root_quat_w,
             geom_source=self._geom, geom_target=self._geom,
-            prev_target_local_z=self._prev_tgt_z, crossed_mask=self._crossed)
+            prev_target_local_z=self._prev_tgt_z, crossed_mask=self._crossed,
+            active_mask=self._active)
+        # 채움 정도: hold 가 끝나는 스텝에 정착한 활성 비드 높이로 한 번 실측(에피소드 동안 고정)
+        at_hold_end = self.episode_length_buf == int(cfg.hold_steps)
+        measured = fill_level_from_local_z(flags.source_local_z, self._active,
+                                           bottom_z=float(cfg.cup_bottom_z), top_z=float(cfg.cup_inside_z_max))
+        self._fill_level = torch.where(at_hold_end, measured, self._fill_level)
         fresh = self._flags_fresh.float()
         d_in_target = (1.0 - fresh) * (flags.in_target_frac - self._prev_in_tgt)
         d_spill = (1.0 - fresh) * (flags.spill_frac - self._prev_spill)
@@ -510,10 +537,17 @@ class PourFabricEnv(DirectRLEnv):
         self._cups_center_dist = center_d
         # ★09.15 리시버는 입구가 하늘을 향하게(사용자 요구) — 기울기 한계를 넘으면 성공 무효.
         rcv_tilt = torch.acos(self._cup_up(self.receiver_cup)[:, 2].clamp(-1.0, 1.0))
+        # ★09.16 조준 전 틸트 래치: 입구가 멀리 있는데 소스가 한계를 넘으면 리셋까지 성공 무효(hold 중 제외)
+        src_tilt = torch.acos(self._cup_up(self.source_cup)[:, 2].clamp(-1.0, 1.0))
+        lip_xy = (self._mouth(self.source_cup) - self._mouth(self.receiver_cup))[:, :2].norm(dim=-1)
+        self._premature |= premature_tilt_now(
+            src_tilt, lip_xy, tilt_max_deg=float(cfg.premature_tilt_max_deg),
+            lip_xy_min_m=float(cfg.premature_lip_xy_m)) & (~self._hold_mask())
         self._success_now = ((flags.in_target_frac >= float(cfg.success_fill_ratio))
                              & (flags.spill_frac <= float(cfg.success_spill_max))
                              & (xy < float(cfg.success_xy_thresh))
                              & (~self._cups_nested)
+                             & (~self._premature)
                              & (rcv_tilt <= math.radians(float(cfg.success_rcv_tilt_max_deg))))
         self._success_streak = torch.where(self._success_now, self._success_streak + 1,
                                            torch.zeros_like(self._success_streak))
@@ -544,6 +578,8 @@ class PourFabricEnv(DirectRLEnv):
 
         snap = {"actions": _np(self.actions), "palm_cmd": _np(self._palm_cmd),
                 "in_target": _np(self._prev_in_tgt), "spill": _np(self._prev_spill),
+                "fill_level": _np(self._fill_level), "n_active": _np(self._active.float().sum(dim=1)),
+                "premature": _np(self._premature.float()),
                 "success": _np(self._success_now)}
         for tag, rig in (("src", self.src), ("rcv", self.rcv)):
             mid, dist, tip = rig.finger_link_forces()
@@ -580,6 +616,19 @@ class PourFabricEnv(DirectRLEnv):
         self.extras["task/aim_dist"] = (ctx.src_cup_mouth_pos - ctx.rcv_cup_mouth_pos).norm(dim=-1).mean()
         self.extras["task/cups_center_dist"] = self._cups_center_dist.mean()
         self.extras["task/nested_rate"] = self._cups_nested.float().mean()
+        # ★09.16 조준 전 틸트·리시버 정지 대기·부피 DR 지표(피드백 표용, 보상 아님)
+        self.extras["task/premature_tilt_rate"] = self._premature.float().mean()
+        lip_xy = (ctx.src_cup_mouth_pos - ctx.rcv_cup_mouth_pos)[:, :2].norm(dim=-1)
+        far = (lip_xy > float(cfg.premature_lip_xy_m)) & (~self._hold_mask())
+        zero = torch.zeros((), device=self.device)
+        self.extras["task/tilt_far_deg"] = torch.rad2deg(ctx.src_cup_tilt[far]).mean() if bool(far.any()) else zero
+        rcv_lifted = (ctx.rcv_cup_pos[:, 2] - self._rcv_spawn[:, 2]) > float(cfg.wrench_lift_min_m)
+        palm_speed = (ctx.rcv_palm_pos - self._rcv_palm_prev).norm(dim=-1) / self._policy_dt
+        self.extras["task/rcv_palm_speed"] = palm_speed[rcv_lifted].mean() if bool(rcv_lifted.any()) else zero
+        self._rcv_palm_prev.copy_(ctx.rcv_palm_pos)
+        self.extras["bead/fill_level"] = self._fill_level.mean()
+        self.extras["bead/n_active"] = self._active.float().sum(dim=1).mean()
+        self.extras["dr/bead_active_hi"] = self.adr.get_param("beads", "active_hi")
         thr = float(cfg.collision_force_threshold)
         self.extras["task/cup_collision_rate"] = (ctx.cup_cup_force > thr).float().mean()
         self.extras["task/src_hand_foreign_rate"] = (ctx.src_hand_foreign_force > thr).float().mean()
@@ -663,12 +712,21 @@ class PourFabricEnv(DirectRLEnv):
             cup.write_root_state_to_sim(root, env_ids=env_ids)
 
         k = int(cfg.bead_count)
+        # 활성 개수 ~ U{lo..hi(ADR)}: 활성은 컵 안 배치(아래층부터), 비활성은 env 별 파킹 격자(테이블 뒤 지면 위)
+        hi = int(round(self.adr.get_param("beads", "active_hi")))
+        active = sample_active_mask(n, k=k, lo=int(cfg.bead_active_range[0]), hi=hi, device=dev)
+        self._active[env_ids] = active
+        origins = self.scene.env_origins[env_ids].unsqueeze(1)
+        in_cup = self._src_spawn[env_ids].unsqueeze(1) + self._bead_offs.unsqueeze(0) + origins
+        in_cup[:, :, 2] += float(cfg.object_spawn_pad)
+        parked = self._park_offs.unsqueeze(0) + origins
         bead = torch.zeros(n, k, 13, device=dev)
-        bead[:, :, :3] = (self._src_spawn[env_ids].unsqueeze(1) + self._bead_offs.unsqueeze(0)
-                          + self.scene.env_origins[env_ids].unsqueeze(1))
-        bead[:, :, 2] += float(cfg.object_spawn_pad)
+        bead[:, :, :3] = torch.where(active.unsqueeze(-1), in_cup, parked)
         bead[:, :, 3] = 1.0
         self.beads.write_object_state_to_sim(bead, env_ids=env_ids)
+        # 채움 정도는 정착(hold) 끝에 실측으로 덮어쓴다 — 그때까지는 개수 비율(hold 중 액션은 무시된다)
+        self._fill_level[env_ids] = active.float().sum(dim=1) / float(k)
+        self._premature[env_ids] = False
 
         self._perc_flush[env_ids] = True
         for w in self._wrench.values():

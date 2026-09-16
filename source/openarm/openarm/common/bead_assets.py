@@ -73,6 +73,8 @@ def make_beads_cfg(
     n: int = DEFAULT_BEAD_COUNT,
     *,
     prim_prefix: str = "Bead",
+    scale: tuple = BEAD_SCALE,
+    mass: float = BEAD_MASS,
 ) -> RigidObjectCollectionCfg:
     """비드 RigidObjectCollection 설정을 만든다.
 
@@ -81,14 +83,16 @@ def make_beads_cfg(
         n: 비드 개수. **warm 수집과 pour 소비가 같아야 한다.**
         prim_prefix: prim 이름 접두사. 기본값을 바꾸면 기존 캐시와 무관하지만
             (상태는 이름이 아니라 순서로 저장됨) 씬 디버깅 시 혼동을 줄이려 노출한다.
+        scale: USD(반지름 12 mm) 배율. 기본 0.5 = 지름 12 mm. pour_fabric 09.16 부피 DR 은 1.25(30 mm).
+        mass: 비드 1개 질량[kg]. 기본 1 g(12 mm). 크기를 키우면 밀도 유지로 d³ 비례해 준다.
     """
     rigid_objects: dict[str, RigidObjectCfg] = {}
     for i in range(n):
         bead_spawn_cfg = UsdFileCfg(
             usd_path=_os.path.join(assets_dir, "bead", "bead.usd"),
-            scale=BEAD_SCALE,
+            scale=tuple(scale),
             activate_contact_sensors=False,
-            mass_props=sim_utils.MassPropertiesCfg(mass=BEAD_MASS),
+            mass_props=sim_utils.MassPropertiesCfg(mass=float(mass)),
             rigid_props=RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 solver_position_iteration_count=8,   # 16→8: GPU contact stage 연산 부하 감소

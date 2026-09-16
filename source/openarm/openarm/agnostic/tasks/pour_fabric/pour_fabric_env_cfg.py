@@ -31,7 +31,7 @@ from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 
 from openarm.agnostic.modules import object_bank as _ob
-from openarm.common.bead_assets import DEFAULT_BEAD_COUNT, make_beads_cfg
+from openarm.common.bead_assets import BEAD_MASS, make_beads_cfg
 
 from . import bimanual as _bm
 
@@ -198,12 +198,21 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     object_spawn_pad: float = 0.005           # 스폰 침투 반동 방지
     object_spawn_range: float = 0.02          # 스폰 중심 xy 균등 ± [m]
     cup_inner_radius: float = 0.041
-    cup_inside_z_min: float = -0.070          # bottom(-0.077) + bead 반경 여유
+    cup_bottom_z: float = -0.077              # 컵 원점 → 바닥(.usd 실측)
+    cup_inside_z_min: float = -0.062          # resolve_cfg 가 bottom + 비드 반지름으로 다시 채운다
     cup_inside_z_max: float = 0.100           # 림
     cup_mouth_z: float = 0.100
-    bead_count: int = DEFAULT_BEAD_COUNT
-    # 리셋 직후 비드 정착 대기 — 이 동안 팔은 시작 자세에 고정되고 액션은 무시된다.
-    hold_steps: int = 30
+    # ★09.16 비드 부피 DR(사용자 결정 A): 12 mm 20개는 컵의 3 % 라 접근 전 틸트가 흘리지 않았다(계측 82~93° 에서 첫 이탈).
+    #   30 mm 로 키우고(밀도 유지 → 15.6 g) 스폰은 bead_count 개 고정, 에피소드마다 활성 개수를 뽑아 부피를 바꾼다.
+    #   30 mm 구 4개/층·충전율 ≈ 0.45 → 26개 ≈ 컵 87 %(흘림 예상 ≈ 40°), 6개 ≈ 20 %. 상한은 부팅 프로브로 확정.
+    bead_diameter_m: float = 0.030
+    bead_count: int = 26                      # 스폰 개수(= 활성 상한)
+    bead_active_range: tuple = (6, 26)        # 에피소드별 활성 개수 [lo, hi]
+    adr_bead_active_hi_initial: int = 12      # ADR 시작 상한(진행도 1.0 에서 bead_active_range[1])
+    bead_park_origin_xy: tuple = (-1.0, -0.6) # 비활성 비드 격자 시작(env-local, 로봇·테이블 뒤 지면 위)
+    bead_park_per_row: int = 13
+    # 리셋 직후 비드 정착 대기 — 이 동안 팔은 시작 자세에 고정되고 액션은 무시된다. 30 mm 7층 낙하·정착에 30→45.
+    hold_steps: int = 45
 
     # ---- Fabrics (= grasp_s2r 현행) -------------------------------------------------
     fabrics_dt: float = 1.0 / 60.0
@@ -271,6 +280,10 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     # ★09.15 사용자 요구 "리시버는 입구가 하늘을 향하게, 살짝만 기울여": i05 는 붓는 동안 리시버 46°(최대 55°).
     #   리시버 기울기가 이보다 크면 성공 무효(보상이 우회할 수 없는 판정).
     success_rcv_tilt_max_deg: float = 20.0
+    # ★09.16 사용자 요구 "리시버 가까이 갈 때까지 소스는 직립": i07 은 입구 거리 0.236 m 에서 30° 를 넘었고(테이블 위에서),
+    #   실제 붓기 중 입구 xy 거리는 중앙값 0.021 m·p90 0.041 m. 멀리서 넘으면 에피소드 래치 → 성공 무효(보상이 우회 못 함).
+    premature_tilt_max_deg: float = 30.0
+    premature_lip_xy_m: float = 0.10
     # ★09.13 hacking 차단: 소스 컵을 리시버 입구에 끼워 넣으면 소스 안 비드가 리시버 원통 안에 들어와
     #   in_target 로 세어졌다(ep 600 영상: 붓기 없이 성공 0.73). 원점 거리가 이보다 짧으면 성공 무효.
     #   붓는 자세(소스 입구가 리시버 림 위)에서는 원점 거리가 ≥ 12~15 cm 다.
@@ -343,7 +356,19 @@ def resolve_cfg(cfg: "PourFabricEnvCfg") -> None:
                                     gravity=cfg.enable_gravity)
     cfg.source_cup_cfg = build_cup_cfg(SOURCE_CUP_PRIM)
     cfg.receiver_cup_cfg = build_cup_cfg(RECEIVER_CUP_PRIM)
-    cfg.beads_cfg = make_beads_cfg(_ASSETS_DIR, n=int(cfg.bead_count))
+    # 비드: USD 반지름 12 mm(지름 24 mm at scale 1) → 배율 = 지름/0.024, 질량은 밀도 유지(1 g @ 12 mm × (d/0.012)³)
+    d = float(cfg.bead_diameter_m)
+    if d <= 0.0 or d >= float(cfg.cup_inner_radius):
+        raise ValueError(f"bead_diameter_m 는 (0, 안쪽 반지름) 안: {d}")
+    lo, hi = int(cfg.bead_active_range[0]), int(cfg.bead_active_range[1])
+    if not 1 <= lo <= hi <= int(cfg.bead_count):
+        raise ValueError(f"bead_active_range {cfg.bead_active_range} 는 1 ≤ lo ≤ hi ≤ bead_count({cfg.bead_count})")
+    if not lo <= int(cfg.adr_bead_active_hi_initial) <= hi:
+        raise ValueError(f"adr_bead_active_hi_initial 는 [lo, hi] 안: {cfg.adr_bead_active_hi_initial}")
+    cfg.cup_inside_z_min = float(cfg.cup_bottom_z) + d / 2.0
+    s = d / 0.024
+    cfg.beads_cfg = make_beads_cfg(_ASSETS_DIR, n=int(cfg.bead_count), scale=(s, s, s),
+                                   mass=BEAD_MASS * (d / 0.012) ** 3)
     cfg.source_contact_filter = (SOURCE_CUP_PRIM,)
     cfg.receiver_contact_filter = (RECEIVER_CUP_PRIM,)
 
@@ -371,14 +396,14 @@ def resolve_cfg(cfg: "PourFabricEnvCfg") -> None:
     # policy obs (팔마다): arm q/qd(2·A) + hand q(H) + palm_pos 3 + palm_axes 6
     #   + tips_rel_palm 3F + palm_to_cup 3 + cup_to_tips 3F + joint_err H + cup_up 3
     #   ★09.14 hand_qd(H) 는 actor 에서 뺐다(실기 드라이버 velocity ≠ 관절속도) — critic 에만.
-    # + 공통: src_cup→rcv_cup 3 + 주둥이→개구 3 + prev_action Dact
+    # + 공통: src_cup→rcv_cup 3 + 주둥이→개구 3 + 채움 정도 1(09.16, 실기에선 사람이 넣는 명령 입력) + prev_action Dact
     per = 0
     hand_qd_total = 0
     for p in (pair.source, pair.receiver):
         a, h, f = p.num_arm_joints, p.num_hand_joints, len(p.finger_sensor_bodies)
         per += 2 * a + h + 3 + 6 + 3 * f + 3 + 3 * f + h + 3
         hand_qd_total += h
-    cfg.observation_space = per + 3 + 3 + cfg.action_space
+    cfg.observation_space = per + 3 + 3 + 1 + cfg.action_space
     # critic = policy(clean) + hand_qd(2H) + 비드 분율 4 + 비드 무게중심(rcv 프레임) 3
     #        + 두 컵 lin/ang vel 12 + 진행도 1 + 손가락 접촉력 2F
     f_src = len(pair.source.finger_sensor_bodies)
