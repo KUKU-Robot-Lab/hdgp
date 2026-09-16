@@ -1,7 +1,7 @@
 {
- "iter": 5,
- "label": "t2r_rh_i05",
- "round": 7,
+ "iter": 6,
+ "label": "t2r_rh_i06",
+ "round": 8,
  "host": "vision-3090",
  "gpu": 0,
  "num_envs": 1024,
@@ -71,5 +71,7 @@
  "loop_resumed_round7": "07:53 t2r_rh_i05 기동(9790eb76) — cron 재등록",
  "round7_end_t2r_rh_i05": "09.16 advance 판정(epoch 651, 3.45 h) — 학습 PID 2098604/2098611/2098616 종료(RUN_LABEL=t2r_rh_i05 확인, 2098616 은 SIGTERM 무응답 → kill -9). 마지막 체크포인트 ep_650. 오른손: pinch_geo 0.001→0.167·접촉 0.005→0.20 N·엄지 입구 아래 −16.7 mm, 왼손: pinch_geo 0.094·접촉 0.10 N·엄지 −3.2 mm. 양손 파지(엄지>1 N + 맞은편 손가락>1 N) 0·들기 0·pinch_force 0",
  "loop_stopped_round7": "cron 7dee0eb3 삭제(advance 중 틱 오판정 방지) — 다음 iter 기동 후 재등록",
+ "loop_resumed_round8": "12:55 t2r_rh_i06 기동(571c4ea1, vision-3090, 1024 env) — cron e4f7acc8 재등록(13,43 * * * *, 세션 한정·7일 만료). iter_06 변경: close_{src,rcv}(손끝→벽면 연속 유인) · grip_{src,rcv}(min(엄지,맞은편) 힘을 1 N 까지 선형) 신설, pinch_force_{src,rcv}(곱 구조라 엄지 0 이면 전구간 0) · tips_{src,rcv} · knock_pen · cup_push_pen 삭제, approach 1.5→0.5 · orient 0.3→0.15",
+ "prev_label_round7": "t2r_rh_i05",
  "decisions_round7": "09.16 사용자 notes_round7 '승인·iter_06 생성' — 파지 기하(엄지 입구 아래·컵을 엄지와 검지/중지 사이) 유지, 다음 병목 = 손끝이 벽면을 눌러 엄지와 맞은편 손가락이 동시에 1 N 초과(env 파지 플래그). 영상 our_source/pour_t2r_rh_i05_ep650_0916.mp4 (+_frames sheet·zoom f0400/f0800)"
 }

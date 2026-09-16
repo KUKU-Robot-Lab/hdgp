@@ -1,0 +1,9 @@
+{
+ "label": "t2r_rh_i06",
+ "num_envs": 1024,
+ "started": 1789530949,
+ "commit": "571c4ea1",
+ "host": "vision-3090",
+ "iter": "reward_gen/pour_bi_rh/iter_06",
+ "round": 8
+}
