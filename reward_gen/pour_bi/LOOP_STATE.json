@@ -276,13 +276,32 @@
     "adr": 1.0,
     "reward_total": 25.77,
     "note": "adr 1.0 도달(최초 epoch 2169) — 수렴 판정 기준점(Δ 카운트 0). 성공 0.761→0.766·리시버 비드 73 %·흘림 6.2 %·총보상 25.4→25.8 로 계속 개선. 소스 손 이물 2.2→2.9 % 상승은 관찰 지속"
+   },
+   {
+    "epoch": 2508,
+    "hours": 19.52,
+    "episode_success": 0.7658,
+    "in_target": 0.7224,
+    "spill": 0.0725,
+    "aim_dist": 0.1107,
+    "src_tilt_deg": 99.6,
+    "rcv_tilt_deg": 5.2,
+    "nested": 0.0,
+    "cup_collision": 0.005,
+    "hand_foreign_src_rcv": [
+     0.0251,
+     0.0453
+    ],
+    "adr": 1.0,
+    "reward_total": 25.73,
+    "note": "adr 1.0 유지 첫 틱 — 성공 0.7663→0.7658(Δ −0.0005) 로 평탄, 수렴 안정 1/2. 리시버 비드 73.2→72.2 %·흘림 6.2→7.3 % 는 소폭 역행, 컵 충돌 0.67→0.50 %·소스 손 이물 2.9→2.5 % 는 개선"
    }
   ],
   "convergence": {
    "rule": "adr/progress == 1.0 이후 두 틱 연속 episode_success recent10 변화 |Δ| ≤ 0.02",
    "on_converged": "보고만 하고 런 유지 — 중단 여부는 사용자 결정",
    "adr_full_epoch": 2169,
-   "stable_ticks": 0,
+   "stable_ticks": 1,
    "converged": false,
    "history": [
     {
@@ -290,6 +309,13 @@
      "recent10": 0.7663,
      "adr": 1.0,
      "note": "adr 1.0 최초 관측 틱 — 기준점"
+    },
+    {
+     "epoch": 2508,
+     "recent10": 0.7658,
+     "adr": 1.0,
+     "delta": -0.0005,
+     "stable": true
     }
    ]
   }
