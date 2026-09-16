@@ -43,7 +43,12 @@
 
 ### Task 1: 정착 게이트 — 놓은 뒤 10초 서 있는가
 
-**상태: 진행 중.** 초판(커밋 `6a3ee6a7`)은 측정 루프가 `env.step()` 을 써서 RL 종료·리셋 경로를 탔다 — 신발을 목표에 정확히 놓으면 `d_target ≈ 0.018 < success_tolerance 0.10` 이라 약 21스텝째 성공 종료 후 `_reset_idx` 가 신발을 뱅크 파지 자세로 되돌린다(뱅크 시작 자세의 키포인트 거리 중앙값 232.8 mm, 측정값 291.7 mm). fix round 1 진행 중.
+**상태: 완료** (커밋 `6a3ee6a7` → `eb78ac2f` → `1bcda5f3`, 리뷰 클린). **게이트 통과**: 중앙값 4.4 mm · 드리프트 +3.7 mm · z 낙하 +3.7 mm · 팔바닥–신발 최소거리 447.5 mm.
+
+실행 중 확인된 것 두 가지를 아래 절차에 반영했다.
+- 초판은 측정 루프가 `env.step()` 을 써서 RL 종료·리셋 경로를 탔다 — 신발을 목표에 정확히 놓으면 `d_target ≈ 0.018 < success_tolerance 0.10` 이라 약 21스텝째 성공 종료 후 `_reset_idx` 가 신발을 뱅크 파지 자세로 되돌린다(뱅크 시작 자세의 키포인트 거리 중앙값 232.8 mm, 측정값 291.7 mm — 정착이 아니라 리셋을 잰 것).
+- 그 우회가 `_apply_action()` 을 건너뛰어 **팔 중력보상이 창 내내 꺼졌다**. 관절 위치 목표는 `write_data_to_sim()` 으로 유지되지만 effort feedforward 는 아니다.
+- `gym.make(..., cfg=None)` 은 이 저장소에서 동작하지 않는다(`DirectRLEnv.__init__` 이 `cfg.validate()` 를 부른다). `IkerShoeEnvCfg()` 를 만들어 `cfg.scene.num_envs` 를 설정해 넘긴다(`env_smoke.py` 패턴).
 
 **Files:** Modify `scripts/iker/t2r2_smoke.py`
 
@@ -195,6 +200,7 @@ def place_step(
     shoe_speed: torch.Tensor,
     stable_count: torch.Tensor,
     cfg: PlaceRewardCfg,
+    shoe_ang_speed: torch.Tensor | None = None,
 ) -> PlaceStep:
     placed = keypoint_dist <= cfg.place_tolerance
     released = palm_shoe_dist > cfg.release_radius
@@ -226,7 +232,7 @@ REG = (ROOT / "config" / "__init__.py").read_text(encoding="utf-8")
 def test_env_subclasses_the_stage2_env_and_overrides_only_the_listed_hooks():
     assert "class IkerShoeT2rEnv(IkerShoeEnv)" in ENV
     allowed = {"__init__", "_pre_physics_step", "_get_observations", "_get_dones",
-               "_get_rewards", "_build_context", "_reset_idx"}
+               "_get_rewards", "_build_context", "_reset_idx", "_log_episode_end"}
     names = {line.split("def ")[1].split("(")[0] for line in ENV.splitlines() if line.strip().startswith("def ")}
     assert names <= allowed, names - allowed
 
@@ -295,7 +301,7 @@ class IkerShoeT2rPlayEnvCfg(IkerShoeT2rEnvCfg):
 
 - [ ] **Step 8: env 를 쓴다**
 
-`iker_shoe_t2r_env.py` — 오버라이드는 계약 테스트의 7개뿐이다.
+`iker_shoe_t2r_env.py` — 오버라이드는 계약 테스트의 8개뿐이다(`_log_episode_end` 는 실행 중 추가된 것이다: 부모가 `self.extras["log"]` 를 통째로 대체하고 `_get_rewards` 뒤에 돌아, 리셋 스텝마다 `t2r_reward/*`·`place/*` 가 사라진다. 자식이 `super()` 를 먼저 부르고 자기 키만 `.update()` 로 병합한다 — `extras` 에서 seed 하면 `iker/*` 가 영구 동결되므로 절대 그러지 않는다).
 
 - `__init__`: `load_reward_fn(cfg.reward_code_path)` → `self._reward_fn, self._reward_origin`; `gs.surface_subsample(meta[...]["hull_local"])` → `self._surface_local`; `self._hand_ids`(프로필의 손 관절 이름으로 조회), `self._grip_targets`(뱅크 손 목표), `self._stable_count`, `self._t2r_prev_actions`. 부팅 줄에 보상 코드 경로·sha256 을 찍는다.
 - `_pre_physics_step`: 부모와 같은 팔 6축 IK 뒤, `a = actions[:, 6]` 으로
@@ -340,7 +346,7 @@ def placed_mask(near: torch.Tensor, palm_shoe: torch.Tensor) -> torch.Tensor:
 
 
 def retreated_mask(palm_start_dist: torch.Tensor) -> torch.Tensor:
-    return palm_start_dist >= RETREAT_M
+    return palm_start_dist <= RETREAT_M
 ```
 
 `summarize` 반환 dict 최상위에:
@@ -477,7 +483,7 @@ cp source/openarm/openarm/agnostic/tasks/iker_shoe/t2r/validator.py source/opena
 
 ```python
 FEEDBACK_TAG_PREFIXES = (
-    "t2r_reward/", "place/placed", "place/released", "place/resting",
+    "t2r_reward/", "place/placed", "place/released", "place/resting", "place/retreated",
     "iker/success_5cm", "iker/keypoint_distance_m", "iker/dropped", "episode_lengths", "rewards",
 )
 
