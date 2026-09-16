@@ -1,0 +1,83 @@
+{
+ "ok": true,
+ "errors": [],
+ "warnings": [
+  "cuda 드라이런 생략(연산 가능한 cuda 없음) — Isaac python 으로 ingest 하거나 Isaac 스모크에서 확인"
+ ],
+ "term_stats": {
+  "align": {
+   "mean": 0.622602621714274,
+   "abs_max": 1.993185043334961
+  },
+  "progress": {
+   "mean": 0.6002687613169352,
+   "abs_max": 0.9966875910758972
+  },
+  "seat": {
+   "mean": 0.021485953281323116,
+   "abs_max": 0.8498407006263733
+  },
+  "release": {
+   "mean": 0.19802534083525342,
+   "abs_max": 1.4113414287567139
+  },
+  "premature_release": {
+   "mean": -0.38377671440442407,
+   "abs_max": 1.477439284324646
+  },
+  "withdraw": {
+   "mean": 0.10508620242277782,
+   "abs_max": 1.5
+  },
+  "still": {
+   "mean": 8.054681366331806e-10,
+   "abs_max": 8.940696716308594e-08
+  },
+  "stability": {
+   "mean": 0.6049549778302511,
+   "abs_max": 1.0
+  },
+  "success": {
+   "mean": 2.9904305934906006,
+   "abs_max": 29.021602630615234
+  },
+  "fall_penalty": {
+   "mean": -0.48542078336079914,
+   "abs_max": 1.9363646507263184
+  },
+  "action_reg": {
+   "mean": -0.040921496848265335,
+   "abs_max": 0.07449302077293396
+  }
+ },
+ "total_stats": {
+  "mean": 4.232734998067221,
+  "abs_max": 31.292098999023438
+ },
+ "fields_used": [
+  "actions",
+  "arm_qd",
+  "episode_progress",
+  "grip_norm",
+  "init_keypoints",
+  "keypoint_dist",
+  "palm_shoe_dist",
+  "place_tolerance",
+  "placed",
+  "prev_actions",
+  "rack_top_z",
+  "release_radius",
+  "released",
+  "resting",
+  "resting_tol",
+  "shoe_ang_vel",
+  "shoe_bottom_z",
+  "shoe_lin_vel",
+  "stable_count",
+  "stable_steps",
+  "still_speed",
+  "success",
+  "table_top_z",
+  "target_keypoints"
+ ]
+}
