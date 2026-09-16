@@ -74,27 +74,27 @@
   },
   "eval": {
    "label": "iker_shoe_c00_s2r8_eval",
-   "log": "/home/user/rl_ws/hdgp-iker/log/iker_loop/iker_shoe_c00_s2r8/eval_ep250.log",
-   "pid": 3501379,
-   "started": "2026-09-16T10:17:04+09:00",
-   "started_s": 1789521424.5035908,
-   "commit": "707ad7ca",
+   "log": "/home/user/rl_ws/hdgp-iker/log/iker_loop/iker_shoe_c00_s2r8/eval_ep500.log",
+   "pid": 3574116,
+   "started": "2026-09-16T11:46:55+09:00",
+   "started_s": 1789526815.3347583,
+   "commit": "2d945126",
    "argv": [
     "scripts/iker/eval_iker.py",
     "--checkpoint",
-    "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe/iker_vlm_c00_s2r8_s1/nn/last_open-sens_l_iker_shoe_ep_250_rew_409.0336.pth",
+    "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe/iker_vlm_c00_s2r8_s1/nn/last_open-sens_l_iker_shoe_ep_500_rew_452.6482.pth",
     "--config-index",
     "0",
     "--interaction",
     "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop/stage_01/interaction_vlm.json",
     "--out",
-    "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop/stage_01/eval_ep0250.json",
+    "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop/stage_01/eval_ep0500.json",
     "--rows-out",
-    "/home/user/rl_ws/hdgp-iker/log/iker_loop/iker_shoe_c00_s2r8/eval_ep0250_rows.json",
+    "/home/user/rl_ws/hdgp-iker/log/iker_loop/iker_shoe_c00_s2r8/eval_ep0500_rows.json",
     "--headless"
    ],
-   "key": "ep250",
-   "epoch": 250
+   "key": "ep500",
+   "epoch": 500
   }
  },
  "t2r": {
@@ -111,10 +111,15 @@
    "success": 0.002,
    "checkpoint": "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe/iker_vlm_c00_s2r8_s1/nn/last_open-sens_l_iker_shoe_ep_250_rew_409.0336.pth",
    "dropped": 0.084
+  },
+  "500": {
+   "success": 0.0117,
+   "checkpoint": "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe/iker_vlm_c00_s2r8_s1/nn/last_open-sens_l_iker_shoe_ep_500_rew_452.6482.pth",
+   "dropped": 0.0684
   }
  },
  "vlm_requests": {
   "target_00": 1
  },
- "updated": "2026-09-16T10:46:58+09:00"
+ "updated": "2026-09-16T12:16:57+09:00"
 }
