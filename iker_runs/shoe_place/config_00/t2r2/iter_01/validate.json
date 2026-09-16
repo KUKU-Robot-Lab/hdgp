@@ -1,0 +1,95 @@
+{
+ "ok": true,
+ "errors": [],
+ "warnings": [],
+ "term_stats": {
+  "align": {
+   "mean": 0.622602621714274,
+   "abs_max": 1.993185043334961
+  },
+  "progress": {
+   "mean": 0.6002687613169352,
+   "abs_max": 0.9966875910758972
+  },
+  "seat": {
+   "mean": 0.021485953281323116,
+   "abs_max": 0.8498407006263733
+  },
+  "release": {
+   "mean": 0.5280675987402598,
+   "abs_max": 3.7635769844055176
+  },
+  "hold_cost": {
+   "mean": -0.0920932168761889,
+   "abs_max": 0.9520965218544006
+  },
+  "handsfree": {
+   "mean": 0.2972972889741262,
+   "abs_max": 3.0
+  },
+  "withdraw": {
+   "mean": 0.3001758654912313,
+   "abs_max": 1.8744924068450928
+  },
+  "settle": {
+   "mean": 2.1479151790515516e-09,
+   "abs_max": 2.384185791015625e-07
+  },
+  "gates": {
+   "mean": 0.769988755385081,
+   "abs_max": 2.5
+  },
+  "stability": {
+   "mean": 1.8148648341496787,
+   "abs_max": 3.0
+  },
+  "success": {
+   "mean": 4.485645771026611,
+   "abs_max": 43.53240203857422
+  },
+  "mishandle": {
+   "mean": -0.0674587277074655,
+   "abs_max": 0.3687186539173126
+  },
+  "fall_penalty": {
+   "mean": -0.48542078336079914,
+   "abs_max": 1.9363646507263184
+  },
+  "action_reg": {
+   "mean": -0.040921496848265335,
+   "abs_max": 0.07449302077293396
+  }
+ },
+ "total_stats": {
+  "mean": 8.754502932230633,
+  "abs_max": 53.80447769165039
+ },
+ "fields_used": [
+  "actions",
+  "arm_qd",
+  "episode_progress",
+  "grip_norm",
+  "init_keypoints",
+  "keypoint_dist",
+  "palm_gap",
+  "palm_shoe_dist",
+  "place_tolerance",
+  "placed",
+  "prev_actions",
+  "rack_top_z",
+  "release_radius",
+  "released",
+  "resting",
+  "resting_tol",
+  "shoe_ang_vel",
+  "shoe_bottom_z",
+  "shoe_lin_vel",
+  "stable_count",
+  "stable_steps",
+  "still",
+  "still_speed",
+  "success",
+  "table_top_z",
+  "target_keypoints"
+ ]
+}
