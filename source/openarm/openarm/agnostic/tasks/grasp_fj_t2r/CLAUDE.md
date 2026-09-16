@@ -1,6 +1,7 @@
 # grasp_fj_t2r — Track B + text2reward 생성 보상 (인벨롭 파지)
 
 > 상위: [hdgp/CLAUDE.md](../../../../../../CLAUDE.md) · 베이스: [`../grasp_fj`](../grasp_fj/CLAUDE.md) · 붓기 t2r 트랙과 **코드 공유 없음**(09.10 fj 공유 금지)
+> 루프 작업 **보고 방식**: [`reward_gen/grasp_fj_stage/CLAUDE.md`](../../../../../../reward_gen/grasp_fj_stage/CLAUDE.md) (09.17 — 경과 중계 금지 · 최종 1회 요약 · 틱 형식은 예외)
 
 ## 목적
 DG-5F full-joint 손(액션 26 = 팔 7 증분 + 손 19 절대)으로 **인벨롭 파지 → 들기 → 유지**. 보상은 사람이 쓰지 않고

@@ -5,7 +5,7 @@
  "label_prefix": "fj_stage_i",
  "round": 8,
  "status": "stopped",
- "awaiting": "approval:iter_07 관찰·개선 초안 (사용자 승인 후 advance → 생성 → 기동). ★round 8 = MAX_ROUNDS 8 상한 — 다음 라운드는 정책 상한 초과라 사용자 결정 필요.",
+ "awaiting": "generating:iter_08 — 09.17 사용자 승인 완료(MAX_ROUNDS 8 초과 진행 승인, '초안대로 진행'). advance 완료(iter_08/prompt.md 1419줄), 생성기 에이전트가 response.md 작성 중. 다음: ingest → 라운드 커밋 → 기동 시 iter 8 · round 9 · pid 기록.",
  "best": null,
  "success_ticks": 0,
  "started": 1789561105,
