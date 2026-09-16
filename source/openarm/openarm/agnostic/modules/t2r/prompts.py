@@ -80,9 +80,9 @@ the level, otherwise the policy is paid for standing still with a filled cup.
 7. `ctx.success` is computed by the environment (enough beads in the receiver cup, little \
 spill, cups close together, the receiver cup held nearly upright — `ctx.rcv_cup_tilt` at most \
 20° — the cups NOT nested, and NO premature tilt: `ctx.premature_tilt` latches for the rest of \
-the episode as soon as the source cup exceeds 30° while its mouth is still more than 10 cm (xy) \
-from the receiver's mouth, and a latched episode can never succeed). You may add a bonus on it \
-but you cannot redefine it. Beads only count as "in the receiver" once they have LEFT the source cup — pushing \
+the episode as soon as the GRASPED source cup exceeds 30° while its mouth is still more than \
+10 cm (xy) from the receiver's mouth (a cup knocked over without being grasped does not latch), \
+and a latched episode can never succeed). You may add a bonus on it but you cannot redefine it. Beads only count as "in the receiver" once they have LEFT the source cup — pushing \
 the source cup into the receiver cup (`ctx.cups_nested`) transfers nothing and is never a success; \
 the beads must fall out of the tilted source cup through the air.
 8. Height above the table: `ctx.src_cup_pos[:, 2] - ctx.src_cup_spawn_pos[:, 2]` is how far \

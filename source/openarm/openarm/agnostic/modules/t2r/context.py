@@ -79,7 +79,7 @@ class RewardContext:
 
     # ---- 과제 판정 / 시간 ------------------------------------------------------------
     cups_nested: torch.Tensor           # (N,) bool 두 컵 원점 거리 < 9 cm — 소스 컵이 리시버 컵에 끼워져 있음(붓기가 아니라 성공 무효)
-    premature_tilt: torch.Tensor        # (N,) bool 에피소드 래치 — 소스 입구가 리시버 입구에서 xy 10 cm 보다 멀 때 소스가 30° 를 넘은 적이 있음(성공 무효, 리셋 전까지 유지)
+    premature_tilt: torch.Tensor        # (N,) bool 에피소드 래치 — **잡은** 소스 컵이 입구 xy 거리 10 cm 보다 멀 때 30° 를 넘은 적이 있음(성공 무효, 리셋 전까지 유지; 잡지 않은 채 넘어진 컵은 아님)
     success: torch.Tensor               # (N,) bool 성공 조건 충족 (env 가 판정, 보상이 바꿀 수 없음; cups_nested·premature_tilt 면 항상 False)
     episode_progress: torch.Tensor      # (N,) 에피소드 진행도 [0,1]
 

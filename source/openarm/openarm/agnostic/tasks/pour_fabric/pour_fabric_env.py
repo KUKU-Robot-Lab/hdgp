@@ -537,11 +537,14 @@ class PourFabricEnv(DirectRLEnv):
         self._cups_center_dist = center_d
         # ★09.15 리시버는 입구가 하늘을 향하게(사용자 요구) — 기울기 한계를 넘으면 성공 무효.
         rcv_tilt = torch.acos(self._cup_up(self.receiver_cup)[:, 2].clamp(-1.0, 1.0))
-        # ★09.16 조준 전 틸트 래치: 입구가 멀리 있는데 소스가 한계를 넘으면 리셋까지 성공 무효(hold 중 제외)
+        # ★09.16 조준 전 틸트 래치: **잡은** 소스 컵이 입구가 멀리 있는데 한계를 넘으면 리셋까지 성공 무효(hold 중 제외).
+        #   ★09.17 파지 조건 추가 — 없으면 탐색이 넘어뜨린 컵까지 걸려 정책이 소스 컵을 회피했다(i08 epoch 159 파지 0.000).
+        #   self._src_grasped 는 _build_context 에서 갱신돼 한 스텝 묵으므로 이 스텝의 접촉으로 새로 계산한다.
         src_tilt = torch.acos(self._cup_up(self.source_cup)[:, 2].clamp(-1.0, 1.0))
         lip_xy = (self._mouth(self.source_cup) - self._mouth(self.receiver_cup))[:, :2].norm(dim=-1)
+        src_grasped_now = self.src.grasped(self.src.finger_forces())
         self._premature |= premature_tilt_now(
-            src_tilt, lip_xy, tilt_max_deg=float(cfg.premature_tilt_max_deg),
+            src_tilt, lip_xy, src_grasped_now, tilt_max_deg=float(cfg.premature_tilt_max_deg),
             lip_xy_min_m=float(cfg.premature_lip_xy_m)) & (~self._hold_mask())
         self._success_now = ((flags.in_target_frac >= float(cfg.success_fill_ratio))
                              & (flags.spill_frac <= float(cfg.success_spill_max))

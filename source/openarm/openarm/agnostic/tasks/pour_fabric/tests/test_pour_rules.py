@@ -12,11 +12,14 @@ from openarm.agnostic.tasks.pour_fabric import pour_rules as R
 
 
 # ---------------------------------------------------------------- 조준 전 틸트 래치
-def test_premature_tilt_only_when_far_and_tilted():
-    tilt = torch.tensor([math.radians(a) for a in (10.0, 40.0, 40.0, 29.0)])
-    lip = torch.tensor([0.30, 0.30, 0.05, 0.30])
-    out = R.premature_tilt_now(tilt, lip, tilt_max_deg=30.0, lip_xy_min_m=0.10)
-    assert out.tolist() == [False, True, False, False]
+def test_premature_tilt_only_when_grasped_far_and_tilted():
+    # 09.17 i08 실측: 첫 epoch 래치 19.8 % 가 소스 파지 0 에서 나왔다(탐색이 컵을 쳐서 넘어뜨림) → 정책이 소스 컵 회피.
+    #   래치는 리시버 규칙과 같은 원칙으로 **파지 성립 시에만** — 잡은 채 테이블 위에서 기울이는 i07 식 행동만 잡는다.
+    tilt = torch.tensor([math.radians(a) for a in (10.0, 40.0, 40.0, 29.0, 40.0)])
+    lip = torch.tensor([0.30, 0.30, 0.05, 0.30, 0.30])
+    grasped = torch.tensor([True, True, True, True, False])
+    out = R.premature_tilt_now(tilt, lip, grasped, tilt_max_deg=30.0, lip_xy_min_m=0.10)
+    assert out.tolist() == [False, True, False, False, False]   # 마지막: 잡지 않은 채 넘어진 컵은 래치 아님
 
 
 # ---------------------------------------------------------------- 채움 정도

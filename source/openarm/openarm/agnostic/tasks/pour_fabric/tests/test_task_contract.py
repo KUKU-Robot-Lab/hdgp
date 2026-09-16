@@ -195,6 +195,9 @@ def test_success_requires_no_premature_tilt():
     blk = _ENV.split("self._success_now = (")[1].split("self._success_streak")[0]
     assert "(~self._premature)" in blk
     assert "self._premature[env_ids] = False" in _ENV            # 리셋에서 래치 해제
+    # 09.17: 래치는 그 스텝의 소스 파지(접촉 기반)가 성립할 때만 — 잡지 않은 채 넘어진 컵은 걸지 않는다(i08 회피 원인)
+    call = _ENV.split("self._premature |= premature_tilt_now(")[1].split(")")[0]
+    assert "grasped" in call
 
 
 def test_actor_observes_fill_level_and_flags_use_active_mask():

@@ -23,10 +23,16 @@ _SPAWN_GAP_M = 0.002         # 이웃 비드 사이 여유(소환 겹침 → 벽
 _PARK_GAP_M = 0.010          # 파킹 격자 간격 여유
 
 
-def premature_tilt_now(src_tilt: torch.Tensor, lip_xy: torch.Tensor, *,
+def premature_tilt_now(src_tilt: torch.Tensor, lip_xy: torch.Tensor, grasped: torch.Tensor, *,
                        tilt_max_deg: float, lip_xy_min_m: float) -> torch.Tensor:
-    """이 스텝의 순간 판정 (N,) bool — 래치(에피소드 누적)는 env 가 한다."""
-    return (src_tilt > math.radians(float(tilt_max_deg))) & (lip_xy > float(lip_xy_min_m))
+    """이 스텝의 순간 판정 (N,) bool — 래치(에피소드 누적)는 env 가 한다.
+
+    ★09.17 i08: 파지 조건 없이 걸었더니 첫 epoch 래치 19.8 % 가 전부 파지 0 에서 나왔다(탐색이 컵을 쳐서 넘어뜨림).
+    래치는 영구라 정책이 소스 컵을 아예 피했다(파지 0.000, 이물 접촉 15→2 %). 리시버 규칙(파지·들기 이후에만)과
+    같은 원칙으로 **잡은 채** 기울인 경우만 잡는다 — i07 이 한 "잡고 테이블 위에서 45°" 는 여전히 걸린다.
+    """
+    return ((src_tilt > math.radians(float(tilt_max_deg))) & (lip_xy > float(lip_xy_min_m))
+            & grasped.to(torch.bool))
 
 
 def fill_level_from_local_z(z_local: torch.Tensor, active: torch.Tensor, *,
