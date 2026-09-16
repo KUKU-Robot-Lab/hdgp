@@ -27,7 +27,7 @@ _HDGP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_HDGP / "scripts" / "tools"))
 from parse_tfevents import load_tfevents   # noqa: E402
 
-ROUND_POLICY = {"ROUND_EPOCHS": 600, "ROUND_HOURS": 4.0, "KEEP_SUCCESS": 0.30, "MAX_ROUNDS": 8}
+ROUND_POLICY = {"ROUND_EPOCHS": 600, "ROUND_HOURS": 4.0, "KEEP_SUCCESS": 0.30, "MAX_ROUNDS": 12}   # 09.16 사용자: 8→12
 SERVER = "server"
 SERVER_LOGDIR = "~/rl_ws/hdgp/log/rl_games/open-short/both/pour-fab"
 LOCAL_MIRROR = _HDGP / "log" / "server_mirror" / "pour-fab"
@@ -36,7 +36,10 @@ KEY_TAGS = ("task/episode_success", "task/success_now", "task/src_grasped", "tas
             "bead/in_target", "bead/spill", "done/drop", "reward/total",
             "task/nested_rate", "task/cups_center_dist", "task/cup_collision_rate",
             "task/src_hand_foreign_rate", "task/rcv_hand_foreign_rate", "adr/progress", "dr/wrench_force_scale",
-            "task/src_closure", "task/rcv_closure")   # 09.14 라운드 5: 인벨롭 파지 판정용
+            "task/src_closure", "task/rcv_closure",   # 09.14 라운드 5: 인벨롭 파지 판정용
+            # 09.16 라운드 9: 조준 전 틸트 래치·리시버 정지 대기·비드 부피 DR
+            "task/rcv_tilt_deg", "task/premature_tilt_rate", "task/tilt_far_deg", "task/rcv_palm_speed",
+            "bead/fill_level", "bead/n_active", "dr/bead_active_hi")
 
 
 def _ssh(cmd: str, timeout: int = 60) -> str:
