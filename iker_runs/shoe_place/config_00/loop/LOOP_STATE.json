@@ -2,8 +2,12 @@
  "schema": 1,
  "track": "iker_shoe_c00_s2r8",
  "phase": "stage2_train",
- "status": "running",
- "awaiting": null,
+ "status": "awaiting",
+ "awaiting": {
+  "reason": "stage 2 ended with best success 8.40 % < 50.00 %",
+  "needs": "decide on stage 2: train longer, query a new target, or stop",
+  "phase": "stage2_train"
+ },
  "stage": 1,
  "policy": {
   "bin_epochs": 10,
@@ -126,5 +130,5 @@
  "vlm_requests": {
   "target_00": 1
  },
- "updated": "2026-09-16T12:48:50+09:00"
+ "updated": "2026-09-16T12:49:14+09:00"
 }
