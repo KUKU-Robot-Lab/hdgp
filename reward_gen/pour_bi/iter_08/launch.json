@@ -1,0 +1,11 @@
+{
+ "label": "t2r_i08",
+ "num_envs": 4096,
+ "started": "2026-09-16 22:44",
+ "commit": "c8dedf04",
+ "gpu": 1,
+ "server_pids": [1873810, 1873817],
+ "env_round": 9,
+ "env_changes": "bead 30 mm · spawn 20 · active 6~20 (ADR hi 12→20) · parked inactive · bead_fill_level obs (223/293) · premature tilt latch 30°/0.10 m · hold 45 · floor tol 3 mm",
+ "reward": "reward_gen/pour_bi/iter_08/compute_reward.py (36 terms, ingest PASS)"
+}

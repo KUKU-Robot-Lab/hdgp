@@ -1,7 +1,20 @@
 {
- "iter": 7,
- "label": "t2r_i07",
- "round": 8,
+ "iter": 8,
+ "label": "t2r_i08",
+ "round": 9,
+ "round9_note": "env 라운드 9(사용자 결정 09.16 권장안 A): 비드 30 mm·스폰 20·활성 6~20(ADR 상한 12→20)·파킹, 채움 정도 obs(actor·critic +1 → 223/293), 조준 전 틸트 래치(30°·입구 xy 0.10 m → 성공 무효), hold 45, 바닥 판정 여유 3 mm. 보상 iter_08(36항, upright_src·premature_latch·rcv_still 추가, tilt_premature 제거). MAX_ROUNDS 8→12. 프로브: 게이트 3종 PASS, 흘림 가득 69°/조금 89°(iter_08 prompt 는 95° 표기, 5° 차이 방향 동일)",
+ "launch_i08": {
+  "label": "t2r_i08",
+  "num_envs": 4096,
+  "gpu": 1,
+  "commit": "c8dedf04",
+  "server_pids": [
+   1873810,
+   1873817
+  ],
+  "started_local": "2026-09-16 22:44",
+  "note": "GPU1 단독(기동 전 21 MiB), 라벨·로그 폴더 중복 없음 확인 후 기동"
+ },
  "best": {
   "iter": 5,
   "label": "t2r_i05",
