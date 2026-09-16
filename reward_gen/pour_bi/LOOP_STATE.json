@@ -200,6 +200,30 @@
   },
   "breakout": "epoch 720 에 컵 거리 0.30 m 아래 → 799 첫 성공 → 836 성공률 0.5 (loop_ended 기록은 epoch 558 시점이라 낡음)",
   "cron": "6da64236 (2h, :23)",
+  "video_i07_adr0": {
+   "ckpt": "last_open-short_b_pour_fab_ep_2750_rew_23410.004.pth",
+   "epoch": 2750,
+   "adr": 0,
+   "envs": 8,
+   "steps": 900,
+   "files": {
+    "left_top": "/home/user/rl_ws/our_source/pour_t2r_i07_ep2750_adr0_left_top.mp4",
+    "right": "/home/user/rl_ws/our_source/pour_t2r_i07_ep2750_adr0_right.mp4"
+   },
+   "findings": [
+    "리시버 자세 개선 확인: step 245~817 리시버 컵이 거의 직립한 채 소스를 받음(계측 rcv_tilt 5.4°, i05 는 46°)",
+    "두 컵이 만나는 높이가 i05 보다 높음",
+    "오른손 손가락 말림·팔 진동은 영상으로 판정 불가 — 붓기 구간 내내 로봇 몸통·팔이 손을 가리고, 진동 4~5 Hz 는 프레임 간격 밖",
+    "테이블 비드 1~2개(계측 흘림 5.9 %)"
+   ],
+   "note": "학습은 중단하지 않고 계속(사용자 지시 09.16 '더 학습하면서, 난이도 0 영상 추출')"
+  },
+  "trace_i07_converged": {
+   "ckpt": "last_open-short_b_pour_fab_ep_2800_rew_22890.537.pth",
+   "epoch": 2800,
+   "out": "log/rl_games/open-short/both/pour-fab/t2r_i07/trace_ep2750_adr0.npz",
+   "note": "★파일명은 trace_ep2750 이지만 실제 계측 체크포인트는 ep_2800 — 런처가 기동 시점 최신 last_*.pth 를 고르는데 그 사이 학습이 ep_2800 을 저장했다. 영상(ep_2750)과 한 epoch 구간 차이."
+  },
   "ticks": [
    {
     "epoch": 1480,
