@@ -1,0 +1,13 @@
+{
+ "track": "pour_bi",
+ "iter": 8,
+ "task": "Using both arms, grasp each cup: the right hand grasps the source cup (which contains the beads) and the left hand grasps the empty receiver cup. Lift both cups off the table, bring the mouth of the source cup over the mouth of the receiver cup, and tilt the source cup so that the beads pour into the receiver cup. Keep the receiver cup upright, do not drop either cup, and spill as few beads as possible. The task is finished when at least half of the beads are inside the receiver cup with little spill.",
+ "created": "2026-09-16T22:32:13.330682",
+ "prev_iter": "reward_gen/pour_bi/iter_07",
+ "events": [
+  "/home/user/rl_ws/hdgp/log/server_mirror/pour-fab/t2r_i07/summaries/events.out.tfevents.1789482197.oem-MS73-HB1-000"
+ ],
+ "notes": "reward_gen/pour_bi/notes_round9.md",
+ "robot_file": null,
+ "num_actions": 18
+}
