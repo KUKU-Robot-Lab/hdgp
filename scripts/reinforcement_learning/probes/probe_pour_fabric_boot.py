@@ -25,6 +25,9 @@ parser.add_argument("--script", default="", choices=["", "grasp", "pour"],
 parser.add_argument("--approach_m", type=float, default=0.07, help="닫기 전 +x 접근 거리")
 parser.add_argument("--lift_m", type=float, default=0.10, help="들기 높이")
 parser.add_argument("--tilt_slot", type=int, default=3, help="pour 에서 −1 을 줄 소스 회전 슬롯(3|4|5)")
+parser.add_argument("--bead_count", type=int, default=0,
+                    help="소스 컵 비드 개수 덮어쓰기(0=cfg 기본). resolve_cfg 가 env 생성 시 재호출돼 반영된다.")
+parser.add_argument("--print_every", type=int, default=50, help="주기 출력 간격(스텝)")
 parser.add_argument("--out", default="")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -41,6 +44,8 @@ import openarm.agnostic.tasks.pour_fabric.config  # noqa: E402,F401
 
 env_cfg = parse_env_cfg(args.task, device=args.device, num_envs=args.num_envs)
 env_cfg.reward_code_path = args.reward_code_path
+if args.bead_count > 0:
+    env_cfg.bead_count = args.bead_count
 env = gym.make(args.task, cfg=env_cfg).unwrapped
 obs, _ = env.reset()
 N = env.num_envs
@@ -95,8 +100,14 @@ for t in range(args.steps):
     for k, v in extras.items():
         if k.startswith("reward/"):
             summary["terms"].setdefault(k, []).append(float(v))
-    if t % 50 == 0:
+    if args.script == "pour":
+        # 붓기 곡선: 흘림이 시작되는 기울기를 개수별로 비교하기 위해 매 스텝 기록
+        summary.setdefault("pour_curve", []).append(
+            [t, float(extras["task/src_tilt_deg"]), float(extras["bead/spill"]),
+             float(extras["bead/in_target"]), float(extras["bead/in_source"])])
+    if t % args.print_every == 0:
         print(f"[step {t:4d}] inS={float(extras['bead/in_source']):.3f} "
+              f"spill={float(extras['bead/spill']):.3f} inT={float(extras['bead/in_target']):.3f} "
               f"gS={float(extras['task/src_grasped']):.2f} gR={float(extras['task/rcv_grasped']):.2f} "
               f"palm_err S/R={float(extras['fabric/src_palm_err'])*1000:.1f}/"
               f"{float(extras['fabric/rcv_palm_err'])*1000:.1f}mm "
