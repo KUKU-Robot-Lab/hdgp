@@ -11,7 +11,6 @@ re-deriving the formula independently, which would just test a second copy of th
 from __future__ import annotations
 
 import ast
-import types
 from pathlib import Path
 
 import torch
@@ -78,70 +77,7 @@ def test_placed_mask_unaffected_by_the_retreated_fix():
     assert ns["placed_mask"](near, palm_shoe).tolist() == [True, False, False]
 
 
-# ---------------------------------------------------------------- finding 3: iker/* counters move with the predicate
-
-def _extract_dones_counter_slice():
-    """Compile the exact _get_dones statements (place_step call through the failure-count accumulation) that
-    feed self._success_count / self._failure_count, as a standalone function taking a duck-typed ``self``."""
-    tree = ast.parse(ENV_SRC, filename="iker_shoe_t2r_env.py")
-    get_dones = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_get_dones")
-    body = get_dones.body
-    start = next(i for i, n in enumerate(body) if ast.unparse(n).startswith("step = ps.place_step("))
-    end = next(i for i, n in enumerate(body) if ast.unparse(n).startswith("self._failure_count = self._failure_count +"))
-    assert start < end
-    sliced = body[start:end + 1]
-
-    func = ast.FunctionDef(
-        name="_counter_slice",
-        args=ast.arguments(posonlyargs=[], args=[ast.arg(arg=a) for a in
-                            ("self", "keypoint_dist", "palm_shoe_dist", "shoe_bottom_z", "shoe_speed", "shoe_pos")],
-                            kwonlyargs=[], kw_defaults=[], defaults=[]),
-        body=sliced + [ast.Return(value=ast.Tuple(elts=[
-            ast.Attribute(value=ast.Name(id="self", ctx=ast.Load()), attr=a, ctx=ast.Load())
-            for a in ("_success_count", "_failure_count", "_stable_count")
-        ] + [ast.Name(id="dropped", ctx=ast.Load())], ctx=ast.Load()))],
-        decorator_list=[], returns=None,
-    )
-    module = ast.Module(body=[func], type_ignores=[])
-    ns: dict = {"ps": ps}
-    exec(compile(ast.fix_missing_locations(module), "iker_shoe_t2r_env.py", "exec"), ns)
-    return ns["_counter_slice"]
-
-
-class _FakeSelf:
-    def __init__(self, stable_count, failure_count, place_cfg, fall_height):
-        self._stable_count = stable_count
-        self._failure_count = failure_count
-        self.cfg = types.SimpleNamespace(place=place_cfg, reward=types.SimpleNamespace(fall_height=fall_height))
-
-
-def test_success_count_tracks_the_consecutive_stable_count_from_place_step():
-    counter_slice = _extract_dones_counter_slice()
-    cfg = ps.PlaceRewardCfg()
-    good = dict(keypoint_dist=torch.tensor([0.01]), palm_shoe_dist=torch.tensor([0.30]),
-                shoe_bottom_z=torch.tensor([cfg.rack_top_z]), shoe_speed=torch.tensor([0.0]),
-                shoe_pos=torch.tensor([[0.0, 0.0, 1.0]]))  # well above any plausible fall height
-    fake = _FakeSelf(torch.zeros(1), torch.zeros(1), cfg, fall_height=0.168)
-    for expected in (1.0, 2.0, 3.0):
-        success_count, failure_count, stable_count, dropped = counter_slice(fake, **good)
-        fake._stable_count, fake._failure_count = stable_count, failure_count
-        assert success_count.tolist() == [expected]
-        assert bool(dropped[0]) is False and failure_count.tolist() == [0.0]
-
-
-def test_failure_count_accumulates_while_the_shoe_is_below_fall_height_and_holds_otherwise():
-    counter_slice = _extract_dones_counter_slice()
-    cfg = ps.PlaceRewardCfg()
-    fallen = dict(keypoint_dist=torch.tensor([0.30]), palm_shoe_dist=torch.tensor([0.30]),
-                  shoe_bottom_z=torch.tensor([cfg.rack_top_z]), shoe_speed=torch.tensor([1.0]),
-                  shoe_pos=torch.tensor([[0.0, 0.0, 0.0]]))  # z=0 < fall_height=0.168
-    fake = _FakeSelf(torch.zeros(1), torch.zeros(1), cfg, fall_height=0.168)
-    success_count, failure_count, stable_count, dropped = counter_slice(fake, **fallen)
-    assert bool(dropped[0]) is True and failure_count.tolist() == [1.0]
-    fake._stable_count, fake._failure_count = stable_count, failure_count
-    success_count, failure_count, stable_count, dropped = counter_slice(fake, **fallen)
-    assert failure_count.tolist() == [2.0]  # accumulates, does not reset, matching the old fall_penalty formula
-
-    safe = dict(fallen, shoe_pos=torch.tensor([[0.0, 0.0, 1.0]]))
-    success_count, failure_count, stable_count, dropped = counter_slice(fake, **safe)
-    assert bool(dropped[0]) is False and failure_count.tolist() == [2.0]  # holds flat once no longer fallen
+# Finding 3's "iker/* counters move with the predicate" tests were superseded in fix round 3 (critical 2):
+# they verified the counters moved, but not against the parent's actual STRICT `>` comparison, which is what
+# made the original fix wrong (a counter that only ever reaches the threshold, never exceeds it, still reads
+# as "moving" while always failing `count > sustain`). See test_t2r2_fix_round_3.py.

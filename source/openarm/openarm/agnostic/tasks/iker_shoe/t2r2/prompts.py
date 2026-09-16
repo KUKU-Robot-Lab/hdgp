@@ -42,9 +42,9 @@ The palm pose change goes through damped least-squares inverse kinematics to arm
 compensated), clamped to the arm's joint limits.
     actions[6] = grip axis: a = -1 keeps the hand at its recorded grip pose (holding the shoe), a = +1 moves it toward \
 the hand profile's open pose. Each step the finger joint targets move {alpha:.4f} of the way from their previous value \
-towards that point (the same EMA law as the arm's other commanded joints), clamped so a finger cannot bend back past its \
-open pose. The episode starts at a = -1 (holding). `ctx.grip_norm` reports this filtered state, normalised to [-1, 1], \
-where -1 is the grip pose and +1 the open pose.
+towards that point — an exponential moving average applied only to the grip axis, filtering its own target over \
+consecutive steps — clamped so a finger cannot bend back past its open pose. The episode starts at a = -1 (holding). \
+`ctx.grip_norm` reports this filtered state, normalised to [-1, 1], where -1 is the grip pose and +1 the open pose.
 
 During training the policy's observations carry uniform noise of +-{obs_noise} (orientations up to {quat_noise} rad) and \
 its actions uniform noise of +-{act_noise} before they are executed.
@@ -146,8 +146,12 @@ def task_text(cfg: PlaceRewardCfg) -> str:
             "set it down, let go, and withdraw the hand.")
 
 
-def render_prompt(spec: PromptSpec) -> str:
-    cfg = PlaceRewardCfg()
+def render_prompt(spec: PromptSpec, cfg: PlaceRewardCfg | None = None) -> str:
+    # fix round 3 (small item): previously always a fresh default PlaceRewardCfg(), regardless of what the
+    # caller actually configured — silently wrong numbers if cfg.place is ever overridden. cfg=None (the
+    # default) preserves the old behaviour for existing call sites; a caller with a real cfg now gets it
+    # reflected in the rendered thresholds.
+    cfg = cfg if cfg is not None else PlaceRewardCfg()
     robot = ROBOT_DESCRIPTION.format(
         rack_x_min=layout.RACK_X_RANGE[0], rack_x_max=layout.RACK_X_RANGE[1], rack_y_min=layout.RACK_Y_RANGE[0],
         rack_y_max=layout.RACK_Y_RANGE[1], rack_top_z=layout.RACK_TOP_Z, control_dt=CONTROL_DT_S,

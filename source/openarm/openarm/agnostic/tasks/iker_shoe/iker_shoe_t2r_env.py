@@ -159,20 +159,25 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         keypoint_err = (current - targets).norm(dim=-1)
         keypoint_dist = keypoint_err.mean(dim=-1)
         shoe_speed = sd.root_lin_vel_w.norm(dim=-1)
+        shoe_ang_speed = sd.root_ang_vel_w.norm(dim=-1)  # fix round 3: a shoe spinning in place is not "still"
 
-        step = ps.place_step(keypoint_dist, palm_shoe_dist, shoe_bottom_z, shoe_speed, self._stable_count, self.cfg.place)
+        step = ps.place_step(keypoint_dist, palm_shoe_dist, shoe_bottom_z, shoe_speed, self._stable_count, self.cfg.place,
+                             shoe_ang_speed=shoe_ang_speed)
         self._stable_count = step.stable_count
         self._keypoint_distance = keypoint_dist  # keep the parent's field valid for _log_episode_end / eval_iker.py
 
-        # fix round 1 (finding 3): the parent's own _log_episode_end (which this class cannot override — it is
-        # not one of the 7 allowed hooks) reads _success_count/_failure_count to log iker/sustained_success and
-        # iker/dropped. Nothing in this class's _get_dones updated them before, so both were always 0. Feed them
-        # from the new predicate instead: success from the consecutive stable count (place_step's own counter —
-        # its sustain_steps default (20) already matches cfg.place.stable_steps), failure by accumulating the
-        # fall condition below, the same "+= condition" shape the old compute_reward_and_termination used.
-        self._success_count = step.stable_count
+        # fix round 3 (critical 2): the parent's _log_episode_end reads _success_count/_failure_count with a
+        # STRICT comparison (`count > sustain_steps`, sustain_steps=20) and the episode always ends the same
+        # step our predicate first turns true — place_step's own stable_count ceilings at exactly
+        # stable_steps (20) on that step, and a naive fall accumulator ceilings at 1, so `20 > 20` and `1 > 20`
+        # are both always False and iker/sustained_success · iker/dropped were permanently 0 despite fix round
+        # 1's intent. Jump straight past the threshold exactly when this step's predicate is true, 0
+        # otherwise, so the parent's strict `>` reads true exactly when success/dropped does (not merely
+        # reachable given enough steps, since there are none left once the episode ends).
+        sustain = float(self.cfg.reward.sustain_steps)
+        self._success_count = torch.where(step.success, sustain + 1.0, torch.zeros_like(self._success_count))
         dropped = shoe_pos[:, 2] < self.cfg.reward.fall_height  # fix round 1 (finding 1): inherited threshold, not a new drop_z
-        self._failure_count = self._failure_count + dropped.float()
+        self._failure_count = torch.where(dropped, sustain + 1.0, torch.zeros_like(self._failure_count))
 
         self._t2r_last = dict(
             palm_pos=palm_pos, palm_quat=palm_quat, arm_q=rd.joint_pos[:, self._arm_ids], arm_qd=rd.joint_vel[:, self._arm_ids],
@@ -197,7 +202,11 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         total = torch.nan_to_num(total, nan=0.0, posinf=0.0, neginf=0.0)
         self._t2r_prev_actions = self.actions.clone()
 
-        log = dict(self.extras.get("log", {}))
+        # fix round 3 (critical 1): built fresh every step, never seeded from self.extras — seeding from extras
+        # copied forward whatever iker/* the parent last wrote, and merging that stale copy back on top of the
+        # parent's freshly-written iker/* in _log_episode_end permanently pinned it at the first value it ever
+        # saw. This dict carries only this class's own keys.
+        log: dict[str, float] = {}
         log["t2r_reward/total"] = total.mean().item()
         log.update({f"t2r_reward/{name}": value.mean().item() for name, value in terms.items()})
         log["t2r_reward/nonfinite_frac"] = float(nonfinite_frac.item())
@@ -207,8 +216,11 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         log["place/still"] = ctx.still.float().mean().item()
         retreated = (self._t2r_last["palm_pos"] - self._palm_start).norm(dim=-1) <= RETREAT_M
         log["place/retreated"] = retreated.float().mean().item()
-        self.extras["log"] = log
-        self._t2r_log = log  # fix round 2: _log_episode_end re-merges this after the parent's own log write
+        # merge (not replace): on a step where no env resets, _log_episode_end never runs, and whatever
+        # iker/* the last reset step wrote should keep reading as the last-known value here too, exactly as it
+        # would in the un-modified base environment.
+        self.extras.setdefault("log", {}).update(log)
+        self._t2r_log = log  # fix round 2: _log_episode_end re-merges this (t2r-only) after the parent's own log write
         return total
 
     def _build_context(self) -> RewardContext:

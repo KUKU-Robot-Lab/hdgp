@@ -42,8 +42,9 @@ def cmd_render(args: argparse.Namespace) -> int:
     if args.feedback:
         series = json.loads(Path(args.feedback).read_text(encoding="utf-8"))
         feedback = P.render_feedback_table(series)
-    spec = P.PromptSpec(task=P.task_text(PlaceRewardCfg()), previous_code=previous_code, feedback=feedback)
-    Path(args.out).write_text(P.render_prompt(spec), encoding="utf-8")
+    cfg = PlaceRewardCfg()
+    spec = P.PromptSpec(task=P.task_text(cfg), previous_code=previous_code, feedback=feedback)
+    Path(args.out).write_text(P.render_prompt(spec, cfg=cfg), encoding="utf-8")
     print(f"[t2r2] prompt -> {args.out}")
     return 0
 
