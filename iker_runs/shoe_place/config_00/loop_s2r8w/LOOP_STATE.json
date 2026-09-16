@@ -1,0 +1,88 @@
+{
+ "schema": 1,
+ "track": "iker_shoe_c00_s2r8w",
+ "phase": "stage2_train",
+ "status": "running",
+ "awaiting": null,
+ "stage": 1,
+ "policy": {
+  "bin_epochs": 10,
+  "t2r_round_epochs": 500,
+  "t2r_early_epoch": 250,
+  "t2r_early_latched": 0.005,
+  "t2r_harvest_success": 0.05,
+  "t2r_max_rounds": 6,
+  "t2r_max_requests": 3,
+  "t2r_num_envs": 4096,
+  "t2r_smoke_envs": 64,
+  "t2r_smoke_steps": 150,
+  "harvest_min": 64,
+  "vlm_max_attempts": 3,
+  "stage2_env_smoke": false,
+  "stage2_epochs": 2000,
+  "stage2_num_envs": 4096,
+  "eval_every": 250,
+  "success_target": 0.5,
+  "side_gpu_limit_mib": 20000,
+  "minibatch_size": 0,
+  "grasp_bank_path": "",
+  "labels": {
+   "stage1_t2r": "iker_grasp_c00_t2r",
+   "stage2": "iker_vlm_c00_s2r8w_s1"
+  }
+ },
+ "runs": {
+  "stage2": {
+   "label": "iker_vlm_c00_s2r8w_s1",
+   "log": "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/train_iker_vlm_c00_s2r8w_s1.log",
+   "pid": 3806807,
+   "started_s": 1789539205.1746156,
+   "started": "2026-09-16T15:13:25+09:00",
+   "commit": null,
+   "key": "iker_vlm_c00_s2r8w_s1",
+   "adopted": "2026-09-16T15:13:33+09:00"
+  },
+  "eval": {
+   "label": "iker_shoe_c00_s2r8w_eval",
+   "log": "/home/user/rl_ws/hdgp-iker/log/iker_loop/iker_shoe_c00_s2r8w/eval_ep250.log",
+   "pid": 3927363,
+   "started": "2026-09-16T16:43:42+09:00",
+   "started_s": 1789544622.0971277,
+   "commit": "36ee35a8",
+   "argv": [
+    "scripts/iker/eval_iker.py",
+    "--checkpoint",
+    "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe/iker_vlm_c00_s2r8w_s1/nn/last_open-sens_l_iker_shoe_ep_250_rew_489.40414.pth",
+    "--config-index",
+    "0",
+    "--interaction",
+    "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop_s2r8w/stage_01/interaction_vlm.json",
+    "--out",
+    "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop_s2r8w/stage_01/eval_ep0250.json",
+    "--rows-out",
+    "/home/user/rl_ws/hdgp-iker/log/iker_loop/iker_shoe_c00_s2r8w/eval_ep0250_rows.json",
+    "--headless"
+   ],
+   "key": "ep250",
+   "epoch": 250
+  }
+ },
+ "t2r": {
+  "iter": 0,
+  "requests": 0,
+  "rounds": []
+ },
+ "bank": null,
+ "attempts": {
+  "1": 0
+ },
+ "eval": {
+  "250": {
+   "success": 0.0898,
+   "checkpoint": "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe/iker_vlm_c00_s2r8w_s1/nn/last_open-sens_l_iker_shoe_ep_250_rew_489.40414.pth",
+   "dropped": 0.0801
+  }
+ },
+ "vlm_requests": {},
+ "updated": "2026-09-16T16:46:59+09:00"
+}
