@@ -241,7 +241,7 @@
    },
    "note": "GPU0 의 fj_stage_i07 은 다른 트랙이라 건드리지 않음"
   },
-  "cron": "6da64236 (2h, :23)",
+  "cron": "6da64236 (2h, :23) — 09.16 i07 종료 시 삭제 · 라운드 9 루프 틱 3c90783d (2h, :23, LOOP_PROMPT 전체 절차)",
   "video_i07_adr0": {
    "ckpt": "last_open-short_b_pour_fab_ep_2750_rew_23410.004.pth",
    "epoch": 2750,
