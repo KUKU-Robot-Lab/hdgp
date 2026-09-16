@@ -1,0 +1,60 @@
+{
+ "schema": 1,
+ "summary": {
+  "checkpoint": "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe/iker_vlm_c00_s2r8_s1/nn/last_open-sens_l_iker_shoe_ep_250_rew_409.0336.pth",
+  "num_envs": 512,
+  "episodes": 512,
+  "steps": 199,
+  "noise": true,
+  "success_5cm_end": 0.002,
+  "sustained": 0.0,
+  "dropped": 0.084,
+  "timeout": 0.916,
+  "reached_5cm_ever": 0.0176,
+  "failures": {
+   "n": 511,
+   "dropped": 0.0841,
+   "timeout_holding": 0.683,
+   "timeout_released": 0.2329,
+   "ever_reached_5cm": 0.0157,
+   "min_dist_q10_50_90": [
+    0.063,
+    0.078,
+    0.098
+   ],
+   "end_dist_q10_50_90": [
+    0.0785,
+    0.095,
+    0.2132
+   ],
+   "centroid_err_q10_50_90": [
+    0.0626,
+    0.0763,
+    0.2009
+   ],
+   "rot_deg_q10_50_90": [
+    42.4413,
+    57.6619,
+    111.046
+   ],
+   "near_but_rotated": 0.7564
+  },
+  "successes": {
+   "rot_deg_q10_50_90": [
+    20.4544,
+    20.4544,
+    20.4544
+   ],
+   "length_q10_50_90": [
+    199.0,
+    199.0,
+    199.0
+   ],
+   "first_5cm_q10_50_90": [
+    58.0,
+    58.0,
+    58.0
+   ]
+  }
+ }
+}

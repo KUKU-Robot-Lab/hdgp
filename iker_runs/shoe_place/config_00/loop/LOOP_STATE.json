@@ -31,7 +31,72 @@
    "stage2": "iker_vlm_c00_s2r8_s1"
   }
  },
- "runs": {},
+ "runs": {
+  "env_smoke": {
+   "label": "iker_shoe_c00_s2r8_env_smoke",
+   "log": "/home/user/rl_ws/hdgp-iker/log/iker_loop/iker_shoe_c00_s2r8/env_smoke_vlm_target.log",
+   "pid": 3342187,
+   "started": "2026-09-16T08:30:03+09:00",
+   "started_s": 1789515003.0235605,
+   "commit": "ab57bfdd",
+   "argv": [
+    "scripts/iker/env_smoke.py",
+    "--config-index",
+    "0",
+    "--interaction",
+    "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop/stage_01/interaction_vlm.json",
+    "--headless"
+   ],
+   "key": "vlm_target",
+   "epoch": null
+  },
+  "stage2": {
+   "label": "iker_vlm_c00_s2r8_s1",
+   "log": "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/train_iker_vlm_c00_s2r8_s1.log",
+   "pid": 3348035,
+   "started": "2026-09-16T08:32:22+09:00",
+   "started_s": 1789515142.005483,
+   "commit": "ab57bfdd",
+   "argv": [
+    "scripts/reinforcement_learning/rl_games/train.py",
+    "--task",
+    "open-sens_l_iker_shoe",
+    "--num_envs",
+    "4096",
+    "--max_iterations",
+    "750",
+    "--headless",
+    "env.interaction_source=vlm",
+    "env.interaction_path='/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop/stage_01/interaction_vlm.json'"
+   ],
+   "key": "iker_vlm_c00_s2r8_s1",
+   "epoch": null
+  },
+  "eval": {
+   "label": "iker_shoe_c00_s2r8_eval",
+   "log": "/home/user/rl_ws/hdgp-iker/log/iker_loop/iker_shoe_c00_s2r8/eval_ep250.log",
+   "pid": 3501379,
+   "started": "2026-09-16T10:17:04+09:00",
+   "started_s": 1789521424.5035908,
+   "commit": "707ad7ca",
+   "argv": [
+    "scripts/iker/eval_iker.py",
+    "--checkpoint",
+    "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe/iker_vlm_c00_s2r8_s1/nn/last_open-sens_l_iker_shoe_ep_250_rew_409.0336.pth",
+    "--config-index",
+    "0",
+    "--interaction",
+    "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop/stage_01/interaction_vlm.json",
+    "--out",
+    "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/loop/stage_01/eval_ep0250.json",
+    "--rows-out",
+    "/home/user/rl_ws/hdgp-iker/log/iker_loop/iker_shoe_c00_s2r8/eval_ep0250_rows.json",
+    "--headless"
+   ],
+   "key": "ep250",
+   "epoch": 250
+  }
+ },
  "t2r": {
   "iter": 0,
   "requests": 0,
@@ -41,9 +106,15 @@
  "attempts": {
   "1": 1
  },
- "eval": {},
+ "eval": {
+  "250": {
+   "success": 0.002,
+   "checkpoint": "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe/iker_vlm_c00_s2r8_s1/nn/last_open-sens_l_iker_shoe_ep_250_rew_409.0336.pth",
+   "dropped": 0.084
+  }
+ },
  "vlm_requests": {
   "target_00": 1
  },
- "updated": "2026-09-16T08:29:36+09:00"
+ "updated": "2026-09-16T10:46:58+09:00"
 }
