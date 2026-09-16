@@ -5,7 +5,7 @@
  "label_prefix": "fj_stage_i",
  "round": 9,
  "status": "stopped",
- "awaiting": "approval:iter_08 관찰·개선 초안 (사용자 승인 후 advance → 생성 → 기동). ★round 9 로 MAX_ROUNDS 8 을 이미 초과했다 — round 10 진행 여부도 함께 결정 필요.",
+ "awaiting": "decision:소환 위치 범위 — 사용자 09.17 '최종 목표는 컵 소환 위치가 다양해져도 접근 후 리프트 성공'. 현재 spawn_range 0.02 m(±2cm 고정) · enable_adr false · adr_spawn_range_max 0.05 미사용 · cup_family 8종(반경 44~80.6mm). 선택지 ① 이번 라운드는 보상 3항만 고치고 env 무변경(추천, i08 과 1:1 비교 유지) ② spawn_range 0.02→0.05 동시 변경(원인 분리 불가) ③ enable_adr true 로 자동 확장(부팅 목표박스 검증 통과 필요). ★iter_08 초안은 승인됨(round 10 진행 확정), advance 완료 — iter_09/prompt.md 1746줄 검증 통과. 생성은 이 결정 후.",
  "best": null,
  "success_ticks": 0,
  "started": 1789573200,
