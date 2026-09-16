@@ -37,10 +37,16 @@ Observations for this round (previous reward function iter_09, trained from scra
    - `reward/ready_both` is `2.0 · min(src, rcv)` and was therefore 0 for the entire round. The two-hand coupling term paid nothing at any point, so nothing in the reward pulled the lagging hand forward while it was far behind.
    - The task is bimanual, but this round produced a one-handed policy.
 
-5. **Rollout video** at the latest checkpoint (`our_source/pour_t2r_rh_i09_ep650_0917.mp4`): PENDING. The questions for the video: what the source hand does with the cup once it has surrounded it, and what the receiver arm is doing instead of approaching.
+5. **Rollout video** at the epoch-650 checkpoint (4 envs, 900 steps, `our_source/pour_t2r_rh_i09_ep650_0917.mp4`, frame sheet and 2.4x crops in `pour_t2r_rh_i09_ep650_0917_frames/`):
+   - The source hand is down at its cup with the four fingers on the far side and the thumb on the near side: the cup body is genuinely between them, and the fingers reach past the cup's mid-height. This is the posture the metrics in item 1 describe, and it is the first round in which the video shows the hand around the cup at all.
+   - The posture at step 350 and at step 880 is the same. The hand holds the straddle and never closes into a press; the cup stays upright on the mat and is never lifted. This matches contact stopping at 0.276 N and the grasp flag never firing.
+   - The receiver arm is outside the crop in these frames, so its behaviour could not be judged from the video — only from item 4's metrics (26.8 cm away, no contact, ladder stuck on rungs 1-3).
 
 6. **Physics stayed clean.** `ctrl/mimic_err_max` ended at 0.198 rad (it spiked to 1.4 rad in the first 50 epochs, then settled). No mimic runaway, no drop, no cup collision.
 
-7. **Operator decisions** (to be filled in after reviewing items 1-6 and the video).
+7. **Operator decisions** (after reviewing items 1-6 and the video):
+   - **The round is extended rather than closed.** Training resumes from the epoch-650 checkpoint with this same reward function, because contact was still climbing when the round ended — 0.072 N to 0.276 N over the last 100 epochs — and the cheapest way to learn whether this reward reaches the 1 N grasp threshold is to let it run, not to redesign it.
+   - **Stop rule:** if `contact/src_max` is not heading toward 1 N one tick (about 30 minutes) after the restart, the extension ends immediately and a new reward is generated.
+   - This item will be finalised when the extension is judged. If the extension does produce a grasp, the next round's subject is the receiver hand (item 4) rather than the grasp itself.
 
 The policy must complete the full task (grasp both → lift → bring together without contact → tilt → beads in receiver, receiver upright, no drop, little spill).
