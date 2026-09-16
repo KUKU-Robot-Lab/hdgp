@@ -1,21 +1,21 @@
 {
  "track": "grasp_fj_stage",
- "iter": 5,
- "label": "fj_stage_i05",
+ "iter": 6,
+ "label": "fj_stage_i06",
  "label_prefix": "fj_stage_i",
- "round": 6,
+ "round": 7,
  "status": "round_end",
- "awaiting": "approval_iter_05",
+ "awaiting": "approval_iter_06",
  "best": null,
  "success_ticks": 0,
- "started": 1789529637,
- "pid": 1538421,
- "commit": "3db06cfa",
+ "started": 1789545549,
+ "pid": 1680866,
+ "commit": "c57429ba",
  "algo": {
   "from_iter_00": "PPO-LSTM 4096 (open-short_r_grasp_fj_t2r_reach-lstm)"
  },
  "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY + TRACKS.grasp_fj_stage.early_stop False (체크포인트, 막힘, 단계 연장 없음 — 3000 epoch 또는 4 h 끝까지)",
- "env_frozen_from": "7d9ac94f (C자 사전파지 접근 래치 + 가까운 출발 50% = 접근 완료 래치로 시작 + 자세 허용치 0.3). 이후 env/래치/과제 문장 변경 금지.",
+ "env_frozen_from": "c57429ba (09.16 사용자 결정으로 09.15 동결 해제 — reach leaf 에 hand_floor_terminate_depth 0.005 · grasp_wrap_start 0.15). 이후 라운드는 i05 이전과 동일조건 비교 불가.",
  "history": [
   "i00 (c51b93b3): e~180 사용자 중지 — 방향 항이 시작부터 손을 ~68도 돌림, 손가락 오므림, 접근 래치 0. SIGKILL 21:33.",
   "i01 (ee3dbf5a): e1010 사용자 결정(커리큘럼 재설계)으로 중지. 접근 래치 150ep 평균 0.48(최고 0.96)이나 엄지로 컵을 누르며 선 래치, e800~ 붕괴. SIGKILL 23:23. 기하 조사: 기본 자세 엄지가 손바닥면 118 mm 앞.",
@@ -26,7 +26,10 @@
   "i04 (fc16cd06): 라운드 끝 advance — e2788/4.1 h(시간 상한). 접근 래치 먼 0.97·가까운 1.00, 인벨롭 래치 0.0097/0.0033, 퍼널 envelope 0.0000, 성공 0. 손끝 파지로 수렴(손가락 3.33·손바닥 0.0013·간극 0.046 m), 총보상 0.73→0.96 상승하는 동안 손바닥 접촉 0.010→0.001 하락. e2300 무렵 손바닥 닿은 성공(손바닥 0.80·손가락 2.11)이 잠깐 났다가 소멸. 영상 fj_stage_i04_0916_1200.mp4.",
   "i05 (3db06cfa): i04 피드백 반영 — 2단계 중첩 사다리(손바닥 전진 없으면 상한 8.0 / 손바닥 접촉 ~21 / 인벨롭 ~38.5), 감쌈을 접촉 가중 각도로(접선 손끝 접촉 0점), 손가락 굴곡 항 신설, cup_home 을 곱셈에서 5cm 여유 가산 벌점으로 강등. ingest PASS. 생성기 반증조건: palm_reach 포화(~0.6)인데 palm_touching < 0.05 면 원인은 보상이 아니라 palm collider 오프셋.",
   "i05 (3db06cfa): 사용자 결정으로 e~1750/2.7h 중지(SIGTERM 무반응 → 승인 후 SIGKILL). ★인벨롭 파지 최초 성공 — 손바닥 접촉 0.55(i04 0.001), 인벨롭 래치 먼 0.59/가까운 0.70, 퍼널 envelope 0.48. 막힘은 리프트: dz 6mm, kp_dist 0.288m 불변, 성공 0.0001. 손이 테이블을 2.8cm 관통(table_pen −0.0002 로 무력), e950 에 관통 최소(0.0012)일 때 리프트 최고(0.296)였다가 관통 복귀와 함께 붕괴. 새끼 접촉 0.059. 영상은 e1290 스냅숏.",
-  "★사용자 결정(09.16 15:2x): env 동결 해제 — (1) 테이블 관통 종료 강화 hand_floor_terminate_depth 0.03(=3cm 허용) → 엄격화, (2) 성공 전제조건 추가(현재 성공 = kp_dist ≤ 0.1125 10스텝뿐, 파지·들림·직립·테이블 조건 없음. grasp_wrap_start 가 0.0 이라 감쌈 전제가 꺼져 있음). 이후 라운드는 env 가 달라 i05 이전과 동일조건 비교 불가."
+  "★사용자 결정(09.16 15:2x): env 동결 해제 — (1) 테이블 관통 종료 강화 hand_floor_terminate_depth 0.03(=3cm 허용) → 엄격화, (2) 성공 전제조건 추가(현재 성공 = kp_dist ≤ 0.1125 10스텝뿐, 파지·들림·직립·테이블 조건 없음. grasp_wrap_start 가 0.0 이라 감쌈 전제가 꺼져 있음). 이후 라운드는 env 가 달라 i05 이전과 동일조건 비교 불가.",
+  "i06 (c57429ba): env 해제 후 첫 라운드. 테이블 2.5cm 여유 회랑 table_pen(|max| 2.2, i05 은 −0.0002) + palm_pos 전용 palm_low_pen(0.8) + 표면이면 사다리 절반 깎는 air 계수 · 축방향 창 중심 −1.5~+2.5cm · 사다리 상한(~16.6)과 정지 3단계 보수 삭감, 운반 ~82 + 성공 150 · 2단계에 (1−0.5·episode_progress) 곱해 에피소드 내 감가 · pinky_join 신설. ingest PASS. ★미해결: 생성기가 palm_pos↔손바닥 표면 오프셋을 몰라 press_geo 를 추정 — 다음 프롬프트에 env 사실로 넣을 것.",
+  "i06 (c57429ba): 사용자 결정으로 e2041/3.35h 중지(SIGTERM 정상 종료). ★i05 의 두 벽 돌파 — 테이블 관통 0.028→0.006m(done/hand_floor 0회), dz 0.006→0.056m, 성공 0.0001→1.71(최대 2.84), 인벨롭 래치 0.46. 새끼손가락 0.059→0.242. ★그러나 가까운 출발로 특화 — 성공이 사실상 전부 near(0.755) 이고 far 는 0.000. far 접근 래치는 e530 에 0.669 정점 후 붕괴해 0.0014 로 끝남. 영상: 먼 출발이 손목 회전으로 접근(자세 조건 미충족), 가까운 출발은 즉시 파지·리프트, 운반 중 컵 ~30도 기울어짐.",
+  "★i06 미해결/주의: (1) wrap 래칫 폭주 — near 성공만으로 prev_ep_successes ≥ 2.0 이 유지돼 wrap_tol 0.15→0.689(상한 0.85)까지 올랐는데 실측 wrap_frac 은 0.189. 성공 기준이 정책 실력을 추월. 제가 \"성공 2.0 조건이라 fj_h2 잠김 재발 안 한다\"고 한 판단이 틀렸음. (2) j7 손목 회전 접근은 영상으로는 보이나 텔레메트리 미확인 — 관절별 포화율은 j7 0.396 으로 오히려 낮고(j1 0.554), 244 태그에 관절별 각도 로그 없음."
  ],
- "note": "09.15 사용자 재구성: 1) 기본 핸드 자세로 컵 접근 2) 접근한 상태에서 인벨롭 파지 3) 리프트. 틱 보고는 출발 그룹별(stage/far_*, stage/near_*)과 조건별 통과율(stage/approach_ok_{gap,along,height,orient,pose,no_touch}_now). 콘솔 our_source/fj_t2r_runs/fj_stage_i05.out."
+ "note": "09.15 사용자 재구성: 1) 기본 핸드 자세로 컵 접근 2) 접근한 상태에서 인벨롭 파지 3) 리프트. 틱 보고는 출발 그룹별(stage/far_*, stage/near_*)과 조건별 통과율(stage/approach_ok_{gap,along,height,orient,pose,no_touch}_now). 콘솔 our_source/fj_t2r_runs/fj_stage_i06.out."
 }
