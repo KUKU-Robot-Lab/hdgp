@@ -199,15 +199,20 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     object_spawn_range: float = 0.02          # 스폰 중심 xy 균등 ± [m]
     cup_inner_radius: float = 0.041
     cup_bottom_z: float = -0.077              # 컵 원점 → 바닥(.usd 실측)
-    cup_inside_z_min: float = -0.062          # resolve_cfg 가 bottom + 비드 반지름으로 다시 채운다
+    cup_inside_z_min: float = -0.065          # resolve_cfg 가 bottom + 비드 반지름 − bead_floor_tol_m 으로 다시 채운다
+    # 바닥에 놓인 비드 중심은 정확히 bottom + 반지름이라 여유 없이는 접촉 수치 ±1 mm 로 "컵 밖·흘림" 으로 뒤집힌다
+    #   (프로브 09.16: 개수 무관 0.3~0.6개/env 가 정착 후 밖으로 세어짐 → 게이트 FAIL).
+    bead_floor_tol_m: float = 0.003
     cup_inside_z_max: float = 0.100           # 림
     cup_mouth_z: float = 0.100
     # ★09.16 비드 부피 DR(사용자 결정 A): 12 mm 20개는 컵의 3 % 라 접근 전 틸트가 흘리지 않았다(계측 82~93° 에서 첫 이탈).
     #   30 mm 로 키우고(밀도 유지 → 15.6 g) 스폰은 bead_count 개 고정, 에피소드마다 활성 개수를 뽑아 부피를 바꾼다.
-    #   30 mm 구 4개/층·충전율 ≈ 0.45 → 26개 ≈ 컵 87 %(흘림 예상 ≈ 40°), 6개 ≈ 20 %. 상한은 부팅 프로브로 확정.
+    #   30 mm 구 4개/층. 부팅 프로브(09.16): 26개는 림을 넘어 정착 후 in_source 0.81(과적) → 상한 20(정착 0.988, 거의 가득).
+    #   가득(20)일 때 첫 이탈 72°·20 % 80°·50 % 86° — 좁은 컵(지름의 2.7배)이라 낟알 걸림으로 기하 예측(≈55°)보다 늦다.
+    #   부피 DR 은 질량·역학 강건성 + 채움 obs 용이고, 접근 전 직립은 아래 premature 래치가 강제한다.
     bead_diameter_m: float = 0.030
-    bead_count: int = 26                      # 스폰 개수(= 활성 상한)
-    bead_active_range: tuple = (6, 26)        # 에피소드별 활성 개수 [lo, hi]
+    bead_count: int = 20                      # 스폰 개수(= 활성 상한)
+    bead_active_range: tuple = (6, 20)        # 에피소드별 활성 개수 [lo, hi]
     adr_bead_active_hi_initial: int = 12      # ADR 시작 상한(진행도 1.0 에서 bead_active_range[1])
     bead_park_origin_xy: tuple = (-1.0, -0.6) # 비활성 비드 격자 시작(env-local, 로봇·테이블 뒤 지면 위)
     bead_park_per_row: int = 13
@@ -365,7 +370,7 @@ def resolve_cfg(cfg: "PourFabricEnvCfg") -> None:
         raise ValueError(f"bead_active_range {cfg.bead_active_range} 는 1 ≤ lo ≤ hi ≤ bead_count({cfg.bead_count})")
     if not lo <= int(cfg.adr_bead_active_hi_initial) <= hi:
         raise ValueError(f"adr_bead_active_hi_initial 는 [lo, hi] 안: {cfg.adr_bead_active_hi_initial}")
-    cfg.cup_inside_z_min = float(cfg.cup_bottom_z) + d / 2.0
+    cfg.cup_inside_z_min = float(cfg.cup_bottom_z) + d / 2.0 - float(cfg.bead_floor_tol_m)
     s = d / 0.024
     cfg.beads_cfg = make_beads_cfg(_ASSETS_DIR, n=int(cfg.bead_count), scale=(s, s, s),
                                    mass=BEAD_MASS * (d / 0.012) ** 3)

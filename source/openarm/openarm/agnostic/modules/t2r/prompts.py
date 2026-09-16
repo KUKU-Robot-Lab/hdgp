@@ -69,9 +69,10 @@ press on that hand's own cup — this is the grasp-established signal. \
 (0 = upright, π/2 = horizontal). The amount of beads in the source cup changes every episode \
 and `ctx.bead_fill_level` (0 = empty, 1 = full to the rim, measured once the beads have settled, \
 constant during the episode) tells the policy how full the cup is by volume. Beads start leaving \
-the cup at a tilt that depends on that fill: about 65° when the cup is two-thirds full and about \
-40° when it is nearly full (measured), so a cup tilted before its mouth is over the receiver \
-spills. `ctx.src_cup_mouth_pos` and `ctx.rcv_cup_mouth_pos` are the rim centres.
+the cup at a tilt that depends on that fill (measured): the first bead leaves at about 70° when \
+the cup is full and at about 95° when it holds only a few beads, and a full cup has lost a fifth \
+of its beads by 80° and half by 86°. `ctx.src_cup_mouth_pos` and `ctx.rcv_cup_mouth_pos` are the \
+rim centres.
 6. Bead bookkeeping: `bead_in_target_frac` rises as beads land in the receiver cup; \
 `bead_spill_frac` counts beads lost outside both cups (permanent). `d_in_target` and \
 `d_spill` are this step's increments — reward INCREMENTS of beads transferred rather than \

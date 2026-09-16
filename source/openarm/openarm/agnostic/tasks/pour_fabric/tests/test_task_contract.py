@@ -185,7 +185,9 @@ def test_bead_volume_dr_cfg_defaults():
     assert 1 <= lo < hi <= cfg.bead_count                   # 활성 개수는 스폰 개수 안
     assert lo <= cfg.adr_bead_active_hi_initial <= hi       # ADR 시작 상한
     assert cfg.bead_diameter_m > 0.012                      # 12 mm 는 컵의 3 % 라 부피 DR 이 안 된다
-    assert cfg.cup_inside_z_min == pytest.approx(cfg.cup_bottom_z + cfg.bead_diameter_m / 2, abs=1e-6)
+    assert cfg.cup_inside_z_min == pytest.approx(
+        cfg.cup_bottom_z + cfg.bead_diameter_m / 2 - cfg.bead_floor_tol_m, abs=1e-6)
+    assert 0.0 < cfg.bead_floor_tol_m < cfg.bead_diameter_m / 2  # 바닥 경계 흔들림 여유(프로브 09.16)
     assert cfg.premature_tilt_max_deg == 30.0 and cfg.premature_lip_xy_m == 0.10
 
 
