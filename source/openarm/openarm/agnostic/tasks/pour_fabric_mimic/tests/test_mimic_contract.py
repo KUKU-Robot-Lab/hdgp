@@ -316,6 +316,21 @@ def test_thumb_rim_approach_is_logged_not_rewarded():
     assert "thumb_rim" not in ctx_block and "thumb_over_rim" not in ctx_block
 
 
+def test_t2r_contract_is_track_local_not_shared():
+    """09.17: 공용 `modules/t2r` 에 다른 트랙이 필수 필드를 추가해 이 트랙 env 가 기동 즉시 죽었다
+    (RewardContext.__init__() missing 'bead_fill_level', 'premature_tilt').
+    사용자 결정 "현재 세션을 공용 모듈과 분리" — 계약·로더·검증기·프롬프트는 트랙 안에 둔다."""
+    local = _PKG / "t2r"
+    for f in ("context.py", "loader.py", "validator.py", "prompts.py", "__init__.py"):
+        assert (local / f).exists(), f
+    assert "from .t2r.context import RewardContext" in _ENV
+    assert "from .t2r.loader import" in _ENV
+    assert "modules.t2r" not in _ENV, "공용 t2r 를 다시 import 하면 같은 사고가 재발한다"
+    ctx_src = (local / "context.py").read_text()
+    for gone in ("bead_fill_level", "premature_tilt"):
+        assert gone not in ctx_src, f"{gone} 은 이 트랙 env 가 만들지 않는다"
+
+
 def test_grasp_pocket_is_logged_not_rewarded():
     """09.16 사용자 "대향 여부를 영상 없이 지표로": 라운드 7 배치는 검지-엄지-컵 이라 잡을 수 없는데
     보상 pinch_geo 는 0.19~0.38 을 지불했다. 대향·엄지↔4지 간극·컵이 사이인지를 로그로만 낸다."""

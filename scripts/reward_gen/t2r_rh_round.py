@@ -157,7 +157,7 @@ def cmd_advance(a) -> int:
     files = sorted(glob.glob(str(mirror / "summaries" / "events.out.tfevents.*")))
     if not files:
         raise SystemExit("[round] events 없음")
-    cmd = [sys.executable, str(_HDGP / "scripts" / "reward_gen" / "t2r.py"), "--num-actions", "24",
+    cmd = [sys.executable, str(_HDGP / "scripts" / "reward_gen" / "t2r_rh.py"), "--num-actions", "24",
            "--robot-file", str(_HDGP / "scripts" / "reward_gen" / "tasks" / "pour_bi_rh_robot.md"),
            "reflect", "--iter", a.iter, "--events", files[-1]]
     if a.notes:

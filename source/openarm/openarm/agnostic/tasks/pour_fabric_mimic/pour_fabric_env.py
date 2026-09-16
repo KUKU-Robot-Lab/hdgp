@@ -38,8 +38,8 @@ from isaaclab.utils.math import quat_apply, quat_apply_inverse
 from openarm.agnostic.modules.adr import TaskADR
 from openarm.agnostic.modules.object_wrench import WrenchDR
 from openarm.agnostic.modules.perception_delay import noisy_pose
-from openarm.agnostic.modules.t2r.context import RewardContext
-from openarm.agnostic.modules.t2r.loader import call_reward_fn, load_reward_fn
+from .t2r.context import RewardContext
+from .t2r.loader import call_reward_fn, load_reward_fn
 from openarm.common.bead_assets import bead_offsets_in_cup
 
 from . import bimanual as _bm

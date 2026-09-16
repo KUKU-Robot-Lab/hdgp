@@ -4,7 +4,7 @@
 - 상태 `reward_gen/pour_bi_rh/LOOP_STATE.json` · iter `reward_gen/pour_bi_rh/iter_NN/`
 - 호스트 **vision-3090**(RTX 3090 24 GB, GPU 1장) · 로그 `~/rl_ws/hdgp/log/pour_fabric_mimic/<label>.log`
 - 판정기 `scripts/reward_gen/t2r_rh_round.py`(ROUND_HOURS 8 — 3090 은 서버의 ~1/3) · 런처 `scripts/experiments/pour_t2r_rh_train.sh`
-- 생성 도구는 공용 `t2r.py` 에 **`--num-actions 24 --robot-file scripts/reward_gen/tasks/pour_bi_rh_robot.md`** 를 항상 붙인다
+- 생성 도구는 트랙 전용 `t2r_rh.py`(공용 모듈과 분리, 09.17) 에 **`--num-actions 24 --robot-file scripts/reward_gen/tasks/pour_bi_rh_robot.md`** 를 항상 붙인다
   (24 = (palm 6 + 손 6) × 2 · 로봇 설명은 RH56F1 언더액추 문장, 출처표 `pour_bi_rh_robot.SOURCES.md`).
 실행 위치: `cd ~/rl_ws/hdgp`
 
@@ -20,7 +20,7 @@
    ★원본 text2reward 의 피드백은 **사람이 학습된 정책을 보고 쓴 관찰**이다(관측 #0233). 지표 표만으로 advance 하지 말고
    play 영상 프레임을 보고 한 줄 관찰을 `--notes` 로 넣는다(사용자 승인 후).
 4. 생성: Agent(general-purpose, fresh)에게 **`iter_(NN+1)/prompt.md` 경로만** 주고 `response.md` 를 쓰게 한다. 완료 후
-   `python3 scripts/reward_gen/t2r.py --num-actions 24 --robot-file scripts/reward_gen/tasks/pour_bi_rh_robot.md ingest --iter reward_gen/pour_bi_rh/iter_(NN+1)`.
+   `python3 scripts/reward_gen/t2r_rh.py --num-actions 24 --robot-file scripts/reward_gen/tasks/pour_bi_rh_robot.md ingest --iter reward_gen/pour_bi_rh/iter_(NN+1)`.
    FAIL 이면 오류를 notes 로 붙여 재생성(최대 2회).
 5. audit 없음(사용자 결정 09.13/09.14). ingest PASS 면 기동:
    - 커밋·push(main) 후 vision-3090 에서 `git pull --ff-only`. 이전 런은 **RUN_LABEL 로 PID 확정 후 kill**(pkill 금지).
