@@ -1,7 +1,8 @@
 {
- "iter": 7,
- "label": "t2r_rh_i07",
- "round": 9,
+ "iter": 8,
+ "label": "t2r_rh_i08",
+ "round": 10,
+ "loop_resumed_round10": "20:4x t2r_rh_i08 기동(d1b7cdf0, vision-3090, 1024 env, 처음부터) — epoch 168 정상, GPU 17.1 GB. iter_08 변경: facing 절댓값 제거(부호 있는 pad 게이트가 방향·자세·접촉 전항에 곱해짐) · open_{src,rcv}·spread_{src,rcv} 신설(간극 60 mm 부터 지급, 75 mm 만점 — 컵 57 mm 를 넘기게) · dorsal_pen 신설. 합성 검증: 손등 접촉(1.2/1.5 N) 자세수입 0.0000·총 −2.58, 엄지 같은 쪽(플래그 ON·2.0 N) 0.0004, 간극 48 mm 0.130 → 71 mm 1.921, 제대로 대향 14.19. 지난 정책 정착점(12 cm·48 mm·손등·0.1 N)은 iter_07 +0.64 → iter_08 −1.09. palm_axes 법선 방향 가정은 기록된 프로브(손 닫을 때 손끝 +25.6 mm/열2)로 확인",
  "host": "vision-3090",
  "gpu": 0,
  "num_envs": 1024,
