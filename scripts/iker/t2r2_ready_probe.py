@@ -84,6 +84,10 @@ class GateRecorder:
         self.open_max = torch.zeros(n, device=dev)                # 에피소드 중 최대 open_frac
         self.open_ready_sum = torch.zeros(n, device=dev)          # ready 인 스텝만의 open_frac 합
         self.stable_max = torch.zeros(n, device=dev)              # 연속 카운터 최고치
+        # 에피소드가 끝나는 순간의 실제 배치(첫 에피소드만): 신발이 옆 신발에서 얼마나 떨어져 멈췄는가.
+        # "방향은 맞는데 옆 신발 옆에 안 붙는다"(사용자 영상 관찰 2026-09-17)를 수치로 가르기 위한 것.
+        self.final_gap_xy: list[float] = []
+        self.final_kp: list[float] = []
         self._get_rewards, self._log_episode_end = u._get_rewards, u._log_episode_end
         u._get_rewards, u._log_episode_end = self.get_rewards, self.log_episode_end
 
@@ -112,8 +116,39 @@ class GateRecorder:
         # 끝났다" 로 세면 루프가 시작도 하기 전에 live 가 전부 False 가 되어 0 스텝으로 끝난다 —
         # eval_iker.py 의 FirstEpisodeRecorder 와 같은 길이 가드를 둔다.
         ended = env_ids[self.u.episode_length_buf[env_ids] > 0]
+        first = ended[self.live[ended]]   # 첫 에피소드로 끝나는 env 만 기록한다
+        if len(first):
+            u = self.u
+            shoe = u._shoe.data.root_pos_w[first]
+            other = u._other.data.root_pos_w[first]
+            self.final_gap_xy += (shoe[:, :2] - other[:, :2]).norm(dim=-1).cpu().tolist()
+            self.final_kp += u._keypoint_distance[first].cpu().tolist()
         self.live[ended] = False
         self._log_episode_end(env_ids)
+
+
+def _quantiles(values: list[float]) -> list[float] | None:
+    if not values:
+        return None
+    tensor = torch.tensor(values)
+    return [round(float(v), 4) for v in torch.quantile(tensor, torch.tensor([0.1, 0.5, 0.9]))]
+
+
+def _final_vs_other(rec: GateRecorder) -> dict:
+    """에피소드가 끝난 자리에서 신발이 옆 신발과 얼마나 떨어져 있는가 — 목표 자체의 간격과 나란히 둔다.
+
+    목표가 옆 신발에서 떨어져 있는 것인지(설계), 정책이 목표에 못 닿는 것인지(오차)를 가른다.
+    """
+    u = rec.u
+    target_centre = u._targets.mean(dim=0)                             # (3,) env-local
+    other_local = u._other.data.root_pos_w[:, :3] - u.scene.env_origins
+    target_gap = (target_centre[:2] - other_local[:, :2]).norm(dim=-1).mean()
+    return {
+        "target_gap_xy_m": round(float(target_gap), 4),
+        "final_gap_xy_q10_50_90": _quantiles(rec.final_gap_xy),
+        "final_keypoint_dist_q10_50_90": _quantiles(rec.final_kp),
+        "episodes": len(rec.final_gap_xy),
+    }
 
 
 def summarize(rec: GateRecorder) -> dict:
@@ -152,6 +187,7 @@ def summarize(rec: GateRecorder) -> dict:
             # "끝낸 것" 이 구분되지 않아, 학습 로그의 sustained_success 와 직접 비교할 수가 없었다.
             "at_target_frac": round(float((rec.stable_max >= float(rec.u.cfg.place.stable_steps)).float().mean()), 4),
         },
+        "final_vs_other": _final_vs_other(rec),
         "gate_cfg": {
             "place_tolerance": float(rec.u.cfg.place.place_tolerance),
             "resting_tol": float(rec.u.cfg.place.resting_tol),
