@@ -1,0 +1,11 @@
+{
+ "label": "t2r_rh_i07",
+ "num_envs": 1024,
+ "started": 1789543031,
+ "commit": "2712e32f",
+ "host": "vision-3090",
+ "iter": "reward_gen/pour_bi_rh/iter_07",
+ "round": 9,
+ "fresh": true,
+ "note": "\ubcf4\uc0c1 \uc758\ubbf8 \ubcc0\uacbd(\ub300\ud5a5 \uac8c\uc774\ud2b8)\uc774\ub77c \uccb4\ud06c\ud3ec\uc778\ud2b8 \ubbf8\uc0ac\uc6a9"
+}
