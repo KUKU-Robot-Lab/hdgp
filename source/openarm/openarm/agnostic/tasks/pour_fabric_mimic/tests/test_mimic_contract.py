@@ -314,3 +314,16 @@ def test_thumb_rim_approach_is_logged_not_rewarded():
         assert re.search(rf"{f}:\s*float\s*=", _CFG), f
     ctx_block = _ENV.split("return RewardContext(")[1].split("\n        )")[0]
     assert "thumb_rim" not in ctx_block and "thumb_over_rim" not in ctx_block
+
+
+def test_grasp_pocket_is_logged_not_rewarded():
+    """09.16 사용자 "대향 여부를 영상 없이 지표로": 라운드 7 배치는 검지-엄지-컵 이라 잡을 수 없는데
+    보상 pinch_geo 는 0.19~0.38 을 지불했다. 대향·엄지↔4지 간극·컵이 사이인지를 로그로만 낸다."""
+    for side in ("src", "rcv"):
+        for k in ("thumb_oppose_near", "tip_gap_mm_near", "cup_in_pocket_near"):
+            assert f'f"task/{{side}}_{k}"' in _ENV or f"task/{side}_{k}" in _ENV
+    assert _ENV.count("self._log_grasp_pocket(") == 2
+    for f in ("pocket_near_m", "pocket_axis_margin_m"):
+        assert re.search(rf"{f}:\s*float\s*=", _CFG), f
+    ctx_block = _ENV.split("return RewardContext(")[1].split("\n        )")[0]
+    assert "oppose" not in ctx_block and "pocket" not in ctx_block

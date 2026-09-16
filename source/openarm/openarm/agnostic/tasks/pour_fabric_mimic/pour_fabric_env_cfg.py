@@ -329,6 +329,12 @@ class PourFabricMimicEnvCfg(DirectRLEnvCfg):
     thumb_rim_near_m: float = 0.10            # palm↔컵 원점 거리가 이 안이면 "접근한 env"
     thumb_rim_band_m: float = 0.02            # 엄지 끝 축방향 높이 ≥ 입구 − 이 값이면 입구 높이
     thumb_rim_radial_margin_m: float = 0.025  # 엄지 끝 반경 < 벽(내경+4 mm) + 이 값이면 입구 위
+    # ---- 파지 포켓 계측(로그 전용, 09.16 사용자 "대향 여부를 영상 없이 지표로") -----------
+    # task/{src,rcv}_thumb_oppose_near · _tip_gap_mm_near · _cup_in_pocket_near.
+    # 라운드 7 영상: 배치가 검지-엄지-컵 이라 손가락을 굽혀도 잡을 수 없는데 보상의 pinch_geo 는
+    # 그런 자세에도 0.19~0.38 을 지불했다(합성 검증 09.16). 그래서 대향을 따로 잰다.
+    pocket_near_m: float = 0.12               # palm↔컵 원점 거리가 이 안이면 "접근한 env"
+    pocket_axis_margin_m: float = 0.005       # 컵 축↔(엄지,4지) 선분 거리 < 내경 + 이 값이면 컵이 사이
 
     # ---- 성공 판정 (pour_v1 계승) — 보상과 분리된 **기준 지표** ----------------------
     success_fill_ratio: float = 0.50

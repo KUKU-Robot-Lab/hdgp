@@ -663,6 +663,45 @@ class PourFabricMimicEnv(DirectRLEnv):
         self.extras[f"task/{side}_thumb_above_rim_mm_near"] = \
             1000.0 * torch.where(near, axial - float(cfg.cup_mouth_z), torch.zeros_like(axial)).sum() / n_near
 
+    def _log_grasp_pocket(self, side: str, palm, tips, cup_pos, cup_up) -> None:
+        """파지 포켓 계측 — 보상·관측과 무관, env 가 직접 잰다(09.16 사용자 "대향 여부를 지표로").
+
+        라운드 7 영상에서 배치가 **검지-엄지-컵** 이었다(엄지가 컵 반대편이 아니라 검지 쪽).
+        그 자세는 손가락을 굽혀도 컵을 잡을 수 없는데 보상의 `pinch_geo` 는 0.19~0.38 을 지불한다.
+          oppose     = 엄지 끝 반경방향과 검지/중지 평균 반경방향이 반대인 정도(1 = 정확히 맞은편)
+          tip_gap    = 엄지 끝 ↔ 가까운 4지 끝 거리(mm) — 컵 지름과 비교한다
+          in_pocket  = 컵 축이 두 끝을 잇는 선분에서 `cup_inner_radius + pocket_axis_margin_m`
+                       안이고, 두 끝이 모두 내경 밖(= 컵이 실제로 사이에 있다)
+        near 는 palm↔컵 원점 < `pocket_near_m` 인 env 로 한정한다.
+        """
+        cfg = self.cfg
+
+        def _axis_seg(a, b):
+            """컵 축(반경평면 원점)에서 선분 ab 까지의 거리."""
+            ab = b - a
+            t = torch.clamp(-(a * ab).sum(dim=-1) / (ab.pow(2).sum(dim=-1) + 1e-9), 0.0, 1.0)
+            return (a + t.unsqueeze(-1) * ab).norm(dim=-1)
+
+        rel = tips - cup_pos.unsqueeze(1)
+        axial = (rel * cup_up.unsqueeze(1)).sum(dim=-1)
+        rv = rel - axial.unsqueeze(-1) * cup_up.unsqueeze(1)
+        r = rv.norm(dim=-1)
+        d = rv / (r.unsqueeze(-1) + 1e-6)
+        fdir = d[:, 1:3, :].mean(dim=1)
+        fdir = fdir / (fdir.norm(dim=-1, keepdim=True) + 1e-6)
+        oppose = torch.clamp(-(d[:, 0, :] * fdir).sum(dim=-1), 0.0, 1.0)
+        gap = torch.minimum((tips[:, 0] - tips[:, 1]).norm(dim=-1),
+                            (tips[:, 0] - tips[:, 2]).norm(dim=-1))
+        seg = torch.minimum(_axis_seg(rv[:, 0, :], rv[:, 1, :]), _axis_seg(rv[:, 0, :], rv[:, 2, :]))
+        r_in = float(cfg.cup_inner_radius)
+        outside = (r[:, 0] > r_in) & (r[:, 1:3].min(dim=-1).values > r_in)
+        in_pocket = outside & (seg < r_in + float(cfg.pocket_axis_margin_m))
+        near = (palm - cup_pos).norm(dim=-1) < float(cfg.pocket_near_m)
+        n_near = near.float().sum().clamp(min=1.0)
+        self.extras[f"task/{side}_thumb_oppose_near"] = (oppose * near).sum() / n_near
+        self.extras[f"task/{side}_tip_gap_mm_near"] = 1000.0 * (gap * near).sum() / n_near
+        self.extras[f"task/{side}_cup_in_pocket_near"] = (in_pocket & near).float().sum() / n_near
+
     def _log(self, total, terms, flags, ctx: RewardContext) -> None:
         cfg = self.cfg
         for k, v in terms.items():
@@ -703,6 +742,8 @@ class PourFabricMimicEnv(DirectRLEnv):
         self.extras["contact/rcv_max"] = ctx.rcv_finger_force.max(dim=1).values.mean()
         self._log_thumb_rim("src", ctx.src_palm_pos, ctx.src_tips_pos, ctx.src_cup_pos, ctx.src_cup_up)
         self._log_thumb_rim("rcv", ctx.rcv_palm_pos, ctx.rcv_tips_pos, ctx.rcv_cup_pos, ctx.rcv_cup_up)
+        self._log_grasp_pocket("src", ctx.src_palm_pos, ctx.src_tips_pos, ctx.src_cup_pos, ctx.src_cup_up)
+        self._log_grasp_pocket("rcv", ctx.rcv_palm_pos, ctx.rcv_tips_pos, ctx.rcv_cup_pos, ctx.rcv_cup_up)
         self.extras["bead/in_source"] = flags.in_source_frac.mean()
         self.extras["bead/in_target"] = flags.in_target_frac.mean()
         self.extras["bead/spill"] = flags.spill_frac.mean()
