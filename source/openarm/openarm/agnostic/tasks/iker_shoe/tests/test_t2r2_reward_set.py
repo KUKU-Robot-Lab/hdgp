@@ -62,3 +62,16 @@ def test_prompt_embeds_the_context_and_reads_numbers_from_cfg():
 def test_task_text_names_all_four_stages():
     for word in ("align", "set it down", "let go", "withdraw"):
         assert word in prompts.task_text(PlaceRewardCfg())
+
+
+def test_feedback_header_names_only_stage2_metrics():
+    header = prompts.render_feedback_table({})
+    for tag in ("t2r_reward/", "place/placed", "place/released", "place/resting", "place/retreated",
+                "iker/keypoint_distance_m", "iker/success_5cm", "iker/dropped", "episode length", "total reward"):
+        assert tag in header, tag
+    for word in ("latch", "thumb", "slip", "contact", "lift"):
+        assert word not in header, word
+
+
+def test_feedback_tag_prefixes_includes_retreated():
+    assert "place/retreated" in prompts.FEEDBACK_TAG_PREFIXES

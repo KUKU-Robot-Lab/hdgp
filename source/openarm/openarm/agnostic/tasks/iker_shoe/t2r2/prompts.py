@@ -106,10 +106,11 @@ the weights.
 """
 
 FEEDBACK_HEADER = """\
-We trained an RL policy (PPO) using the reward function below and tracked the values of the individual reward components \
-(t2r_reward/*) as well as task metrics computed by the environment (success and latch rates of finished episodes, the \
-fraction of held steps, lift height, horizontal shift, thumb curl, slip speed, contact counts, arm and hand motion, episode \
-length) at {n_points} evenly spaced points during training, plus the min / mean / max encountered:
+We trained an RL policy (PPO) using the reward function below and tracked the values of the individual reward \
+components (t2r_reward/*) as well as task metrics computed by the environment (the placement flags place/placed, \
+place/released, place/resting and place/retreated, the keypoint distance iker/keypoint_distance_m, the success rate \
+iker/success_5cm, the drop rate iker/dropped, episode length and total reward) at {n_points} evenly spaced points \
+during training, plus the min / mean / max encountered:
 """
 
 FEEDBACK_TAIL = """\
@@ -135,7 +136,7 @@ class PromptSpec:
 
 
 FEEDBACK_TAG_PREFIXES = (
-    "t2r_reward/", "place/placed", "place/released", "place/resting",
+    "t2r_reward/", "place/placed", "place/released", "place/resting", "place/retreated",
     "iker/success_5cm", "iker/keypoint_distance_m", "iker/dropped", "episode_lengths", "rewards",
 )
 
