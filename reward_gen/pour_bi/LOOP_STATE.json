@@ -7,15 +7,15 @@
   "label": "t2r_i09",
   "num_envs": 4096,
   "gpu": 1,
-  "commit": "25865920",
+  "commit": "48e098c8",
   "server_pids": [
-   1926763,
-   1926770
+   1931511,
+   1931518
   ],
-  "started": 1789572040,
-  "started_local": "2026-09-17 00:20",
+  "started": 1789572499.0,
+  "started_local": "2026-09-17 00:28",
   "cron": "b60ea453 (2h, :23)",
-  "note": "GPU1 단독(기동 전 21 MiB), 라벨·로그 폴더 중복 없음 확인 후 기동"
+  "note": "1차 기동(PID 1926763/1926770, 25865920)은 fabric FK 게이트 5.43 mm > 5 mm 로 초기화 실패 → 허용치 10 mm(48e098c8) 후 재기동"
  },
  "round9_note": "env 라운드 9(사용자 결정 09.16 권장안 A): 비드 30 mm·스폰 20·활성 6~20(ADR 상한 12→20)·파킹, 채움 정도 obs(actor·critic +1 → 223/293), 조준 전 틸트 래치(30°·입구 xy 0.10 m → 성공 무효), hold 45, 바닥 판정 여유 3 mm. 보상 iter_08(36항, upright_src·premature_latch·rcv_still 추가, tilt_premature 제거). MAX_ROUNDS 8→12. 프로브: 게이트 3종 PASS, 흘림 가득 69°/조금 89°(iter_08 prompt 는 95° 표기, 5° 차이 방향 동일)",
  "ended_i08": {

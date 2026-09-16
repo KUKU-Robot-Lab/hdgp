@@ -1,12 +1,16 @@
 {
  "label": "t2r_i09",
  "num_envs": 4096,
- "started": 1789572040.0,
- "started_local": "2026-09-17 00:20",
- "commit": "25865920",
+ "started": 1789572499.0,
+ "started_local": "2026-09-17 00:28",
+ "commit": "48e098c8",
  "gpu": 1,
- "server_pids": [1926763, 1926770],
+ "server_pids": [
+  1931511,
+  1931518
+ ],
  "env_round": 10,
  "env_changes": "round 9 env + premature latch gated on contact-based source grasp (b3a07d0e)",
- "reward": "reward_gen/pour_bi/iter_09/compute_reward.py (37 terms, ingest PASS)"
+ "reward": "reward_gen/pour_bi/iter_09/compute_reward.py (37 terms, ingest PASS)",
+ "note": "1차 기동(PID 1926763/1926770, 25865920)은 fabric FK 게이트 5.43 mm > 5 mm 로 초기화 실패 → 허용치 10 mm(48e098c8) 후 재기동"
 }
