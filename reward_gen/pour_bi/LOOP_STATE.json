@@ -199,6 +199,35 @@
    "reward_total": 23.8
   },
   "breakout": "epoch 720 에 컵 거리 0.30 m 아래 → 799 첫 성공 → 836 성공률 0.5 (loop_ended 기록은 epoch 558 시점이라 낡음)",
+  "ended": {
+   "time_note": "09.16 사용자 지시 '리시버 개선 완료. 학습종료'",
+   "label": "t2r_i07",
+   "epoch_last_ckpt": 2800,
+   "hours": 21.6,
+   "final_ckpt": "last_open-short_b_pour_fab_ep_2800_rew_22890.537.pth",
+   "server_pids_killed": [
+    1051431,
+    1051438
+   ],
+   "kill": "SIGTERM 만으로 10 초 내 종료 — kill -9 불필요",
+   "cron_deleted": "6da64236 (2h 모니터링)",
+   "reason": "수렴(adr 1.0 후 두 틱 |Δ| ≤ 0.02, epoch 2767) + 궤적 계측으로 i05 문제 3종 해소 확인",
+   "converged_metrics": {
+    "episode_success": 0.7689,
+    "in_target": 0.7371,
+    "spill": 0.059,
+    "rcv_tilt_deg": 5.4,
+    "cup_collision": 0.0066,
+    "nested": 0.0,
+    "adr": 1.0
+   },
+   "adr0_replay": {
+    "success": "8/8",
+    "in_target": 0.963,
+    "spill": 0.038
+   },
+   "note": "GPU0 의 fj_stage_i07 은 다른 트랙이라 건드리지 않음"
+  },
   "cron": "6da64236 (2h, :23)",
   "video_i07_adr0": {
    "ckpt": "last_open-short_b_pour_fab_ep_2750_rew_23410.004.pth",
