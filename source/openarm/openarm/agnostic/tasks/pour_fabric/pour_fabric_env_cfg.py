@@ -288,8 +288,15 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     success_rcv_tilt_max_deg: float = 20.0
     # ★09.16 사용자 요구 "리시버 가까이 갈 때까지 소스는 직립": i07 은 입구 거리 0.236 m 에서 30° 를 넘었고(테이블 위에서),
     #   실제 붓기 중 입구 xy 거리는 중앙값 0.021 m·p90 0.041 m. 멀리서 넘으면 에피소드 래치 → 성공 무효(보상이 우회 못 함).
-    premature_tilt_max_deg: float = 30.0
-    premature_lip_xy_m: float = 0.10
+    # ★09.18 사용자 지적 "비드 양에 따라 기울이는 각도가 다르고, 틸팅을 시도할 거리도 다르다 / 10 cm 부터 틸팅은 극단적":
+    #   고정 30°·입구 중심 0.10 m 를 버린다. 상한 = 채움별 첫 유출각(프로브 실측 가득 ≈70°, 몇 알 ≈90°) − 여유
+    #   → 가득 52°, 채움 0.5 에서 69°. 그 아래로는 접근 중에도 미리 기울여도 된다(리프트 후 접근하며 틸팅을 배운다).
+    #   거리는 붓는 쪽 림 점(pour_rules.pour_lip — 자세 무관 방향 d̂ 기준)이 리시버 입구 중심에서 (안쪽 반지름 + tol) 안인지.
+    premature_release_full_deg: float = 72.0   # 채움 1 의 첫 유출각(보상 RELEASE_FULL 1.25 rad 와 같은 값)
+    premature_release_span_deg: float = 34.0   # 빈 컵 쪽으로 + (1 − fill)·span (보상 RELEASE_SPAN 0.60 rad)
+    premature_margin_deg: float = 20.0
+    premature_lip_tol_m: float = 0.04          # 림 점 허용 = cup_inner_radius + tol = 0.081 m(정밀도는 spill 판정이 맡는다)
+    pour_dir_min_sep_m: float = 0.04           # 컵 원점–리시버 입구 수평거리가 이보다 짧으면 d̂ 직전 값 유지
     # ★09.13 hacking 차단: 소스 컵을 리시버 입구에 끼워 넣으면 소스 안 비드가 리시버 원통 안에 들어와
     #   in_target 로 세어졌다(ep 600 영상: 붓기 없이 성공 0.73). 원점 거리가 이보다 짧으면 성공 무효.
     #   붓는 자세(소스 입구가 리시버 림 위)에서는 원점 거리가 ≥ 12~15 cm 다.

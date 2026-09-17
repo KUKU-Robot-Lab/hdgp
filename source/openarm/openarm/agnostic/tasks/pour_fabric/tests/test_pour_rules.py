@@ -15,11 +15,50 @@ from openarm.agnostic.tasks.pour_fabric import pour_rules as R
 def test_premature_tilt_only_when_grasped_far_and_tilted():
     # 09.17 i08 실측: 첫 epoch 래치 19.8 % 가 소스 파지 0 에서 나왔다(탐색이 컵을 쳐서 넘어뜨림) → 정책이 소스 컵 회피.
     #   래치는 리시버 규칙과 같은 원칙으로 **파지 성립 시에만** — 잡은 채 테이블 위에서 기울이는 i07 식 행동만 잡는다.
-    tilt = torch.tensor([math.radians(a) for a in (10.0, 40.0, 40.0, 29.0, 40.0)])
+    # 09.18: 상한은 고정 30° 가 아니라 채움별 텐서, 거리는 입구 중심이 아니라 붓는 쪽 림 점 기준.
+    tilt = torch.tensor([math.radians(a) for a in (10.0, 60.0, 60.0, 51.0, 60.0)])
+    limit = torch.full((5,), math.radians(52.0))
     lip = torch.tensor([0.30, 0.30, 0.05, 0.30, 0.30])
     grasped = torch.tensor([True, True, True, True, False])
-    out = R.premature_tilt_now(tilt, lip, grasped, tilt_max_deg=30.0, lip_xy_min_m=0.10)
+    out = R.premature_tilt_now(tilt, limit, lip, grasped, lip_max_m=0.081)
     assert out.tolist() == [False, True, False, False, False]   # 마지막: 잡지 않은 채 넘어진 컵은 래치 아님
+
+
+def test_tilt_limit_follows_fill():
+    # 가득 72° − 20° = 52°, 빈 컵 72 + 34 − 20 = 86°, 채움 0.5 는 69°. 범위 밖 채움은 잘린다.
+    fill = torch.tensor([1.0, 0.5, 0.0, 1.7, -0.3])
+    lim = torch.rad2deg(R.premature_tilt_limit_rad(fill, release_full_deg=72.0, release_span_deg=34.0,
+                                                   margin_deg=20.0))
+    assert lim.tolist() == pytest.approx([52.0, 69.0, 86.0, 52.0, 86.0], abs=1e-4)
+
+
+def test_pour_dir_holds_previous_when_cups_overlap():
+    prev = torch.tensor([[0.0, 1.0], [0.0, 1.0]])
+    src = torch.tensor([[0.0, 0.0], [0.0, 0.0]])
+    rcv = torch.tensor([[0.3, 0.0], [0.005, 0.0]])          # 둘째: 수평거리 5 mm < min_sep → 직전 값 유지
+    d = R.pour_dir_update(prev, src, rcv, min_sep_m=0.02)
+    assert d[0].tolist() == pytest.approx([1.0, 0.0])
+    assert d[1].tolist() == pytest.approx([0.0, 1.0])
+
+
+def test_pour_lip_ignores_wrong_way_and_sideways_tilt():
+    # 사용자 지적 09.18: 림 최저점을 쓰면 반대/옆으로 기울였을 때 엉뚱한 쪽을 가리킨다 → 방향은 d̂ 고정.
+    r = 0.041
+    mouth = torch.zeros(4, 3)
+    d = torch.tensor([[1.0, 0.0]]).repeat(4, 1)
+    a = math.radians(40.0)
+    up = torch.tensor([
+        [0.0, 0.0, 1.0],                       # 직립
+        [math.sin(a), 0.0, math.cos(a)],       # 리시버 쪽 40°
+        [-math.sin(a), 0.0, math.cos(a)],      # 반대쪽 40°
+        [0.0, math.sin(a), math.cos(a)],       # 옆으로 40°
+    ])
+    lip, theta = R.pour_lip(mouth, up, d, rim_radius=r)
+    assert torch.rad2deg(theta).tolist() == pytest.approx([0.0, 40.0, -40.0, 0.0], abs=1e-4)
+    assert lip[0].tolist() == pytest.approx([r, 0.0, 0.0], abs=1e-6)                       # 직립에서도 정의됨
+    assert lip[1].tolist() == pytest.approx([r * math.cos(a), 0.0, -r * math.sin(a)], abs=1e-6)
+    assert lip[2, 0] > 0 and lip[2, 2] > 0     # 반대로 기울여도 림 점은 리시버 쪽에 남는다(위로 올라갈 뿐)
+    assert lip[3].tolist() == pytest.approx([r, 0.0, 0.0], abs=1e-6)                       # 옆 기울기는 무시
 
 
 # ---------------------------------------------------------------- 채움 정도

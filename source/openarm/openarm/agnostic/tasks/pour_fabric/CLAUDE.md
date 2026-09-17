@@ -77,8 +77,14 @@ reflect → feedback.md + 다음 iter prompt.md          (TFEvents reward/* · t
   정확히 놓여 여유 없이는 0.3~0.6개/env 가 "컵 밖·흘림" 으로 흔들렸다(게이트 FAIL 원인).
 - **채움 정도 obs**(actor·critic +1): hold 끝에 활성 비드 평균 높이 × 2 / 내부 높이(0~1, 에피소드 고정). 실기에서는 사람이
   어림잡아 넣는 명령 입력 — 센서가 아니라 sim2real 규칙과 충돌 없음. `ctx.bead_fill_level`.
-- **래치**: **소스를 잡은 채**(그 스텝의 접촉 기반 파지) 입구 xy 거리 > `premature_lip_xy_m`(0.10) 에서 소스 >
-  `premature_tilt_max_deg`(30°) 면 리셋까지 성공 무효(`ctx.premature_tilt`, 지표 `task/premature_tilt_rate`·`task/tilt_far_deg`).
+- **래치**(09.18 개정): **소스를 잡은 채**(그 스텝의 접촉 기반 파지) 소스 기울기(방향 무관) > 채움별 상한
+  `ctx.premature_tilt_limit` = 첫 유출각(`premature_release_full_deg` 72° + `…_span_deg` 34°·(1−fill)) − `premature_margin_deg` 20°
+  (가득 52°, 채움 0.5 에서 69°)인데 **붓는 쪽 림 점** `ctx.src_pour_lip_pos` 가 리시버 입구 중심에서 xy >
+  `cup_inner_radius + premature_lip_tol_m`(0.081 m) 이면 리셋까지 성공 무효(`ctx.premature_tilt`, 지표
+  `task/premature_tilt_rate`·`task/tilt_far_deg`·`task/tilt_limit_deg`). 림 점 방향 d̂ 는 소스 컵 원점→리시버 입구 수평
+  벡터(컵 자세 무관 — 실제 림 최저점은 직립 근처에서 튀고 반대로 기울이면 엉뚱한 쪽을 가리킨다, 사용자 지적). 규칙은
+  `pour_rules.py`(`premature_tilt_limit_rad`·`pour_dir_update`·`pour_lip`·`premature_tilt_now`), 상한 아래로는 접근 중에도
+  기울여도 된다. 이전 값(입구 중심 10 cm · 고정 30°)은 i12 에서 두 컵이 0.18 m 에 멈춘 원인 후보였다.
   ★09.17 i08: 파지 조건 없이 걸었더니 탐색이 넘어뜨린 컵까지 래치돼 정책이 소스 컵을 회피(파지 0.000, epoch 159) — i06 의
   리시버 회피와 같은 구조. 리시버 정지 대기는 `task/rcv_palm_speed` 로 본다.
 - 프롬프트 지식 5항의 "110°" 는 12 mm·20개에서만 참이라 채움별 각도(2/3 → 65°, 거의 가득 → 40°)로 바꿨다.

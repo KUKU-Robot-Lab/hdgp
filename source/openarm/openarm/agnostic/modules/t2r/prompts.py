@@ -72,7 +72,14 @@ constant during the episode) tells the policy how full the cup is by volume. Bea
 the cup at a tilt that depends on that fill (measured): the first bead leaves at about 70° when \
 the cup is full and at about 90° when it holds only a few beads, and a full cup has lost a fifth \
 of its beads by 80° and half by 86°. `ctx.src_cup_mouth_pos` and `ctx.rcv_cup_mouth_pos` are the \
-rim centres.
+rim centres. `ctx.src_pour_lip_pos` is the point on the source rim where the beads leave: it is \
+built from the horizontal direction d from the source cup's origin to the receiver's mouth, which \
+does not depend on the cup's attitude, so it is defined for an upright cup and does not jump when \
+the cup wobbles or leans the wrong way (rim centre + r·(cos θ·d − sin θ·z), r = 4.1 cm). \
+`ctx.src_tilt_toward_rcv` is θ, the signed tilt toward the receiver in the vertical plane through \
+d (0 for a sideways lean, negative for a lean away). Because the rim centre itself moves toward the \
+receiver by (cup height × sin θ) as the cup tilts, a cup that must tilt further (few beads) is \
+aimed with its body further away — aim the LIP, not the rim centre, at the receiver's mouth.
 6. Bead bookkeeping: `bead_in_target_frac` rises as beads land in the receiver cup; \
 `bead_spill_frac` counts beads lost outside both cups (permanent). `d_in_target` and \
 `d_spill` are this step's increments — reward INCREMENTS of beads transferred rather than \
@@ -80,9 +87,12 @@ the level, otherwise the policy is paid for standing still with a filled cup.
 7. `ctx.success` is computed by the environment (enough beads in the receiver cup, little \
 spill, cups close together, the receiver cup held nearly upright — `ctx.rcv_cup_tilt` at most \
 20° — the cups NOT nested, and NO premature tilt: `ctx.premature_tilt` latches for the rest of \
-the episode as soon as the GRASPED source cup exceeds 30° while its mouth is still more than \
-10 cm (xy) from the receiver's mouth (a cup knocked over without being grasped does not latch), \
-and a latched episode can never succeed). You may add a bonus on it but you cannot redefine it. Beads only count as "in the receiver" once they have LEFT the source cup — pushing \
+the episode as soon as the GRASPED source cup's tilt `ctx.src_cup_tilt` (any direction) exceeds \
+`ctx.premature_tilt_limit` — the fill-dependent release tilt minus 20°, i.e. 52° for a full cup \
+and 69° for a half-full one — while `ctx.src_pour_lip_pos` is still more than 8.1 cm (xy) from \
+the receiver's mouth centre (a cup knocked over without being grasped does not latch), and a \
+latched episode can never succeed). Below that limit the source cup may be tilted anywhere, \
+including while it is still approaching the receiver. You may add a bonus on it but you cannot redefine it. Beads only count as "in the receiver" once they have LEFT the source cup — pushing \
 the source cup into the receiver cup (`ctx.cups_nested`) transfers nothing and is never a success; \
 the beads must fall out of the tilted source cup through the air.
 8. Height above the table: `ctx.src_cup_pos[:, 2] - ctx.src_cup_spawn_pos[:, 2]` is how far \

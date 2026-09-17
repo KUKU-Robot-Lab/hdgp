@@ -140,7 +140,14 @@ for t in range(args.steps):
               f"{float(extras['fabric/rcv_palm_err'])*1000:.1f}mm "
               f"liftS={float(extras['task/src_cup_lift']):+.3f} liftR={float(extras['task/rcv_cup_lift']):+.3f} "
               f"tiltS={float(extras['task/src_tilt_deg']):.1f} rotErrS={float(extras['fabric/src_rot_err_deg']):.1f}° "
+              f"limit={float(extras.get('task/tilt_limit_deg', float('nan'))):.1f}° "
+              f"lipD={float(extras.get('task/pour_lip_dist', float('nan'))):.3f} "
+              f"latch={float(extras.get('task/premature_tilt_rate', float('nan'))):.3f} "
               f"rew={float(rew.mean()):+.3f}", flush=True)
+    # 09.18 채움별 틸트 상한·붓는 쪽 림 점 래치 — 스크립트 붓기에서 실제로 어디서 걸리는지 남긴다
+    summary["latch_max"] = max(summary.get("latch_max", 0.0), float(extras.get("task/premature_tilt_rate", 0.0)))
+    summary["lip_dist_min"] = min(summary.get("lip_dist_min", 9.0), float(extras.get("task/pour_lip_dist", 9.0)))
+    summary["tilt_limit_deg"] = float(extras.get("task/tilt_limit_deg", float("nan")))
 
 if _t0 is not None:
     torch.cuda.synchronize()

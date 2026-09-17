@@ -8,8 +8,9 @@ env 는 여기 함수를 부르기만 한다. isaaclab 이 없는 로컬에서 �
     env 마다 테이블 뒤 지면 위 격자에 눕힌다(한 점에 모으면 브로드페이즈 페어 폭발 — repfalse 이력).
   - 채움 정도 0~1 은 실측(정착 후 활성 비드 평균 높이)으로 정한다 — 개수·크기와 무관한 부피량이라
     실기에서는 사람이 어림잡아 넣는 명령 입력과 뜻이 같다.
-  - 조준 전 틸트: 소스 입구가 리시버 입구에서 xy 로 멀리 있는데 소스가 한계 각도를 넘으면 성공 무효
+  - 조준 전 틸트: 붓는 쪽 림 점이 리시버 입구에서 xy 로 멀리 있는데 소스가 한계 각도를 넘으면 성공 무효
     (i07 계측: 입구 거리 0.236 m 에서 30° 돌파, 실제 붓기 중 입구 거리 중앙값 0.021 m).
+    ★09.18 한계 각도는 고정 30° 가 아니라 채움별 유출각 − 여유, 거리는 입구 중심이 아니라 붓는 쪽 림 점 기준.
 """
 from __future__ import annotations
 
@@ -23,16 +24,63 @@ _SPAWN_GAP_M = 0.002         # 이웃 비드 사이 여유(소환 겹침 → 벽
 _PARK_GAP_M = 0.010          # 파킹 격자 간격 여유
 
 
-def premature_tilt_now(src_tilt: torch.Tensor, lip_xy: torch.Tensor, grasped: torch.Tensor, *,
-                       tilt_max_deg: float, lip_xy_min_m: float) -> torch.Tensor:
+def premature_tilt_limit_rad(fill: torch.Tensor, *, release_full_deg: float, release_span_deg: float,
+                             margin_deg: float) -> torch.Tensor:
+    """조준 없이 허용되는 소스 기울기 상한 [rad] (N,) = 첫 비드 유출 각도(채움 의존) − 여유.
+
+    ★09.18 사용자 지적 "비드 양에 따라 기울이는 각도가 다르고 틸팅을 시도할 거리도 다르다": 고정 30° 를 버린다.
+    프로브 실측: 가득 찬 컵은 약 70° 에서, 몇 알 든 컵은 약 90° 에서 첫 비드가 나간다 →
+    release = full + span·(1 − fill). 유출각 − margin 까지는 어디서든(접근 중에도) 미리 기울여도 된다.
+    """
+    release = math.radians(float(release_full_deg)) + math.radians(float(release_span_deg)) * (
+        1.0 - fill.clamp(0.0, 1.0))
+    return release - math.radians(float(margin_deg))
+
+
+def pour_dir_update(prev_dir: torch.Tensor, src_cup_xy: torch.Tensor, rcv_mouth_xy: torch.Tensor, *,
+                    min_sep_m: float) -> torch.Tensor:
+    """붓는 방향 d̂ (N,2) = 소스 컵 원점 → 리시버 입구 수평 단위벡터.
+
+    컵 자세와 무관해서 직립(기울기 0)에서도 정의되고, 컵을 어느 쪽으로 기울였든 같은 쪽을 가리킨다
+    (실제 림 최저점은 직립 근처에서 방향이 튀고, 반대로 기울이면 리시버 반대편을 가리킨다 — 사용자 지적 09.18).
+    수평거리가 min_sep_m 보다 짧으면 방향이 흔들리므로 직전 값을 유지한다.
+    """
+    v = rcv_mouth_xy - src_cup_xy
+    n = v.norm(dim=-1, keepdim=True)
+    return torch.where(n >= float(min_sep_m), v / n.clamp(min=1e-6), prev_dir)
+
+
+def pour_lip(src_mouth: torch.Tensor, src_up: torch.Tensor, pour_dir: torch.Tensor, *,
+             rim_radius: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """붓는 쪽 림 점 (N,3) 과 리시버 쪽 부호 있는 기울기 θ [rad] (N,).
+
+    θ = atan2(up·d̂, up_z) — (d̂, z) 수직면 안의 기울기만 본다(옆으로 기운 성분은 0, 반대로 기울면 음수).
+    림 점 = 입구 중심 + r·(cos θ·d̂ − sin θ·ẑ): 직립이면 리시버를 향한 쪽 림, 기울일수록 아래로 내려가고
+    90° 를 넘으면 컵 밑으로 말려 들어간다(실제 유출 지점과 같은 거동). 입구 중심 자체가 컵 높이·sin θ 만큼
+    d̂ 쪽으로 나가므로, 많이 기울여야 하는(비드 적은) 컵일수록 컵 몸통이 더 멀리서 조준이 성립한다.
+    """
+    u_d = (src_up[:, :2] * pour_dir).sum(dim=-1)
+    theta = torch.atan2(u_d, src_up[:, 2])
+    r = float(rim_radius)
+    lip = src_mouth.clone()
+    lip[:, :2] = lip[:, :2] + (r * torch.cos(theta)).unsqueeze(-1) * pour_dir
+    lip[:, 2] = lip[:, 2] - r * torch.sin(theta)
+    return lip, theta
+
+
+def premature_tilt_now(src_tilt: torch.Tensor, tilt_limit: torch.Tensor, lip_dist_xy: torch.Tensor,
+                       grasped: torch.Tensor, *, lip_max_m: float) -> torch.Tensor:
     """이 스텝의 순간 판정 (N,) bool — 래치(에피소드 누적)는 env 가 한다.
+
+    **잡은** 소스 컵의 전체 기울기(방향 무관)가 채움별 상한(`premature_tilt_limit_rad`)을 넘었는데
+    붓는 쪽 림 점(`pour_lip`)이 리시버 입구 중심에서 xy 로 lip_max_m 보다 멀면 조준 전 틸트.
+    방향 무관이라 리시버 반대쪽·옆으로 크게 기울여도 걸린다.
 
     ★09.17 i08: 파지 조건 없이 걸었더니 첫 epoch 래치 19.8 % 가 전부 파지 0 에서 나왔다(탐색이 컵을 쳐서 넘어뜨림).
     래치는 영구라 정책이 소스 컵을 아예 피했다(파지 0.000, 이물 접촉 15→2 %). 리시버 규칙(파지·들기 이후에만)과
-    같은 원칙으로 **잡은 채** 기울인 경우만 잡는다 — i07 이 한 "잡고 테이블 위에서 45°" 는 여전히 걸린다.
+    같은 원칙으로 **잡은 채** 기울인 경우만 잡는다.
     """
-    return ((src_tilt > math.radians(float(tilt_max_deg))) & (lip_xy > float(lip_xy_min_m))
-            & grasped.to(torch.bool))
+    return (src_tilt > tilt_limit) & (lip_dist_xy > float(lip_max_m)) & grasped.to(torch.bool)
 
 
 def fill_level_from_local_z(z_local: torch.Tensor, active: torch.Tensor, *,

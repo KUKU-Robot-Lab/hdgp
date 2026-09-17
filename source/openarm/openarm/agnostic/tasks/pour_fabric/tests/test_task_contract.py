@@ -188,7 +188,10 @@ def test_bead_volume_dr_cfg_defaults():
     assert cfg.cup_inside_z_min == pytest.approx(
         cfg.cup_bottom_z + cfg.bead_diameter_m / 2 - cfg.bead_floor_tol_m, abs=1e-6)
     assert 0.0 < cfg.bead_floor_tol_m < cfg.bead_diameter_m / 2  # 바닥 경계 흔들림 여유(프로브 09.16)
-    assert cfg.premature_tilt_max_deg == 30.0 and cfg.premature_lip_xy_m == 0.10
+    # 09.18: 고정 30°/10 cm 폐기 → 채움별 상한(유출각 − 여유) + 붓는 쪽 림 점 허용 반경
+    assert not hasattr(cfg, "premature_tilt_max_deg") and not hasattr(cfg, "premature_lip_xy_m")
+    assert cfg.premature_release_full_deg - cfg.premature_margin_deg == pytest.approx(52.0)
+    assert 0.0 < cfg.premature_lip_tol_m < 0.10 and cfg.pour_dir_min_sep_m > 0.0
 
 
 def test_success_requires_no_premature_tilt():
