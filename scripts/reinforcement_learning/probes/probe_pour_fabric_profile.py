@@ -16,6 +16,7 @@ parser.add_argument("--task", default="open-short_b_pour_fab")
 parser.add_argument("--num_envs", type=int, default=512)
 parser.add_argument("--steps", type=int, default=200)
 parser.add_argument("--warmup", type=int, default=30)
+parser.add_argument("--unmerged", action="store_true", help="구 body 별 접촉 센서(33개)로 A/B")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
@@ -29,6 +30,7 @@ import openarm.tasks  # noqa: E402,F401
 import openarm.agnostic.tasks.pour_fabric.config  # noqa: E402,F401
 
 env_cfg = parse_env_cfg(args.task, device=args.device, num_envs=args.num_envs)
+env_cfg.contact_sensor_merged = not args.unmerged
 env = gym.make(args.task, cfg=env_cfg).unwrapped
 env.reset()
 T: dict[str, float] = defaultdict(float)
