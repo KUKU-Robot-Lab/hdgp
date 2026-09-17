@@ -146,7 +146,33 @@ if args.solver_iters > 0:
     cfg.receiver_cup_cfg.spawn.rigid_props.solver_position_iteration_count = args.solver_iters
     print(f"[sim] solver position iterations={args.solver_iters}", flush=True)
 
+# ★09.17 env.__init__ 이 resolve_cfg 로 robot/cup cfg 를 새로 만든다 → 위 오버라이드가 전부 지워졌다
+#   (실측: --tip_fix split 이 usda 에 20개를 썼는데 런타임 PhysX 질량은 base 와 동일).
+#   resolve 뒤에 다시 입힌다. env 코드는 건드리지 않는다.
+import openarm.agnostic.tasks.pour_fabric_mimic.pour_fabric_env_cfg as _pf_cfg  # noqa: E402
+
+_OV_ROBOT_USD = cfg.robot_cfg.spawn.usd_path
+_OV_CUP_USD = cfg.source_cup_cfg.spawn.usd_path
+_orig_resolve_cfg = _pf_cfg.resolve_cfg
+
+
+def _resolve_keep_overrides(c) -> None:
+    _orig_resolve_cfg(c)
+    c.robot_cfg.spawn.usd_path = _OV_ROBOT_USD
+    c.source_cup_cfg.spawn.usd_path = _OV_CUP_USD
+    c.receiver_cup_cfg.spawn.usd_path = _OV_CUP_USD
+    if args.solver_iters > 0:
+        c.robot_cfg.spawn.articulation_props.solver_position_iteration_count = args.solver_iters
+        c.source_cup_cfg.spawn.rigid_props.solver_position_iteration_count = args.solver_iters
+        c.receiver_cup_cfg.spawn.rigid_props.solver_position_iteration_count = args.solver_iters
+
+
+_pf_cfg.resolve_cfg = _resolve_keep_overrides
+
 env = gym.make(args.task, cfg=cfg).unwrapped
+print(f"[applied] robot_usd={env.cfg.robot_cfg.spawn.usd_path} cup_usd={env.cfg.source_cup_cfg.spawn.usd_path} "
+      f"sim_dt={env.cfg.sim.dt:.6f} decimation={env.cfg.decimation} "
+      f"iters={env.cfg.robot_cfg.spawn.articulation_props.solver_position_iteration_count}", flush=True)
 N, A = env.num_envs, env.cfg.action_space
 HALF = A // 2
 dev = env.device
