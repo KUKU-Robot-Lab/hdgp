@@ -645,6 +645,34 @@ class PourFabricMimicEnv(DirectRLEnv):
         self._log(total, terms, flags, ctx)
         return total
 
+    def trace_snapshot(self) -> dict:
+        """play `--trace_steps` 용 스텝 스냅샷(전 env, CPU float32). 09.18 "손이 왜 안 오므리나" 진단.
+
+        읽기 전용 — 학습 경로는 부르지 않는다. 손가락별 힘·오므림 지령·손끝-컵 상대 위치·보상 항을 남긴다.
+        """
+        def _np(t: torch.Tensor):
+            return t.detach().float().cpu().numpy()
+
+        snap = {"actions": _np(self.actions), "hold": _np(self._hold_mask().float())}
+        for tag, rig, cup, grasped in (("src", self.src, self.source_cup, self._src_grasped),
+                                       ("rcv", self.rcv, self.receiver_cup, self._rcv_grasped)):
+            cup_l = self._local(cup.data.root_pos_w)          # 손끝·손바닥이 env-local 이라 컵도 local
+            snap.update({
+                f"{tag}_f": _np(rig.finger_forces()), f"{tag}_f_palm": _np(rig.palm_force()),
+                f"{tag}_foreign": _np(rig.foreign_force()),
+                f"{tag}_syn_close": _np(rig.syn_close), f"{tag}_closure": _np(rig.closure()),
+                f"{tag}_grasped": _np(grasped.float()),
+                f"{tag}_close_gate": _np(self._close_gate(rig, cup, grasped)),
+                f"{tag}_tips_rel": _np(rig.tips_pos() - cup_l.unsqueeze(1)),
+                f"{tag}_palm_rel": _np(rig.palm_pos() - cup_l),
+                f"{tag}_arm_qd": _np(self.robot.data.joint_vel[:, rig.arm_t]),
+                f"{tag}_cup_pos": _np(cup_l),
+                f"{tag}_cup_up": _np(self._cup_up(cup)),
+            })
+        for k, v in self._last_terms.items():
+            snap[f"term_{k}"] = _np(v)
+        return snap
+
     def _log_thumb_rim(self, side: str, palm, tips, cup_pos, cup_up) -> None:
         """엄지 입구 걸림 접근 계측 — 보상·관측과 무관, env 가 직접 잰다(09.15 사용자 "지표로깅으로 확인 가능하게").
 
