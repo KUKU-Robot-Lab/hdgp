@@ -1,0 +1,9 @@
+Round 16 (iter_15, t2r_i15, 4096 env, warm-started from the round-15 checkpoint, 812 epochs / 5.9 h, ADR level 0) — measured facts only, environment unchanged. This round moved the source tilt further than any earlier round, but no bead was ever transferred: bead/in_target 0.0 and episode_success 0.0 for all 812 epochs, reward/pour_delta max 0.005, reward/pour_pose exactly 0.0, reward/hold_src and reward/hold_rcv 0.0, bead/spill 0.016.
+
+Source tilt (env mean at tick checks, epoch: task/src_tilt_deg / task/pour_lip_dist): first 4.9 deg / 0.256 m; 261: 35.2 / 0.069; 538: 44.0 / 0.048; 812: 45.2 / 0.052 (max of the logged mean 54.1 deg). task/tilt_far_deg 22.6, task/tilt_limit_deg 60.2, so theta_pre was about 50 deg and the first-release angle about 80 deg for this fill. reward/tilt (single merged term, weight 10) rose 0 -> 3.75 (max 4.64) and was still rising, but the rise slowed sharply in the last 2 h (44.0 -> 45.2 deg).
+
+Approach and grasp improved together with the tilt: task/aim_dist 0.126 m, task/cups_center_dist 0.186 m, task/src_grasped 0.861, task/rcv_grasped 0.860 (round 15 ended at 0.80/0.81), src cup lift 0.199 m, rcv cup lift 0.092 m. Contact indicators fell: task/cup_collision_rate 0.032 (round 15: 0.064), hand_foreign src/rcv 0.125/0.051 (round 15: 0.184/0.093), task/nested_rate 0.009. task/premature_tilt_rate 0.015 (max 0.028, up from 0.008 in round 15), task/rcv_palm_speed 0.37 m/s, bead/fill_level 0.758, dr/bead_active_hi 12.
+
+End-of-round term values: aim 2.30, tilt 3.90, converge 2.58, bring_together 1.63, lift_src 1.56, lift_rcv 1.73, grasp_src 1.44, grasp_rcv 1.44, wrap_src 1.24, wrap_rcv 0.38, raise_src 0.87, meet_rcv 0.27, meet_src 0.06, rcv_still -0.172, palm_sat_src -0.092, upright_src -0.014, premature_latch -0.008, total 22.9.
+
+Best so far remains iter_05 (round-3 environment, not comparable).
