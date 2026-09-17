@@ -107,7 +107,7 @@ if args.mimic_nf > 0.0 or args.sensor_mass > 0.0 or args.tip_fix:
         if n_tip == 0:
             raise SystemExit("tip_fix 대상 prim 을 못 찾았다 — 무효")
     stage.GetRootLayer().Save()
-    print(f"[usd] override nf→{args.mimic_nf or '-'}({n_nf}) sensor_mass→{args.sensor_mass or '-'}({n_m}) · {tmp}", flush=True)
+    print(f"[usd] override nf→{args.mimic_nf or '-'}({n_nf}) sensor_mass→{args.sensor_mass or '-'}({n_m}) tip_fix→{args.tip_fix or '-'}({n_tip}) · {tmp}", flush=True)
     if (args.mimic_nf > 0.0 and n_nf == 0) or (args.sensor_mass > 0.0 and n_m == 0):
         raise SystemExit("오버라이드 대상 prim 을 못 찾았다 — 무효")
     cfg.robot_cfg.spawn.usd_path = tmp
@@ -153,6 +153,13 @@ dev = env.device
 hold = int(env.cfg.hold_steps)
 hand_ids = sorted(set(env.src.syn_ids) | set(env.rcv.syn_ids))
 base_damp = env.robot.data.joint_damping[:, hand_ids].clone()
+
+# 오버라이드가 USD 에만 적히고 PhysX 에는 안 들어갔을 수 있다 — 런타임 값을 직접 찍는다.
+_pm = env.robot.root_physx_view.get_masses()[0].flatten().cpu()
+_pi = env.robot.root_physx_view.get_inertias()[0].reshape(-1, 9).cpu()
+for _b in ("r_hl_index_2", "r_hl_index_sensor", "r_hl_index_tip", "r_hl_thumb_4", "r_hl_thumb_sensor", "r_hl_thumb_tip"):
+    _k = env.robot.data.body_names.index(_b)
+    print(f"[physx] {_b} mass {float(_pm[_k]):.3e} I ({float(_pi[_k, 0]):.2e}, {float(_pi[_k, 4]):.2e}, {float(_pi[_k, 8]):.2e})", flush=True)
 
 # 자유 공간 이동: 두 팔을 앵커에서 위·바깥쪽으로 크게 옮겼다 돌아온다(컵·몸통·테이블과 안 닿는 쪽).
 #   소스(우) +y 는 몸 안쪽이라 −x·+z 위주, 리시버(좌)는 미러.
