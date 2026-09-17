@@ -31,6 +31,9 @@ parser.add_argument("--bead_active", type=int, default=0,
                     help="활성 비드 개수 고정(0=cfg 범위·ADR). 최대 채움의 정착·흘림 각도를 재려면 bead_count 와 같게.")
 parser.add_argument("--print_every", type=int, default=50, help="주기 출력 간격(스텝)")
 parser.add_argument("--out", default="")
+parser.add_argument("--solver_pos", type=int, default=0,
+                    help="비드·컵 solver position iteration 덮어쓰기(0=cfg 그대로). fps/관통 비교용 — env 는 안 바꾼다.")
+parser.add_argument("--fps_warmup", type=int, default=50, help="fps 측정에서 뺄 앞 스텝 수")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
@@ -51,6 +54,19 @@ if args.bead_count > 0:
 if args.bead_active > 0:
     env_cfg.bead_active_range = (args.bead_active, args.bead_active)
     env_cfg.adr_bead_active_hi_initial = args.bead_active
+if args.solver_pos > 0:
+    import openarm.agnostic.tasks.pour_fabric.pour_fabric_env_cfg as _pcfg  # noqa: E402
+    _orig_resolve = _pcfg.resolve_cfg
+
+    def _resolve_with_solver(cfg):
+        _orig_resolve(cfg)
+        for ro in cfg.beads_cfg.rigid_objects.values():
+            ro.spawn.rigid_props.solver_position_iteration_count = args.solver_pos
+        for cup in (cfg.source_cup_cfg, cfg.receiver_cup_cfg):
+            cup.spawn.rigid_props.solver_position_iteration_count = args.solver_pos
+
+    _pcfg.resolve_cfg = _resolve_with_solver
+    _resolve_with_solver(env_cfg)
 env = gym.make(args.task, cfg=env_cfg).unwrapped
 obs, _ = env.reset()
 N = env.num_envs
@@ -83,7 +99,12 @@ def scripted(t: int) -> torch.Tensor:
     return a
 
 
+import time as _time  # noqa: E402
+_t0 = None
 for t in range(args.steps):
+    if t == args.fps_warmup:
+        torch.cuda.synchronize()
+        _t0 = _time.perf_counter()
     if args.script:
         a = scripted(t)
     elif args.zero_action:
@@ -120,6 +141,10 @@ for t in range(args.steps):
               f"tiltS={float(extras['task/src_tilt_deg']):.1f} rotErrS={float(extras['fabric/src_rot_err_deg']):.1f}° "
               f"rew={float(rew.mean()):+.3f}", flush=True)
 
+if _t0 is not None:
+    torch.cuda.synchronize()
+    summary["fps_step"] = N * (args.steps - args.fps_warmup) / (_time.perf_counter() - _t0)
+    print(f"[fps] envs={N} steps={args.steps - args.fps_warmup} fps_step={summary['fps_step']:.0f}", flush=True)
 summary["palm_err_src"] = {"mean_mm": 1000 * sum(summary["palm_err_src"]) / len(summary["palm_err_src"]),
                            "max_mm": 1000 * max(summary["palm_err_src"])}
 summary["palm_err_rcv"] = {"mean_mm": 1000 * sum(summary["palm_err_rcv"]) / len(summary["palm_err_rcv"]),
