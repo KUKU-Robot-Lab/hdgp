@@ -266,7 +266,8 @@ def test_rand_leaf_rejects_spawns_under_the_start_hand_and_on_the_table_pocket()
     # ★09.17 소환 점검(4096 표본): 겹침 10.4 % · 상판 이상 4.8 % → 사용자 "문제 위치만 다시 뽑기"
     blk = _CFG.split("class GraspFJT2RRandEnvCfg", 1)[1]
     assert "spawn_reject_hand_box: tuple = (0.0, 0.27, -0.34, -0.26, 0.385)" in blk
-    assert "spawn_reject_pocket: tuple = (0.135, 0.0, 0.035)" in blk
+    assert "spawn_reject_holes: tuple = ((0.135, -0.30, 0.0305), (0.27, -0.30, 0.0305), (0.135, 0.0, 0.0305))" in blk
+    assert "spawn_reject_hole_margin: float = 0.01" in blk
     reach = _CFG.split("class GraspFJT2RReachEnvCfg", 1)[1].split("class GraspFJT2RRandEnvCfg", 1)[0]
     assert "spawn_reject" not in reach
     reset = _fn_block(_ENV, "_reset_idx")
