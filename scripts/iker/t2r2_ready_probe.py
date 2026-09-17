@@ -90,6 +90,9 @@ class GateRecorder:
         self.final_kp: list[float] = []
         self.final_home: list[float] = []
         self.min_home = torch.full((n,), float("inf"), device=dev)  # closest the palm got to home in the episode
+        self.min_kp = torch.full((n,), float("inf"), device=dev)    # 에피소드 중 가장 목표에 가까웠던 keypoint_dist
+        # 실패 분류용 끝 상태(첫 에피소드만): 떨어뜨림 / 쥔 채 끝 / 선반 위에 놓았으나 목표 밖 / 선반 밖에 놓음
+        self.end_rows: list[dict] = []
         self._get_rewards, self._log_episode_end = u._get_rewards, u._log_episode_end
         u._get_rewards, u._log_episode_end = self.get_rewards, self.log_episode_end
 
@@ -112,6 +115,7 @@ class GateRecorder:
         self.open_max = torch.maximum(self.open_max, open_frac * live)
         self.stable_max = torch.maximum(self.stable_max, last["stable_count"] * live)
         self.min_home = torch.where(self.live, torch.minimum(self.min_home, last["palm_home_dist"]), self.min_home)
+        self.min_kp = torch.where(self.live, torch.minimum(self.min_kp, last["keypoint_dist"]), self.min_kp)
         return out
 
     def log_episode_end(self, env_ids):
@@ -127,6 +131,16 @@ class GateRecorder:
             self.final_gap_xy += (shoe[:, :2] - other[:, :2]).norm(dim=-1).cpu().tolist()
             self.final_kp += u._keypoint_distance[first].cpu().tolist()
             self.final_home += u._t2r_last["palm_home_dist"][first].cpu().tolist()
+            last = u._t2r_last
+            dropped = shoe[:, 2] - u.scene.env_origins[first, 2] < u.cfg.reward.fall_height
+            for i, env in enumerate(first.tolist()):
+                self.end_rows.append({
+                    "success": bool(self.stable_max[env] >= float(u.cfg.place.stable_steps)),
+                    "dropped": bool(dropped[i]),
+                    "released": bool(last["released"][env]), "resting": bool(last["resting"][env]),
+                    "final_kp": float(last["keypoint_dist"][env]), "min_kp": float(self.min_kp[env]),
+                    "steps": int(self.steps[env]),
+                })
         self.live[ended] = False
         self._log_episode_end(env_ids)
 
@@ -156,6 +170,34 @@ def _final_vs_other(rec: GateRecorder) -> dict:
         "home_joint_tol": float(rec.u.cfg.place.home_joint_tol),
         "episodes": len(rec.final_gap_xy),
     }
+
+
+def _failure_breakdown(rec: GateRecorder) -> dict:
+    """성공 못 한 첫 에피소드를 끝 상태로 가른다 — 무엇을 고쳐야 하는지가 여기서 갈린다."""
+    rows = rec.end_rows
+    fails = [r for r in rows if not r["success"]]
+    tol = float(rec.u.cfg.place.place_tolerance)
+
+    def cls(r):
+        if r["dropped"]:
+            return "dropped"
+        if not r["released"]:
+            return "still_holding"
+        if r["resting"]:
+            return "on_rack_off_target"
+        return "released_not_resting"
+
+    out: dict = {"episodes": len(rows), "failures": len(fails)}
+    for name in ("dropped", "still_holding", "on_rack_off_target", "released_not_resting"):
+        group = [r for r in fails if cls(r) == name]
+        out[name] = {
+            "frac_of_episodes": round(len(group) / max(1, len(rows)), 4),
+            "final_kp_q10_50_90": _quantiles([r["final_kp"] for r in group]),
+            "min_kp_q10_50_90": _quantiles([r["min_kp"] for r in group]),
+            "ever_within_tol_frac": round(sum(r["min_kp"] <= tol for r in group) / max(1, len(group)), 4),
+            "steps_mean": round(sum(r["steps"] for r in group) / max(1, len(group)), 1),
+        }
+    return out
 
 
 def summarize(rec: GateRecorder) -> dict:
@@ -195,6 +237,7 @@ def summarize(rec: GateRecorder) -> dict:
             "at_target_frac": round(float((rec.stable_max >= float(rec.u.cfg.place.stable_steps)).float().mean()), 4),
         },
         "final_vs_other": _final_vs_other(rec),
+        "failure_breakdown": _failure_breakdown(rec),
         "gate_cfg": {
             "place_tolerance": float(rec.u.cfg.place.place_tolerance),
             "resting_tol": float(rec.u.cfg.place.resting_tol),

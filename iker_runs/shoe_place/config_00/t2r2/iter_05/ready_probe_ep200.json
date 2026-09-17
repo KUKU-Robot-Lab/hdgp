@@ -1,0 +1,72 @@
+{
+ "schema": 1,
+ "summary": {
+  "checkpoint": "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe-t2r/iker_t2r2_c00_i05/nn/last_open-sens_l_iker_shoe_t2r_ep_200_rew_1099.2812.pth",
+  "reward_code_path": "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/t2r2/iter_05/reward_fn.py",
+  "num_envs": 64,
+  "noise": false,
+  "episode_steps_mean": 118.19,
+  "step_rate": {
+   "ready": 0.3715,
+   "placed": 0.372,
+   "resting": 0.7353,
+   "still": 0.6589,
+   "released": 0.659,
+   "home": 0.1773,
+   "ok": 0.1773
+  },
+  "ever_true_env_frac": {
+   "ready": 0.5312,
+   "placed": 0.5312,
+   "resting": 0.9688,
+   "still": 0.9062,
+   "released": 0.9531,
+   "home": 0.5312,
+   "ok": 0.5312
+  },
+  "open_frac": {
+   "mean_all_steps": 0.7195,
+   "max_per_env_mean": 0.936,
+   "max_per_env_p90": 1.0,
+   "mean_on_ready_steps": 0.9884
+  },
+  "stable_count_max": {
+   "mean": 10.625,
+   "p90": 20.0,
+   "max": 20.0,
+   "target": 20,
+   "at_target_frac": 0.5312
+  },
+  "final_vs_other": {
+   "target_gap_xy_m": 0.1351,
+   "final_gap_xy_q10_50_90": [
+    0.1244,
+    0.1555,
+    0.265
+   ],
+   "final_keypoint_dist_q10_50_90": [
+    0.0165,
+    0.0281,
+    0.1444
+   ],
+   "final_palm_home_dist_q10_50_90": [
+    0.0001,
+    0.0005,
+    0.3238
+   ],
+   "min_palm_home_dist_q10_50_90": [
+    0.0001,
+    0.0002,
+    0.1879
+   ],
+   "home_joint_tol": 0.035,
+   "episodes": 64
+  },
+  "gate_cfg": {
+   "place_tolerance": 0.03,
+   "resting_tol": 0.01,
+   "release_radius": 0.15,
+   "still_speed": 0.05
+  }
+ }
+}
