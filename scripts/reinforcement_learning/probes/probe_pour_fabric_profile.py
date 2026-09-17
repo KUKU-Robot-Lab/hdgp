@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import time
 from collections import defaultdict
 
@@ -57,7 +58,7 @@ wrap(env.scene, "update", "scene.update")
 wrap(env.scene, "write_data_to_sim", "scene.write")
 for rig in env.rigs:
     for n in dir(rig):
-        if n.startswith("_") or not callable(getattr(rig, n)):
+        if n.startswith("__") or not inspect.ismethod(getattr(rig, n)):
             continue
         wrap(rig, n, f"rig.{n}")
 
