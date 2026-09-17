@@ -646,16 +646,24 @@ class GraspRightEnvCfg(DirectRLEnvCfg):
     )
 
     # -----------------------------------------------------------------------
-    # 로봇 설정 (openarm_tesollo_bi_rl.usd: 양팔 tesollo, 통일 네이밍 r_aj/r_hj/r_hl + l_hj tesollo 20관절)
+    # 로봇 설정 (openarm_dg5f-m-short_bi_rl.usd: 양팔 DG-5F-M(short), 통일 네이밍 r_aj/r_hj/r_hl + l_hj 20관절)
     # -----------------------------------------------------------------------
     robot_cfg: ArticulationCfg = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
-            # ★08.17 openarm_tesollo_bi_rl → openarm_tesollo_bi_s_rl (DG-5F → DG-5FS).
-            # 이름은 동일하나 기구학 전면 재정의(축 0 0 1, 마디 0.0388→0.0334,
-            # palm 0.0698→0.015, 한계 10/20 변경) → HAND_*_POSE·워크스페이스·PCA·
-            # warm state·체크포인트 전부 무효. Fabrics 는 P0(95caa19)에서 갱신됨.
-            usd_path=_os.path.join(_ASSETS_DIR, "robot/openarm_tesollo_bi_s_rl/openarm_tesollo_bi_s_rl.usd"),
+            # ★09.10 openarm_tesollo_bi_s_rl → openarm_dg5f-m-short_bi_rl (DG-5FS → DG-5F-M short base).
+            #   구 자산 디렉토리는 09.05 자산 라인업 재생성으로 트리에서 사라졌다 — 이 태스크는
+            #   경로가 죽어 부팅 불가 상태였다.
+            #   관절/링크 이름은 그대로다(r_aj_*, r_hj_<finger>_[1-4], r_hl_*_tip, l_hj_*,
+            #   head_j_(pan|tilt)) — 이름 기준 소비자(actuator regex·obs·ContactSensor)는 무변경.
+            #   ⚠무효화된 것(이번 교체 범위 밖, 사용 전 재확인할 것):
+            #     · 손 기구학이 전면 상이 → HAND_APPROACH/GRASP_POSE 의 "의미"는 유지되나
+            #       (전 값이 새 관절 한계 안에 들어감을 확인) 감쌈 형상·PCA·warm_state_cache·
+            #       구 체크포인트는 재도출 대상이다.
+            #     · fabric URDF 기준 palm 이 손목에서 +7.5mm 나갔다(palm_link_joint 0.0685→0.076)
+            #       → 팔 홈(r_aj_1~7)·reset_home_palm_pose·홈 케이지·object_spawn 은 미재산출.
+            #       (grasp_s2r 의 TESOLLO_RIGHT_SHORT 는 IK 로 홈을 재산출했다 — 필요하면 그 방식)
+            usd_path=_os.path.join(_ASSETS_DIR, "robot/openarm_dg5f-m-short_bi_rl/openarm_dg5f-m-short_bi_rl.usd"),
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=True,

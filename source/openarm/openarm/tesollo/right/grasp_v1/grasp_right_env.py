@@ -565,9 +565,18 @@ class GraspRightEnv(DirectRLEnv):
             self.num_envs, self.device, self.timestep,
             graph_capturable=False,
             use_hand_fabric=False,
-            # ★08.17 DG-5FS 전용 fabric URDF(P0b, FK 오차 0.000mm 검증). 기존 URDF 는 불변.
-            robot_dir_name="openarm_tesollo_bi_s",
-            robot_name="openarm_tesollo_bi_s",
+            # ★09.10 자산 교체에 맞춘 fabric URDF/params 정합.
+            #   USD 를 openarm_dg5f-m-short_bi_rl 로 바꾸면 fabric 도 같이 바꿔야 한다 —
+            #   팔 7관절은 두 URDF 가 완전 동일하지만 **손은 기구학이 전면 상이**하다
+            #   (회전축 0 0 1 → 1 0 0 계열, 마디 0.0334 → 0.0388, tip 오프셋, 9개 관절 한계).
+            #   구 fabric 을 둔 채 USD 만 바꾸면 fabric 이 DG-5FS 를 풀고 sim 은 DG-5F-M-short
+            #   를 돌리는 무성 불일치가 된다(FK 기반 보상·palm IK 직격).
+            # ★params 도 전용본이 필수다: 기본 openarm_tesollo_pose_params.yaml 은 새 URDF 에
+            #   없는 `tesollo_right_rl_dg_1_2_sph3` 를 참조해 부팅에서 KeyError 로 죽는다
+            #   (충돌구 개수가 마디 길이 ÷ 지름으로 자동 산출돼 자산마다 갈린다).
+            robot_dir_name="openarm_dg5f-m-short_bi_right",
+            robot_name="openarm_dg5f-m-short_bi_right",
+            fabric_params_filename="openarm_dg5f-m-short_right_pose_params.yaml",
         )
         num_joints = self.open_tesollo_fabric.num_joints   # 27
 
@@ -589,9 +598,11 @@ class GraspRightEnv(DirectRLEnv):
             self._reset_chunk, self.device, self.timestep,
             graph_capturable=False,
             use_hand_fabric=False,
-            # ★08.17 DG-5FS 전용 fabric URDF(P0b, FK 오차 0.000mm 검증). 기존 URDF 는 불변.
-            robot_dir_name="openarm_tesollo_bi_s",
-            robot_name="openarm_tesollo_bi_s",
+            # ★09.10 메인 fabric 과 **같은** URDF/params 를 써야 한다(위 블록 주석 참조).
+            #   리셋만 구 자산으로 남으면 리셋 자세와 학습 자세가 다른 손을 푼다.
+            robot_dir_name="openarm_dg5f-m-short_bi_right",
+            robot_name="openarm_dg5f-m-short_bi_right",
+            fabric_params_filename="openarm_dg5f-m-short_right_pose_params.yaml",
         )
         self._reset_integrator = DisplacementIntegrator(self._reset_fabric)
 
