@@ -72,7 +72,7 @@ for rnd in range(args.rounds):
     for step in range(args.settle):
         env.step(act)
         if step < args.early:
-            early_reset |= env.episode_length_buf <= 1
+            early_reset |= env.episode_length_buf < (step + 1)     # 리셋 안 된 env 는 step+1, 이번 스텝에 리셋된 env 는 0
             pos = env.object.data.root_pos_w - origins
             _d = (pos[:, :2] - spawn[:, :2]).norm(dim=-1)
             max_disp = torch.maximum(max_disp, torch.where(early_reset, max_disp, _d))
