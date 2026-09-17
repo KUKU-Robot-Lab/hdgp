@@ -1,0 +1,12 @@
+{
+ "label": "t2r_i13",
+ "num_envs": 4096,
+ "started": 1789635922,
+ "commit": "c32bd35f",
+ "gpu": 1,
+ "server_pids": [
+  2815219,
+  2815226
+ ],
+ "warm_start": "log/rl_games/open-short/both/pour-fab/t2r_i12/nn/last_open-short_b_pour_fab_ep_300_rew_13444.071.pth"
+}

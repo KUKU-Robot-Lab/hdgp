@@ -1,7 +1,7 @@
 {
- "iter": 12,
- "label": "t2r_i12",
- "round": 13,
+ "iter": 13,
+ "label": "t2r_i13",
+ "round": 14,
  "round10_note": "env 수정 b3a07d0e(래치를 접촉 기반 소스 파지 성립 시에만) 뒤 재학습. 보상 iter_09(37항, raise_src 추가). 그 외 env 는 라운드 9 와 동일. 틱 예약 은 아래 launch_i09.cron",
  "launch_i09": {
   "label": "t2r_i09",
@@ -58,7 +58,7 @@
   "time": 1789464906.1567261,
   "note": "라운드3 env(DR·ADR·지각노이즈·충돌신호)에서 달성, 영상 게이트 ep800 pass"
  },
- "started": 1789610340.793285,
+ "started": 1789635922.0,
  "success_ticks": 0,
  "restart": "09.13 nesting hacking 수정 후 같은 iter_00 보상으로 재학습",
  "prev": {
@@ -480,10 +480,21 @@
   "reward": "iter_10 41항(reach_src/rcv·palm_sat_src/rcv 추가)"
  },
  "server_pids": [
-  2274151,
-  2274158
+  2815219,
+  2815226
  ],
- "commit": "5767f0d6",
- "note": "iter_11 42 terms; i10 killed at epoch 723 (success 0, advanced by rule)",
- "round13_note": "iter_12 42항(ingest PASS), t2r_i11 ep_550 체크포인트 웜스타트, 4096 env GPU1, MAX_ROUNDS 20"
+ "commit": "c32bd35f",
+ "note": "iter_13 42 terms; i12 stopped by user at epoch 332 (env tilt-latch change)",
+ "round13_note": "iter_12 42항(ingest PASS), t2r_i11 ep_550 체크포인트 웜스타트, 4096 env GPU1, MAX_ROUNDS 20",
+ "ended_i12": {
+  "epoch": 332,
+  "hours": 2.4,
+  "reason": "사용자 지시(09.18): env 틸트 래치 수정 후 체크포인트 재학습 — 재기동 전에 미리 종료. 입구 간 거리 0.283→0.17~0.25 m(비단조), 소스 틸트 7°, success 0",
+  "server_pids_killed": [
+   2629525,
+   2629532
+  ],
+  "last_ckpt": "log/rl_games/open-short/both/pour-fab/t2r_i12/nn/last_open-short_b_pour_fab_ep_300_rew_13444.071.pth"
+ },
+ "round14_note": "env 048c5669: 틸트 래치를 채움 비례 한계각(첫 유출각−20°: 가득 52°·반 69°) + 붓는 림 점(src_pour_lip_pos)이 리시버 입구 xy 0.081 m 밖일 때만으로 변경, ctx 신규 src_pour_lip_pos·src_tilt_toward_rcv·premature_tilt_limit. 보상 iter_13(42항, ingest PASS, pretilt 신설·tilt_dir 제거·림 점 기하). t2r_i12 ep_300 웜스타트, 4096 env GPU1. 프로브(64 env): 한계 54.1°(12개)/66.6°(6개), 파지·리프트 래치 0, 원거리 82° 틸트 래치 100 %"
 }
