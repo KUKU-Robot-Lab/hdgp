@@ -60,11 +60,22 @@ for rnd in range(args.rounds):
     max_disp = torch.zeros(N, device=dev)
     max_speed = torch.zeros(N, device=dev)
     max_touch = torch.zeros(N, device=dev)
+    # ★1차 실행에서 밀림 수백 mm·속도 0.16 m/s 인 사례가 나왔다 — 첫 스텝들 안에 에피소드가 끝나 컵이 **재소환**된 것이다.
+    #   재소환 뒤 위치를 원래 소환점과 비교하면 가짜 밀림이 된다 → 리셋을 따로 세고 그 뒤로는 밀림을 재지 않는다.
+    early_reset = torch.zeros(N, dtype=torch.bool, device=dev)
+    # 소환 순간 컵에 가장 가까운 로봇 몸체(원점 기준, 컵 높이 띠 안) — 겹침이 어느 몸체인지
+    _bp = env.robot.data.body_pos_w - origins.unsqueeze(1)
+    _top = spawn[:, 2] + env._obj_origin_off + 0.03
+    _dxy = (_bp[:, :, :2] - spawn[:, None, :2]).norm(dim=-1)
+    _dxy = torch.where(_bp[:, :, 2] <= _top.unsqueeze(1), _dxy, torch.full_like(_dxy, 9.0))
+    near_d, near_i = _dxy.min(dim=1)
     for step in range(args.settle):
         env.step(act)
         if step < args.early:
+            early_reset |= env.episode_length_buf <= 1
             pos = env.object.data.root_pos_w - origins
-            max_disp = torch.maximum(max_disp, (pos[:, :2] - spawn[:, :2]).norm(dim=-1))
+            _d = (pos[:, :2] - spawn[:, :2]).norm(dim=-1)
+            max_disp = torch.maximum(max_disp, torch.where(early_reset, max_disp, _d))
             max_speed = torch.maximum(max_speed, env.object.data.root_lin_vel_w.norm(dim=-1))
             links_f, palm_f = env._link_cup_forces()
             max_touch = torch.maximum(max_touch, torch.maximum(links_f.flatten(1).amax(dim=1), palm_f.reshape(N, -1).amax(dim=1)))
@@ -73,14 +84,15 @@ for rnd in range(args.rounds):
     tilt = torch.rad2deg(torch.acos((1.0 - 2.0 * (q[:, 1] ** 2 + q[:, 2] ** 2)).clamp(-1.0, 1.0)))
     z_err = pos[:, 2] - (table_z + env._obj_origin_off)
     palm = env.robot.data.body_pos_w[:, env.palm_idx] - origins
-    overlap = (max_disp * 1e3 > args.disp_mm) | (max_speed > args.speed) | (max_touch > args.touch_n)
+    overlap = (max_disp * 1e3 > args.disp_mm) | (max_speed > args.speed) | (max_touch > args.touch_n) | early_reset
     bad_table = (z_err.abs() * 1e3 > args.z_mm) | (tilt > args.tilt_deg)
     for i in range(N):
         rows.append(dict(round=rnd, env=i, cup=env._species_names[int(species[i])],
                          sx=float(spawn[i, 0]), sy=float(spawn[i, 1]),
                          disp_mm=float(max_disp[i]) * 1e3, speed=float(max_speed[i]), touch_n=float(max_touch[i]),
                          z_err_mm=float(z_err[i]) * 1e3, tilt=float(tilt[i]),
-                         palm_cup_xy=float((palm[i, :2] - spawn[i, :2]).norm()),
+                         palm_cup_xy=float((palm[i, :2] - spawn[i, :2]).norm()), early_reset=bool(early_reset[i]),
+                         near_body=env.robot.data.body_names[int(near_i[i])], near_xy=float(near_d[i]),
                          overlap=bool(overlap[i]), bad_table=bool(bad_table[i])))
 
 n = len(rows)
@@ -114,6 +126,10 @@ for gy in range(5, -1, -1):
         c = grid.get((gx, gy), [0, 0, 0])
         line.append(f"{c[1]:>3d}/{c[2]:<3d}/{c[0]:<4d}")
     print(f"SPAWN_CHECK y[{-0.30 + 0.05 * gy:+.2f},{-0.25 + 0.05 * gy:+.2f}) " + " ".join(line), flush=True)
+from collections import Counter
+for lbl, sel in (("겹침 y<-0.20", [r for r in ov if r["sy"] < -0.20]), ("겹침 y>=-0.20", [r for r in ov if r["sy"] >= -0.20])):
+    print(f"SPAWN_CHECK {lbl} {len(sel)} · 첫 스텝 내 리셋 {sum(r['early_reset'] for r in sel)} · 최근접 몸체 "
+          + str(Counter(r["near_body"] for r in sel).most_common(5)), flush=True)
 worst = sorted(ov + bt, key=lambda r: (-r["disp_mm"], -abs(r["z_err_mm"])))[:12]
 for r in worst:
     print("SPAWN_CHECK 사례 " + json.dumps({k: (round(v, 3) if isinstance(v, float) else v) for k, v in r.items()},
