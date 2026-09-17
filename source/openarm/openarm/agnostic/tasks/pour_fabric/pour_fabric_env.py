@@ -57,32 +57,6 @@ def _fabric_class(name: str):
     raise RuntimeError(f"Fabrics 클래스 '{name}' 를 찾을 수 없다")
 
 
-class _BodyView:
-    """합친 ContactSensor 에서 body 하나만 잘라 보는 뷰 — SideRig 가 쓰는 `.data.*_w` 규약만 흉내낸다."""
-
-    def __init__(self, sensor, body: str):
-        self._s, self._body, self._i = sensor, body, None
-
-    @property
-    def data(self):
-        return self
-
-    def _idx(self) -> int:
-        if self._i is None:
-            self._i = list(self._s.body_names).index(self._body)
-        return self._i
-
-    @property
-    def force_matrix_w(self):
-        i = self._idx()
-        return self._s.data.force_matrix_w[:, i:i + 1].contiguous()
-
-    @property
-    def net_forces_w(self):
-        i = self._idx()
-        return self._s.data.net_forces_w[:, i:i + 1].contiguous()
-
-
 class PourFabricEnv(DirectRLEnv):
     cfg: PourFabricEnvCfg
 
@@ -307,25 +281,12 @@ class PourFabricEnv(DirectRLEnv):
         for tp in tables:
             bind_physics_material(tp, "/World/Materials/taskSurface")
 
-        # 손가락 마디별 접촉 센서 — **자기 컵만** 필터.
-        # ★09.17 속도: 손 하나당 센서 1개(마디 15 + 손바닥 1 body)로 합치고 body 별 뷰로 읽는다.
-        #   센서 33 → 3 개. 읽는 값(마디별 force_matrix/net_forces)은 동일 — 동작 불변.
+        # 손가락 마디별 접촉 센서 — body 하나당 하나, **자기 컵만** 필터.
         self._sensor_store: dict = {}
         self._palm_store: dict = {}
         for role, prof, flt in (("src", self.pair.source, list(cfg.source_contact_filter)),
                                 ("rcv", self.pair.receiver, list(cfg.receiver_contact_filter))):
             store: dict = {}
-            if bool(cfg.contact_sensor_merged):
-                names = [b for bs in prof.finger_sensor_bodies.values() for b in bs] + [prof.palm_body]
-                hs = ContactSensor(ContactSensorCfg(
-                    prim_path=f"/World/envs/env_.*/Robot/({'|'.join(names)})",
-                    filter_prim_paths_expr=flt, history_length=0, track_air_time=False))
-                self.scene.sensors[f"contact_{role}_hand"] = hs
-                for finger, bodies in prof.finger_sensor_bodies.items():
-                    store[finger] = [_BodyView(hs, b) for b in bodies]
-                self._sensor_store[role] = store
-                self._palm_store[role] = _BodyView(hs, prof.palm_body)
-                continue
             for finger, bodies in prof.finger_sensor_bodies.items():
                 ss = []
                 for body in bodies:

@@ -301,7 +301,6 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
 
     console_log_interval: int = 600
     extras_log_interval: int = 4              # ★09.17 속도: extras 갱신 주기(env 스텝)
-    contact_sensor_merged: bool = True        # ★09.17 속도: 손당 접촉 센서 1개(33→3). False = 구 body 별 센서
 
     # ---- s2r 관측 (09.14) -----------------------------------------------------------
     # 상시(ADR 무관) 관절·FK 노이즈. 실측 근거는 grasp_s2r cfg `obs_noise_*` 주석:
