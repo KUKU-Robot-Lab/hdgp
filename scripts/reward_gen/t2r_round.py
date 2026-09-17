@@ -27,7 +27,7 @@ _HDGP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_HDGP / "scripts" / "tools"))
 from parse_tfevents import load_tfevents   # noqa: E402
 
-ROUND_POLICY = {"ROUND_EPOCHS": 600, "ROUND_HOURS": 4.0, "KEEP_SUCCESS": 0.30, "MAX_ROUNDS": 12}   # 09.16 사용자: 8→12
+ROUND_POLICY = {"ROUND_EPOCHS": 600, "ROUND_HOURS": 4.0, "KEEP_SUCCESS": 0.30, "MAX_ROUNDS": 20}   # 09.17 사용자: 12→20
 SERVER = "server"
 SERVER_LOGDIR = "~/rl_ws/hdgp/log/rl_games/open-short/both/pour-fab"
 LOCAL_MIRROR = _HDGP / "log" / "server_mirror" / "pour-fab"
