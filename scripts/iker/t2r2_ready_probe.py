@@ -88,6 +88,8 @@ class GateRecorder:
         # "방향은 맞는데 옆 신발 옆에 안 붙는다"(사용자 영상 관찰 2026-09-17)를 수치로 가르기 위한 것.
         self.final_gap_xy: list[float] = []
         self.final_kp: list[float] = []
+        self.final_home: list[float] = []
+        self.min_home = torch.full((n,), float("inf"), device=dev)  # closest the palm got to home in the episode
         self._get_rewards, self._log_episode_end = u._get_rewards, u._log_episode_end
         u._get_rewards, u._log_episode_end = self.get_rewards, self.log_episode_end
 
@@ -109,6 +111,7 @@ class GateRecorder:
         self.open_ready_sum += open_frac * ready.float() * live
         self.open_max = torch.maximum(self.open_max, open_frac * live)
         self.stable_max = torch.maximum(self.stable_max, last["stable_count"] * live)
+        self.min_home = torch.where(self.live, torch.minimum(self.min_home, last["palm_home_dist"]), self.min_home)
         return out
 
     def log_episode_end(self, env_ids):
@@ -123,6 +126,7 @@ class GateRecorder:
             other = u._other.data.root_pos_w[first]
             self.final_gap_xy += (shoe[:, :2] - other[:, :2]).norm(dim=-1).cpu().tolist()
             self.final_kp += u._keypoint_distance[first].cpu().tolist()
+            self.final_home += u._t2r_last["palm_home_dist"][first].cpu().tolist()
         self.live[ended] = False
         self._log_episode_end(env_ids)
 
@@ -147,6 +151,9 @@ def _final_vs_other(rec: GateRecorder) -> dict:
         "target_gap_xy_m": round(float(target_gap), 4),
         "final_gap_xy_q10_50_90": _quantiles(rec.final_gap_xy),
         "final_keypoint_dist_q10_50_90": _quantiles(rec.final_kp),
+        "final_palm_home_dist_q10_50_90": _quantiles(rec.final_home),
+        "min_palm_home_dist_q10_50_90": _quantiles(rec.min_home[torch.isfinite(rec.min_home)].cpu().tolist()),
+        "home_radius": float(rec.u.cfg.place.home_radius),
         "episodes": len(rec.final_gap_xy),
     }
 
