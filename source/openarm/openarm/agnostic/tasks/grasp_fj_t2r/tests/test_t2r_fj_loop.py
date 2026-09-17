@@ -419,3 +419,17 @@ def test_rand_track_maps_to_its_own_gym_id_and_log_dir():
     assert not t["sapg"] and t["num_envs"] == 4096 and t["early_stop"] is False
     task = (Path(__file__).resolve().parents[7] / "scripts" / "reward_gen" / "tasks" / "grasp_fj_rand.txt").read_text()
     assert "already set" not in task and "different position on the table in every episode" in task
+
+
+def test_launch_command_resumes_weights_from_a_server_checkpoint():
+    rand = R.TRACKS["grasp_fj_rand"]
+    ck = "/home/oem/rl_ws/hdgp/log/rl_games/x/nn/init.pth"
+    cmd = R.launch_command("fj_rand_i01", "reward_gen/grasp_fj_rand/iter_01", rand["num_envs"], 42,
+                           task=rand["task"], sapg=False, checkpoint=ck)
+    assert f"EXTRA='--checkpoint {ck} env.reward_code_path=" in cmd
+    assert "--checkpoint" not in R.launch_command("fj_rand_i01", "reward_gen/grasp_fj_rand/iter_01",
+                                                  rand["num_envs"], 42, task=rand["task"], sapg=False)
+    for bad in ("relative/init.pth", "/a b.pth", "/a';rm.pth"):
+        with pytest.raises(ValueError):
+            R.launch_command("x", "reward_gen/grasp_fj_rand/iter_01", rand["num_envs"], 42,
+                             task=rand["task"], sapg=False, checkpoint=bad)

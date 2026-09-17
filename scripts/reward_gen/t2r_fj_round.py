@@ -316,12 +316,15 @@ def judge(summary: dict, st: dict, hours: float | None, policy: dict = ROUND_POL
 
 
 def launch_command(label: str, rel_iter: str, num_envs: int, seed: int,
-                   task: str = TRACKS["grasp_fj_envelope"]["task"], sapg: bool = True) -> str:
+                   task: str = TRACKS["grasp_fj_envelope"]["task"], sapg: bool = True,
+                   checkpoint: str | None = None) -> str:
     """서버에서 run_fj.sh 를 백그라운드로 띄우는 한 줄.
 
     ★i1/i2·i00 과 같은 런처. `SERVER=1` 이 없으면 서버의 ../IsaacLab 으로 가서 conda 를 안 탄다.
     ★백그라운드 detach 는 `nohup bash <파일> > log 2>&1 < /dev/null &` 만 된다(서버 conda 함정).
     ★SAPG 가 아니면 블록 인자를 넘기지 않는다 — PPO-LSTM 설정에는 `expl_coef_block_size` 키가 없다.
+    ★checkpoint(서버 절대 경로)를 주면 train.py `--checkpoint` 로 가중치만 이어 받는다 — epoch 은 0 부터(train.py 기본
+      reset_epoch), 판정 창·체크포인트 epoch 이 새 라운드 기준 그대로 맞는다(09.17 사용자 "체크포인트로 시작").
     """
     code = f"{SERVER_HDGP}/{rel_iter}/compute_reward.py"
     if sapg:
@@ -335,6 +338,10 @@ def launch_command(label: str, rel_iter: str, num_envs: int, seed: int,
             raise ValueError(f"num_envs {num_envs} × horizon 16 이 PPO 미니배치 16,384 로 안 나뉜다({PPO_ENV_MULTIPLE} 의 배수)")
         algo = ""
         extra = f"env.reward_code_path={code}"
+    if checkpoint:
+        if not checkpoint.startswith("/") or any(c in checkpoint for c in " '\"$;&|`"):
+            raise ValueError(f"checkpoint 는 공백·따옴표 없는 서버 절대 경로여야 한다: {checkpoint!r}")
+        extra = f"--checkpoint {checkpoint} {extra}"
     return (f"mkdir -p {SERVER_CONSOLE} && cd {SERVER_HDGP} && TASK={task} RUN={label} GPU={GPU} "
             f"ENVS={num_envs} {algo}SEED={seed} SERVER=1 NOTE='t2r {rel_iter}' "
             f"EXTRA='{extra}' "
@@ -508,7 +515,8 @@ def cmd_launch(a) -> int:
     v = json.loads((it / "validation.json").read_text())
     if not v.get("ok"):
         raise SystemExit(f"[round_fj] validation FAIL — 기동 안 함: {v.get('errors')}")
-    cmd = launch_command(a.label, rel, num_envs, a.seed, task=t["task"], sapg=t["sapg"])   # env 수 검증을 먼저
+    cmd = launch_command(a.label, rel, num_envs, a.seed, task=t["task"], sapg=t["sapg"],
+                         checkpoint=a.checkpoint)   # env 수·경로 검증을 먼저
     _git("fetch", "-q", "origin")
     if subprocess.run(["git", "-C", str(_HDGP), "merge-base", "--is-ancestor", "HEAD", "origin/main"]).returncode:
         raise SystemExit("[round_fj] 로컬 HEAD 가 origin/main 에 없다 — 먼저 git push origin main")
@@ -523,6 +531,8 @@ def cmd_launch(a) -> int:
     if srv[-1:] != [target]:
         raise SystemExit(f"[round_fj] 서버 HEAD {srv[-1:]} ≠ origin/main {target}")
 
+    if a.checkpoint and _ssh(f"test -f {a.checkpoint} && echo OK").strip() != "OK":
+        raise SystemExit(f"[round_fj] 서버에 체크포인트가 없다: {a.checkpoint}")
     procs = parse_procs(_ssh(procs_cmd()))
     if any(lab == a.label for _, lab, _ in procs):
         raise SystemExit(f"[round_fj] {a.label} 가 이미 돌고 있다 — 중복 기동 금지")
@@ -560,7 +570,7 @@ def cmd_launch(a) -> int:
         raise SystemExit(f"[round_fj] 90초 안에 {a.label} 프로세스가 안 보인다 — {SERVER_CONSOLE}/{a.label}.out 확인")
     launch = {"track": a.track, "label": a.label, "task": t["task"], "sapg": t["sapg"], "num_envs": num_envs,
               "started": time.time(), "commit": target, "gpu": int(GPU), "pid": pid,
-              "console": f"{SERVER_CONSOLE}/{a.label}.out", "killed": sorted(gone)}
+              "console": f"{SERVER_CONSOLE}/{a.label}.out", "killed": sorted(gone), "checkpoint": a.checkpoint}
     (it / "launch.json").write_text(json.dumps(launch, indent=1, ensure_ascii=False), encoding="utf-8")
     print(json.dumps(launch, ensure_ascii=False))
     return 0
@@ -594,6 +604,7 @@ def main(argv=None) -> int:
     la.add_argument("--kill-label", default=None)
     la.add_argument("--num-envs", type=int, default=None, help="기본: 트랙 설정(reach 4096 PPO · envelope 12,288 SAPG)")
     la.add_argument("--seed", type=int, default=42)
+    la.add_argument("--checkpoint", default=None, help="(선택) 서버 절대 경로 .pth — 가중치만 이어 받고 epoch 은 0 부터")
     la.set_defaults(fn=cmd_launch)
     for sp in (s, v, vd, la):
         sp.add_argument("--track", default="grasp_fj_envelope", choices=sorted(TRACKS))
