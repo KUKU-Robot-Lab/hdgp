@@ -1,0 +1,99 @@
+{
+ "ok": true,
+ "errors": [],
+ "warnings": [
+  "보상 크기가 크다(|max| 2878.8) — 스케일 확인"
+ ],
+ "term_stats": {
+  "align": {
+   "mean": 0.30106996496518457,
+   "abs_max": 1.4706382751464844
+  },
+  "precision": {
+   "mean": 0.00023151875529947574,
+   "abs_max": 0.025582456961274147
+  },
+  "seat": {
+   "mean": 0.006951567716896534,
+   "abs_max": 0.3653275966644287
+  },
+  "release": {
+   "mean": 0.1139039968450864,
+   "abs_max": 0.7839930057525635
+  },
+  "handsfree": {
+   "mean": 0.012921541866186695,
+   "abs_max": 0.5950795412063599
+  },
+  "withdraw": {
+   "mean": 0.0824834331870079,
+   "abs_max": 0.4000000059604645
+  },
+  "settle": {
+   "mean": 0.0,
+   "abs_max": 0.0
+  },
+  "home_return": {
+   "mean": 0.006991963212688764,
+   "abs_max": 0.43501847982406616
+  },
+  "home_hold": {
+   "mean": 0.11711711312333742,
+   "abs_max": 1.0
+  },
+  "gates": {
+   "mean": 0.33693696061770123,
+   "abs_max": 1.0
+  },
+  "stability": {
+   "mean": 1.7098738749821982,
+   "abs_max": 3.0
+  },
+  "success": {
+   "mean": 102.86083475748698,
+   "abs_max": 2876.42724609375
+  },
+  "fall_penalty": {
+   "mean": -0.3510205050309499,
+   "abs_max": 1.4541029930114746
+  },
+  "action_reg": {
+   "mean": -0.05917811393737793,
+   "abs_max": 0.12806840240955353
+  }
+ },
+ "total_stats": {
+  "mean": 105.13912296295166,
+  "abs_max": 2878.760009765625
+ },
+ "fields_used": [
+  "actions",
+  "arm_qd",
+  "episode_progress",
+  "episode_steps",
+  "grip_norm",
+  "home",
+  "home_radius",
+  "keypoint_dist",
+  "keypoint_err",
+  "palm_home_dist",
+  "palm_shoe_dist",
+  "place_tolerance",
+  "placed",
+  "prev_actions",
+  "rack_top_z",
+  "release_radius",
+  "released",
+  "resting",
+  "resting_tol",
+  "shoe_ang_vel",
+  "shoe_bottom_z",
+  "shoe_lin_vel",
+  "stable_count",
+  "stable_steps",
+  "still",
+  "still_speed",
+  "success",
+  "table_top_z"
+ ]
+}
