@@ -9,7 +9,7 @@
 import gymnasium as gym
 
 from ...grasp_fj.config import agents
-from ..grasp_fj_t2r_env_cfg import GraspFJT2RReachEnvCfg, GraspFJT2RRightShortEnvCfg
+from ..grasp_fj_t2r_env_cfg import GraspFJT2RRandEnvCfg, GraspFJT2RReachEnvCfg, GraspFJT2RRightShortEnvCfg
 
 _ENTRY = "openarm.agnostic.tasks.grasp_fj_t2r.grasp_fj_t2r_env:GraspFJT2REnv"
 
@@ -29,6 +29,8 @@ def _play(cls):
 _CFGS = {
     ("short_r", "grasp_fj_t2r"): GraspFJT2RRightShortEnvCfg,
     ("short_r", "grasp_fj_t2r_reach"): GraspFJT2RReachEnvCfg,
+    # ★09.17 컵 소환 위치 랜덤화(x 0.10–0.40 · y −0.30–0.00) · 가까운 출발 끔 → .../grasp-fj-t2r-rand/<label>/
+    ("short_r", "grasp_fj_t2r_rand"): GraspFJT2RRandEnvCfg,
 }
 
 SKIPPED: dict[str, str] = {}

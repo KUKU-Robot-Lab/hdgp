@@ -183,3 +183,16 @@ def test_reach_variant_facts_match_the_registered_leaf_cfg():
     assert f"k_arm: float = {f.k_arm}" in reach and f"arm_slew_rad_s: float = {f.arm_slew}" in reach
     assert f"episode_length_s: float = {f.episode_s}" in reach
     assert f.episode_steps == round(f.episode_s * 60)
+
+
+def test_rand_variant_facts_match_the_rand_leaf():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "grasp_fj_t2r_env_cfg.py").read_text(encoding="utf-8")
+    reach = src.split("class GraspFJT2RReachEnvCfg", 1)[1]
+    f = P.VARIANTS["rand"]
+    # rand leaf 는 reach 를 상속하고 팔 속도·에피소드를 바꾸지 않는다
+    assert f"k_arm: float = {f.k_arm}" in reach and f"arm_slew_rad_s: float = {f.arm_slew}" in reach
+    assert f"episode_length_s: float = {f.episode_s}" in reach and f.episode_steps == round(f.episode_s * 60)
+    for tok in ("x between 0.10 m and 0.40 m", "y between -0.30 m and 0.00 m", "approach_done is never set"):
+        assert tok in f.scene, tok
+    assert "probability" not in f.scene, "rand 판에는 두 번째 출발이 없다"

@@ -1,0 +1,23 @@
+{
+ "track": "grasp_fj_rand",
+ "iter": 0,
+ "label": "fj_rand_i00",
+ "label_prefix": "fj_rand_i",
+ "round": 1,
+ "status": "preparing",
+ "awaiting": null,
+ "best": null,
+ "success_ticks": 0,
+ "started": null,
+ "pid": null,
+ "commit": null,
+ "algo": {
+  "from_iter_00": "PPO-LSTM 4096 (open-short_r_grasp_fj_t2r_rand-lstm)"
+ },
+ "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY + TRACKS.grasp_fj_rand.early_stop False",
+ "env_frozen_from": "09.17 rand leaf GraspFJT2RRandEnvCfg — spawn_range 0.15 · object_spawn_center_override (0.25, -0.15) · near_start_frac 0 · start_palm_dist_band_m (0.25, 0.38). reach leaf 의 나머지(시작 자세·팔 속도·15 s·cup_family·관통 5 mm·감쌈 0.15/0.35)는 상속.",
+ "history": [
+  "i00: 사용자 결정(09.17) — grasp_fj_stage iter_08 보상을 바이트 그대로 시드(생성 아님). ingest PASS. env 변경은 컵 소환 랜덤화와 가까운 출발 끔뿐. 사전 검증: 상판 x 0.07–0.47 · y ±0.45(env_v1 collision 메시) · URDF IK 98점 중 시작 방향 도달 70 · ±41° 이내 도달 27 · 불가 1(cup_big_s130 @ 0.10, −0.25). i08 원 트랙(±2 cm, 가까운 출발 25 %) 대비 비교는 env 가 달라 1:1 불가."
+ ],
+ "note": "09.17 사용자: s2r 에서 컵 위치를 랜덤하게 둘 것 — 알아서 찾아가 파지하는 정책. 3단계(기본 자세 접근 → 인벨롭 파지 → 리프트)는 유지. far/near 그룹 로그는 near 가 항상 비어 있다."
+}

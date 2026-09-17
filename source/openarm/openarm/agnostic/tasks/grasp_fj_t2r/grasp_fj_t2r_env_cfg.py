@@ -94,3 +94,27 @@ class GraspFJT2RReachEnvCfg(GraspFJT2RRightShortEnvCfg):
     #:   3.6배 추월). 래칫은 `prev_episode_successes ≥ 2.0` 로 오르는데 그 2.0 을 가까운 출발 성공(0.87~0.94)이 혼자
     #:   채우므로 멈추지 않는다. 승급 조건·간격·배율은 그대로 두고 **도달 가능한 범위에서 멈추도록 상한만** 내린다.
     grasp_wrap_max: float = 0.35
+
+
+@configclass
+class GraspFJT2RRandEnvCfg(GraspFJT2RReachEnvCfg):
+    """★09.17 사용자 "s2r 에서 컵 위치를 랜덤하게 둘 거라 알아서 찾아가 파지하는 정책" — 컵 소환 위치 랜덤화판(트랙 `grasp_fj_rand`).
+
+    reach 판과 다른 것 셋 — 전부 사용자 결정(09.17):
+      · 컵 소환 = x 0.10–0.40 · y −0.30–0.00 균등(env-local). 부모 스폰은 프로필 중심 ± `spawn_range` 정사각형이라
+        중심을 (0.25, −0.15) 로 옮기고 반범위 0.15. 중심은 프로필이 아니라 이 cfg 가 갖는다(같은 자산에 프로필을 더 등록하면
+        gym 슬롯이 겹친다) — env `__init__` 이 부팅 **뒤** 런타임 프로필 사본에만 적용하므로 부팅 검사·목표 박스
+        (프로필 중심 (0.362, −0.16) ± 0.08)는 reach 판과 같다. 즉 컵은 넓게 흩어지고 목표는 그대로다.
+        상판 x 0.07–0.47 · y ±0.45(env_v1 collision 메시 실측)라 범위 전체가 상판 위다.
+        도달성(short-tl URDF 6D DLS IK, palm_ee 를 C자 완료 자리 = 컵 −x·−y 옆에 둔다, 최소·최대 컵): 7×7 격자 98점 중
+        시작 방향 그대로 도달 70 · 손 방향 ±41° 이내(접근 조건 cos ≥ 0.7)로 도달 27 · 불가 1(cup_big_s130 @ x 0.10, y −0.25).
+      · 가까운 출발 끔 — IK 자세 표가 컵 ±2 cm 가정이라 넓은 소환과 맞지 않는다. 모든 에피소드가 먼 출발이다.
+      · 시작 거리 가드 대역 — 리셋 직후 손바닥→컵 거리 env 평균의 분포가 바뀐다(균등 소환 20만 표본: env별 0.153–0.494 m,
+        64 env 평균 0.276–0.345 m). reach 판 (0.30, 0.46) 이면 평균이 하한 밖으로 나가 부팅이 죽을 수 있어 (0.25, 0.38).
+    """
+
+    near_start_frac: float = 0.0
+    spawn_range: float = 0.15
+    #: env-local (x, y). 빈 튜플이면 프로필 중심 그대로(다른 판은 이 필드가 없다).
+    object_spawn_center_override: tuple = (0.25, -0.15)
+    start_palm_dist_band_m: tuple = (0.25, 0.38)

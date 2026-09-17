@@ -88,6 +88,11 @@ TRACKS: dict[str, dict] = {
     "grasp_fj_stage": {"task": "open-short_r_grasp_fj_t2r_reach-lstm",
                        "play": "open-short_r_grasp_fj_t2r_reach-play-lstm", "logdir": "grasp-fj-t2r-reach",
                        "sapg": False, "num_envs": 4096, "video_length": 900, "early_stop": False},
+    #   ★09.17 사용자 "컵 위치 랜덤(x 0.10–0.40 · y −0.30–0.00) · 가까운 출발 끔 · 보상 i08 로 iter_00 부터 재시작 — 여기까지는
+    #   기본 보상 골자를 만든 실험". 새 env(rand leaf)·새 이력. 라벨 fj_rand_iNN. 판정 규약은 grasp_fj_stage 와 같다.
+    "grasp_fj_rand": {"task": "open-short_r_grasp_fj_t2r_rand-lstm",
+                      "play": "open-short_r_grasp_fj_t2r_rand-play-lstm", "logdir": "grasp-fj-t2r-rand",
+                      "sapg": False, "num_envs": 4096, "video_length": 900, "early_stop": False},
 }
 SUCCESS_TAG = "ctrl/prev_ep_successes_mean"
 KEY_TAGS = (SUCCESS_TAG, "task/successes_mean", "task/lifted_frac", "task/tol", "task/tilt_deg",

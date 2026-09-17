@@ -82,6 +82,23 @@ VARIANTS: dict[str, EnvFacts] = {
                "of the graspable band (the cup position still varies by up to 2 cm). Such an episode starts with "
                "approach_done already set, as if the approach had just been completed."),
         k_arm=0.05, arm_slew=0.3, episode_steps=900, episode_s=15.0),
+    # grasp_fj_t2r_rand(09.17 사용자 "컵 위치 랜덤 · 가까운 출발 끔") — 시작 자세·팔 속도·에피소드는 reach 와 같다.
+    #   소환 x 0.10–0.40 · y −0.30–0.00 균등(rand leaf) · 리셋 직후 손바닥→컵 0.153–0.494 m(평균 0.314, 균등 20만 표본) ·
+    #   먼 모서리(y≈−0.30 · x≈0.40)는 URDF IK 로 손 방향을 최대 ~41° 돌려야 컵 −y 옆에 선다.
+    "rand": EnvFacts(
+        scene=("+x points from the robot toward the table. Every episode starts with the arm raised beside the "
+               "robot: the palm is just outside the table edge nearest the robot, about 0.25 m above the table "
+               "top, turned sideways, with the fingers pointing forward over the table edge. A cup stands upright on "
+               "the table at a position drawn uniformly at random for every episode, with x between 0.10 m and "
+               "0.40 m and y between -0.30 m and 0.00 m, so at the start the palm is anywhere from about 0.15 m to "
+               "0.49 m from the cup (0.31 m on average) and the hand has to go to wherever the cup is; ctx.cup_pos "
+               "gives its position. Near the far corners of that region (y close to -0.30 m, or x close to 0.40 m) "
+               "the arm may need the hand turned by up to about 40 degrees from its start orientation to reach the "
+               "cup's -y side. Parallel environments use different cups (open cups of several sizes and a closed "
+               "shaker), so the graspable radius (44 mm to 81 mm) and half height (42 mm to 65 mm) differ between "
+               "environments and are given per environment. There is only this one start pose: approach_done is "
+               "never set when an episode starts."),
+        k_arm=0.05, arm_slew=0.3, episode_steps=900, episode_s=15.0),
 }
 
 

@@ -410,3 +410,12 @@ def test_gate_checkpoints_stop_a_run_that_skips_the_intended_stages():
     assert R.judge(none_yet, {**ALIVE, "epoch": 600}, 0.7, pol)[0] == "stop(checkpoint:approach)"
     # 크래시·죽은 런 판정이 먼저다
     assert R.judge(no_approach, {"alive": False, "crashed": True, "epoch": 700}, 0.8, pol)[0] == "crashed"
+
+
+def test_rand_track_maps_to_its_own_gym_id_and_log_dir():
+    t = R.track("grasp_fj_rand")
+    assert t["task"] == "open-short_r_grasp_fj_t2r_rand-lstm" and t["play"] == "open-short_r_grasp_fj_t2r_rand-play-lstm"
+    assert t["logdir"] == "grasp-fj-t2r-rand" and t["server_logdir"].endswith("/open-short/right/grasp-fj-t2r-rand")
+    assert not t["sapg"] and t["num_envs"] == 4096 and t["early_stop"] is False
+    task = (Path(__file__).resolve().parents[7] / "scripts" / "reward_gen" / "tasks" / "grasp_fj_rand.txt").read_text()
+    assert "already set" not in task and "different position on the table in every episode" in task

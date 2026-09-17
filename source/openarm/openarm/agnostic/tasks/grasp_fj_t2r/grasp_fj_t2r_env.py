@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import torch
@@ -56,6 +57,17 @@ class GraspFJT2REnv(GraspFJEnv):
     def __init__(self, cfg: GraspFJT2RRightShortEnvCfg, render_mode: str | None = None, **kw):
         self._reward_fn, self._reward_src = load_reward_fn(cfg.reward_code_path)
         super().__init__(cfg, render_mode, **kw)
+        # ★09.17 사용자 "컵 위치 랜덤" — rand leaf 만 가진 필드. 부모 부팅 검사(목표 박스·케이지 거리)가 끝난 **뒤** 런타임 프로필
+        #   사본의 스폰 중심만 바꾼다. 부모가 중심을 읽는 런타임 경로는 리셋 스폰(fj_core_env `_reset_idx`)과 꺼져 있는
+        #   `respawn_on_fail` 뿐이다. 첫 리셋은 `env.reset()` 에서 일어나므로 모든 에피소드가 새 중심을 쓴다.
+        _ctr = tuple(getattr(self.cfg, "object_spawn_center_override", ()))
+        if _ctr:
+            if len(_ctr) != 2:
+                raise RuntimeError(f"[grasp_fj_t2r] object_spawn_center_override 는 (x, y) — got {_ctr}")
+            self.profile = dataclasses.replace(self.profile, object_spawn_center=(float(_ctr[0]), float(_ctr[1])))
+            _r = float(self._adr_spawn_range)
+            print(f"[grasp_fj_t2r] 컵 소환 중심 ({_ctr[0]:.3f}, {_ctr[1]:.3f}) ± {_r:.3f} → "
+                  f"x [{_ctr[0] - _r:.2f}, {_ctr[0] + _r:.2f}] · y [{_ctr[1] - _r:.2f}, {_ctr[1] + _r:.2f}]", flush=True)
         self._t2r_prev_actions = torch.zeros(self.num_envs, int(self.cfg.action_space), device=self.device)
         self._t2r_ctx = None
         # 성공 순간 접촉 이벤트 EMA — [손가락 수 · 마디 수 · 손바닥] 과 손가락별. 음수 = 아직 성공 없음(센티널).

@@ -235,3 +235,25 @@ def test_registration_reuses_track_b_agents_with_the_t2r_entry():
     assert "openarm.agnostic.tasks.grasp_fj_t2r.grasp_fj_t2r_env:GraspFJT2REnv" in _REG
     assert "from ...grasp_fj.config import agents" in _REG
     assert "_grasp_fj_t2r" in _REG and "-play-lstm-sapg" in _REG
+
+
+def test_rand_leaf_carries_the_user_decisions_of_0917():
+    # ★사용자 결정(09.17): 컵 소환 x 0.10–0.40 · y −0.30–0.00 · 가까운 출발 끔. reach 판은 그대로 둔다(i00~i09 재현).
+    assert "class GraspFJT2RRandEnvCfg(GraspFJT2RReachEnvCfg)" in _CFG
+    blk = _CFG.split("class GraspFJT2RRandEnvCfg", 1)[1]
+    for tok in ("near_start_frac: float = 0.0", "spawn_range: float = 0.15",
+                "object_spawn_center_override: tuple = (0.25, -0.15)", "start_palm_dist_band_m: tuple = (0.25, 0.38)"):
+        assert tok in blk, tok
+    cx, cy, r = 0.25, -0.15, 0.15
+    assert (round(cx - r, 3), round(cx + r, 3), round(cy - r, 3), round(cy + r, 3)) == (0.10, 0.40, -0.30, 0.00)
+    reach = _CFG.split("class GraspFJT2RReachEnvCfg", 1)[1].split("class GraspFJT2RRandEnvCfg", 1)[0]
+    assert "near_start_frac: float = 0.25" in reach and "object_spawn_center_override" not in reach
+    assert "spawn_range" not in reach, "reach 판 소환 범위는 부모 기본(0.02) 그대로여야 한다"
+    assert '("short_r", "grasp_fj_t2r_rand"): GraspFJT2RRandEnvCfg' in _REG
+
+
+def test_spawn_center_override_is_applied_after_parent_boot_to_the_runtime_profile_only():
+    init = _fn_block(_ENV, "__init__")
+    _ordered(init, ["super().__init__(cfg, render_mode, **kw)",
+                    'getattr(self.cfg, "object_spawn_center_override", ())',
+                    "self.profile = dataclasses.replace(self.profile, object_spawn_center="])
