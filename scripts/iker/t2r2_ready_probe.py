@@ -37,6 +37,8 @@ parser.add_argument("--num-envs", type=int, default=512)
 parser.add_argument("--seed", type=int, default=7)
 parser.add_argument("--no-noise", action="store_true", help="학습용 관측/액션 노이즈를 끈다")
 parser.add_argument("--out", required=True, help="요약 JSON")
+parser.add_argument("--adjust-bank", default="", help="adjust_bank.pt (목표 밖 시작 상태)")
+parser.add_argument("--adjust-frac", type=float, default=0.0, help="그 상태에서 시작하는 에피소드 비율")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 sys.argv = [sys.argv[0]]
@@ -219,7 +221,7 @@ def summarize(rec: GateRecorder) -> dict:
     return {
         "checkpoint": str(Path(args.checkpoint).resolve()),
         "reward_code_path": str(Path(args.reward_code_path).resolve()),
-        "num_envs": rec.u.num_envs, "noise": not args.no_noise,
+        "num_envs": rec.u.num_envs, "noise": not args.no_noise, "adjust_frac": args.adjust_frac,
         "episode_steps_mean": round(float(rec.steps.mean()), 2),
         "step_rate": {key: rate(key) for key in GateRecorder.KEYS},
         "ever_true_env_frac": {key: any_env(key) for key in GateRecorder.KEYS},
@@ -256,6 +258,8 @@ def make_env():
     cfg.seed = args.seed
     cfg.add_noise = not args.no_noise
     cfg.reward_code_path = str(Path(args.reward_code_path).resolve())
+    cfg.adjust_bank_path = str(Path(args.adjust_bank).resolve()) if args.adjust_bank else ""
+    cfg.adjust_start_frac = args.adjust_frac
     return gym.make(TASK, cfg=cfg)
 
 

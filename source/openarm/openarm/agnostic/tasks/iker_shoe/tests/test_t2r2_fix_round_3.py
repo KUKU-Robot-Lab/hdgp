@@ -86,6 +86,7 @@ def test_the_parents_fresh_iker_value_survives_the_merge_across_two_consecutive_
     fake_cls = _build_fake_t2r_env_class(_FakeParentSeries)
     obj = fake_cls()
     obj.extras = {}
+    obj._adjust_bank = None  # adjust starts off (2026-09-17)
     obj._values = iter([0.28, 0.14])
     obj._t2r_last = {"palm_pos": torch.zeros(2, 3)}
     obj._palm_start = torch.zeros(2, 3)

@@ -42,6 +42,7 @@ def test_log_episode_end_merges_t2r_and_place_keys_back_after_the_parents_full_r
     fake_t2r_cls = _build_fake_t2r_env_class()
     obj = fake_t2r_cls()
     obj.extras = {}
+    obj._adjust_bank = None  # adjust starts off (2026-09-17)
     obj._t2r_log = {"t2r_reward/total": 1.23, "t2r_reward/near": 0.9, "place/placed": 0.5, "place/retreated": 0.0}
 
     obj._log_episode_end(env_ids=None)  # simulates the reset-step call from _reset_idx
@@ -58,6 +59,7 @@ def test_log_episode_end_does_not_crash_before_the_first_get_rewards():
     fake_t2r_cls = _build_fake_t2r_env_class()
     obj = fake_t2r_cls()
     obj.extras = {}
+    obj._adjust_bank = None  # adjust starts off (2026-09-17)
     obj._t2r_log = None
 
     obj._log_episode_end(env_ids=None)

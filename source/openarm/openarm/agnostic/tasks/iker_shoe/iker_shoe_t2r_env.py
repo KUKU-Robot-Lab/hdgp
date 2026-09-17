@@ -38,8 +38,9 @@ import torch
 from isaaclab.utils.math import quat_apply, sample_uniform, subtract_frame_transforms
 
 from openarm.agnostic.modules.iker import run_files
-from openarm.agnostic.modules.iker.reward import NUM_KEYPOINTS
+from openarm.agnostic.modules.iker.reward import NUM_KEYPOINTS, transform_keypoints
 
+from . import adjust_bank as ab
 from . import grasp_stage as gs
 from . import layout, robot
 from . import place_stage as ps
@@ -108,11 +109,17 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         self._retract_k = torch.zeros(n, dtype=torch.long, device=dev)
         self._retract_q0 = torch.zeros(n, self._home_arm_q.numel(), device=dev)
         self._arm_ids_t = torch.tensor(self._arm_ids, device=dev)  # parent's find_joints gives a list; advanced indexing needs a tensor
+        self._adjust_bank = (ab.load_bank(cfg.adjust_bank_path, joint_names, dev)
+                             if cfg.adjust_bank_path and cfg.adjust_start_frac > 0.0 else None)
+        self._adjust_start = torch.zeros(n, dtype=torch.bool, device=dev)  # this episode began from the adjust bank
 
         digest = hashlib.sha256(Path(cfg.reward_code_path).read_bytes()).hexdigest() if cfg.reward_code_path else "none"
         home = ", ".join(f"{v:.3f}" for v in self._home_palm_pos.tolist())
         print(f"[iker_t2r] reward {self._reward_origin} sha256 {digest} · hand joints {len(self._hand_ids)} · "
               f"observations 39 (38 + grip) · action 7 (6 palm + 1 grip) · home palm ({home})", flush=True)
+        if self._adjust_bank is not None:
+            print(f"[iker_t2r] adjust starts {cfg.adjust_start_frac:.2f} from {self._adjust_bank.size} states "
+                  f"({cfg.adjust_bank_path})", flush=True)
 
     # --------------------------------------------------------------- action
 
@@ -313,6 +320,14 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         super()._log_episode_end(env_ids)
         if self._t2r_log is not None:
             self.extras.setdefault("log", {}).update(self._t2r_log)
+        if self._adjust_bank is not None:
+            # the parent's iker/sustained_success mixes both start kinds; split it so each can be read on its own
+            finished = env_ids[self.episode_length_buf[env_ids] > 0]
+            won = self._success_count[finished] > self.cfg.reward.sustain_steps
+            adjust = self._adjust_start[finished]
+            for name, group in (("adjust", adjust), ("grasp", ~adjust)):
+                if bool(group.any()):
+                    self.extras.setdefault("log", {})[f"place/success_{name}_start"] = won[group].float().mean().item()
 
     # ----------------------------------------------------------------- reset
 
@@ -329,4 +344,27 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         # fix round 1 (finding 3): the parent's bank restore above already wrote the new joint state via
         # write_joint_state_to_sim, so body_pos_w already reflects it (same idiom eval_iker.py's FirstEpisodeRecorder
         # uses right after reset_player, no extra physics step needed).
+        self._adjust_start[env_ids] = False
+        if self._adjust_bank is not None:
+            # overwrite a fraction of the fresh grasp-bank starts with a harvested off-target state
+            ids = env_ids[ab.start_mask(len(env_ids), self.cfg.adjust_start_frac, self.device)]
+            if len(ids):
+                bank = self._adjust_bank
+                pick = torch.randint(0, bank.size, (len(ids),), device=self.device)
+                origins = self.scene.env_origins[ids]
+                joint_pos, joint_target = bank.joint_pos[pick], bank.joint_target[pick]
+                self._robot.write_joint_state_to_sim(joint_pos, torch.zeros_like(joint_pos), env_ids=ids)
+                self._robot.set_joint_position_target(joint_target, env_ids=ids)
+                self._joint_targets[ids] = joint_target
+                zero_velocity = torch.zeros(len(ids), 6, device=self.device)
+                for asset, pose in ((self._shoe, bank.shoe_pose[pick]), (self._other, bank.other_pose[pick])):
+                    world = pose.clone()
+                    world[:, :3] += origins
+                    asset.write_root_pose_to_sim(world, env_ids=ids)
+                    asset.write_root_velocity_to_sim(zero_velocity, env_ids=ids)
+                shoe = bank.shoe_pose[pick]
+                self._init_keypoints[ids] = transform_keypoints(shoe[:, :3], shoe[:, 3:], self._offsets)
+                self._grip_targets[ids] = joint_target[:, self._hand_ids]
+                self._grip_scalar[ids] = bank.grip_scalar[pick]
+                self._adjust_start[ids] = True
         self._palm_start[env_ids] = self._robot.data.body_pos_w[env_ids, self._palm] - self.scene.env_origins[env_ids]
