@@ -31,6 +31,15 @@ parser.add_argument("--lift_m", type=float, default=0.10)
 parser.add_argument("--lift_ok", type=float, default=0.08)
 parser.add_argument("--tilt_ok", type=float, default=20.0)
 parser.add_argument("--close_steps", type=int, default=220)
+parser.add_argument("--v_max", type=float, default=0.10,
+                    help="포켓 목표 이동 속도 상한 [m/s]. 0 이면 무제한(09.17 cup_trace: 무제한은 ~1.3 m/s 로 날아가 u=10 에 손가락이 컵을 친다)")
+parser.add_argument("--ref", default="rest", choices=["rest", "live"],
+                    help="파지점 기준 컵 위치. rest=정지 위치 고정, live=매 스텝 현재 위치(넘어진 컵을 쫓아간다)")
+parser.add_argument("--above_steps", type=int, default=200)
+parser.add_argument("--down_steps", type=int, default=90)
+parser.add_argument("--enter_steps", type=int, default=110)
+parser.add_argument("--pre_tilt_deg", type=float, default=5.0, help="오므리기 전 컵 교란 판정: 기울기 [deg]")
+parser.add_argument("--pre_shift_m", type=float, default=0.010, help="오므리기 전 컵 교란 판정: 수평 밀림 [m]")
 parser.add_argument("--table_obstacle", type=int, default=1)
 parser.add_argument("--out_json", default="")
 AppLauncher.add_app_launcher_args(parser)
@@ -128,15 +137,14 @@ def run_trial(side: str, freeze_thr: float) -> list[dict]:
     def scaled(v, lo, hi):
         return torch.where(v >= 0, (v / hi).clamp(max=1.0), -(v / lo).clamp(max=1.0))
 
-    def servo(goal_pocket, hand_cmd, extra_z=0.0):
+    def servo(goal_pocket, hand_cmd, rot_k=1.0):
         pocket, _ = hand_frame()
         tgt = rig.palm_pos() + (goal_pocket - pocket)
-        tgt[:, 2] += extra_z
         d = tgt - rig.anchor_env[:, :3]
         a = torch.zeros(N, A, device=dev)
         for k in range(3):
             a[:, SI * HALF + k] = scaled(d[:, k], float(rig.delta_lo[k]), float(rig.delta_hi[k]))
-            r = torch.deg2rad(p_rot[:, k])
+            r = torch.deg2rad(p_rot[:, k]) * rot_k
             a[:, SI * HALF + 3 + k] = scaled(r, float(rig.delta_lo[3 + k]), float(rig.delta_hi[3 + k]))
         a[:, SI * HALF + 6:(SI + 1) * HALF] = hand_cmd
         return a
@@ -149,38 +157,76 @@ def run_trial(side: str, freeze_thr: float) -> list[dict]:
         env.step(torch.zeros(N, A, device=dev))
         state["step"] += 1
     rest = cup_local().clone()
-    plan = [("above", 90), ("down", 70), ("enter", 110), ("close", args.close_steps), ("lift", 100), ("hold", 90)]
-    t_enter = state["step"] + 160
+    # 09.17 cup_trace: 목표를 한 번에 멀리 주면 손이 ~1.3 m/s 로 날아가 u=10 에 손가락이 컵을 친다(오므리기 전에 컵이 넘어짐).
+    # 그래서 (1) 포켓 목표를 v_max 로 속도 제한해 흘리고 (2) 파지점 기준을 정지 위치로 고정한다(넘어진 컵을 쫓지 않게).
+    step_dt = float(env.cfg.sim.dt) * int(env.cfg.decimation)
+    max_step = args.v_max * step_dt if args.v_max > 0 else float("inf")
+    plan = [("above", args.above_steps), ("down", args.down_steps), ("enter", args.enter_steps),
+            ("close", args.close_steps), ("lift", 100), ("hold", 90)]
+    n_total = hold + sum(k for _, k in plan)
+    if n_total >= int(env.max_episode_length):
+        raise SystemExit(f"대본 {n_total} 스텝 >= 에피소드 {int(env.max_episode_length)} 스텝 - time_out 리셋이 끼어든다")
+    t_enter = state["step"] + args.above_steps + args.down_steps
+    g_cmd = hand_frame()[0].clone()
+    pre_step = torch.full((N,), -1, device=dev, dtype=torch.long)
+    pre_phase = torch.full((N,), -1, device=dev, dtype=torch.long)
+    pre_finger = torch.zeros(N, device=dev)
+    pre_palm = torch.zeros(N, device=dev)
+    pre_speed = torch.zeros(N, device=dev)
+    phase_end = {}
     grasp_sum = torch.zeros(N, device=dev)
     grasp_n = 0
     tilt_max = torch.zeros(N, device=dev)
     lift_min_hold = torch.full((N,), 1e9, device=dev)
     snap = {}
-    for name, steps in plan:
+    for pi, (name, steps) in enumerate(plan):
         for u in range(steps):
-            c = cup_local()
-            _, n = hand_frame()
+            c = rest if args.ref == "rest" else cup_local()
+            pocket_now, n = hand_frame()
             n3 = torch.cat([n, torch.zeros(N, 1, device=dev)], dim=1)
             grip = torch.cat([c[:, :2], (c[:, 2] + p_dz).unsqueeze(1)], dim=1) + p_dn.unsqueeze(1) * n3
+            ez = 0.0
             if name == "above":
-                a = servo(grip + args.side_m * n3, -1.0, extra_z=args.safe_dz)
+                goal, hand_cmd, ez = grip + args.side_m * n3, -1.0, args.safe_dz
             elif name == "down":
-                a = servo(grip + args.side_m * n3, -1.0)
+                goal, hand_cmd = grip + args.side_m * n3, -1.0
             elif name == "enter":
-                a = servo(grip, -1.0)
+                goal, hand_cmd = grip, -1.0
             elif name == "close":
-                a = servo(grip, 1.0)
+                goal, hand_cmd = grip, 1.0
             else:
                 k_up = min(1.0, (u + 1) / 60.0) if name == "lift" else 1.0
-                a = servo(grip, 1.0, extra_z=args.lift_m * k_up)
+                goal, hand_cmd, ez = grip, 1.0, args.lift_m * k_up
+            goal = goal.clone()
+            goal[:, 2] += ez
+            d = goal - g_cmd
+            dist = d.norm(dim=-1, keepdim=True)
+            g_cmd = g_cmd + d * torch.clamp(max_step / (dist + 1e-9), max=1.0)
+            # 회전 델타도 첫 60 스텝에 걸쳐 올린다(한 번에 주면 손끝이 수 cm 휘둘린다).
+            a = servo(g_cmd, hand_cmd, rot_k=(min(1.0, (u + 1) / 60.0) if pi == 0 else 1.0))
+            prev_pocket = pocket_now.clone()
             env.step(a)
             state["step"] += 1
+            if pi < 3:
+                # 오므리기 전에 컵이 이미 교란됐는가(손이 지나가며 침). 첫 교란 시점의 단계·손가락 힘·손 속도를 남긴다.
+                cl = cup_local()
+                hit = (pre_step < 0) & ((cup_tilt_deg() > args.pre_tilt_deg)
+                                        | ((cl[:, :2] - rest[:, :2]).norm(dim=-1) > args.pre_shift_m))
+                if bool(hit.any()):
+                    pre_step[hit] = state["step"]
+                    pre_phase[hit] = pi
+                    pre_finger[hit] = rig.finger_forces().max(dim=1).values[hit]
+                    pre_palm[hit] = rig.palm_force()[hit]
+                    pre_speed[hit] = ((hand_frame()[0] - prev_pocket).norm(dim=-1) / step_dt)[hit]
             if name in ("lift", "hold"):
                 grasp_sum += rig.grasped(rig.finger_forces()).float()
                 grasp_n += 1
                 tilt_max = torch.maximum(tilt_max, cup_tilt_deg())
             if name == "hold":
                 lift_min_hold = torch.minimum(lift_min_hold, cup_local()[:, 2] - rest[:, 2])
+        pk = hand_frame()[0]
+        phase_end[name] = (float((g_cmd - goal).norm(dim=-1).max()), float((pk - g_cmd).norm(dim=-1).mean()),
+                           float((pk - g_cmd).norm(dim=-1).max()))
         if name == "close":
             # 오므림 끝 스냅샷: 폐쇄도·손가락 힘·컵 좌표계 손끝 위치·컵이 밀린 정도.
             c = cup_local()
@@ -212,6 +258,9 @@ def run_trial(side: str, freeze_thr: float) -> list[dict]:
             tilt_max=round(float(tilt_max[i]), 1), slip=round(float(slip[i]), 4),
             term_step=int(first_step[i]), term_cause=(CAUSES[int(first_cause[i])] if int(first_cause[i]) >= 0 else ""),
             term_after_enter=bool(term_after[i]), mu=round(float(fr[i]), 3),
+            pre_step=int(pre_step[i]), pre_phase=(plan[int(pre_phase[i])][0] if int(pre_phase[i]) >= 0 else ""),
+            pre_finger=round(float(pre_finger[i]), 2), pre_palm=round(float(pre_palm[i]), 2),
+            pre_speed=round(float(pre_speed[i]), 3), clean=bool(pre_step[i] < 0),
             close=dict(closure=round(float(snap["closure"][i]), 3), forces=fmt(snap["forces"][i], 2),
                        palm_f=round(float(snap["palm_f"][i]), 2), chord_mm=round(float(snap["chord"][i]) * 1000, 1),
                        tip_z_mm=fmt(snap["tips"][i, :, 2] * 1000, 1),
@@ -219,6 +268,9 @@ def run_trial(side: str, freeze_thr: float) -> list[dict]:
                        shift_mm=round(float(snap["shift"][i]) * 1000, 1), tilt=round(float(snap["tilt"][i]), 1),
                        euler=fmt(snap["euler"][i], 1)),
         ))
+    for nm, (gap_goal, lag_mean, lag_max) in phase_end.items():
+        print(f"[{side} thr={freeze_thr:g}] 단계 끝 {nm}: 목표-지령 잔차 최대 {gap_goal*1000:.1f}mm · "
+              f"지령-포켓 추종 오차 평균 {lag_mean*1000:.1f}mm 최대 {lag_max*1000:.1f}mm", flush=True)
     return rows
 
 
@@ -240,6 +292,18 @@ def report(rows, side, thr):
         if r["term_after_enter"]:
             hist[r["term_cause"]] = hist.get(r["term_cause"], 0) + 1
     print(f"[{tag}] 진입 이후 종료 사유(꺼 둠): {hist} / {n}", flush=True)
+    pre = {}
+    for r in rows:
+        if not r["clean"]:
+            pre[r["pre_phase"]] = pre.get(r["pre_phase"], 0) + 1
+    dirty = [r for r in rows if not r["clean"]]
+    clean = [r for r in rows if r["clean"]]
+    print(f"[{tag}] 오므리기 전 컵 교란(기울기>{args.pre_tilt_deg:g}° 또는 밀림>{args.pre_shift_m*1000:g}mm): {len(dirty)}/{n} 단계별 {pre}"
+          + (f" · 교란 시점 손가락 힘 평균 {mean(dirty, lambda r: r['pre_finger']):.2f}N 손 속도 평균 {mean(dirty, lambda r: r['pre_speed']):.3f}m/s"
+             if dirty else ""), flush=True)
+    print(f"[{tag}] 교란 없는 env {len(clean)}: phys {rate(clean, 'phys'):.2f} strict {rate(clean, 'strict'):.2f} "
+          f"grasp {mean(clean, lambda r: r['grasp']):.2f} lift_min {mean(clean, lambda r: r['lift_min'])*100:.1f}cm "
+          f"tilt_max {mean(clean, lambda r: r['tilt_max']):.1f}° slip {mean(clean, lambda r: r['slip'])*1000:.1f}mm", flush=True)
     print(f"[{tag}] 전체 평균: grasp {mean(rows, lambda r: r['grasp']):.2f} · lift_min {mean(rows, lambda r: r['lift_min'])*100:.1f}cm · "
           f"tilt_max {mean(rows, lambda r: r['tilt_max']):.1f}° · slip {mean(rows, lambda r: r['slip'])*1000:.1f}mm · "
           f"오므림 끝 closure {mean(rows, lambda r: r['close']['closure']):.2f} · 밀림 {mean(rows, lambda r: r['close']['shift_mm']):.1f}mm · "
@@ -272,7 +336,7 @@ def report(rows, side, thr):
 
 
 all_rows = []
-print(f"[cfg] N={N} combos={len(COMBOS)} dz={DZ} dn={DN} rot={ROT} close_steps={args.close_steps} "
+print(f"[cfg] N={N} combos={len(COMBOS)} dz={DZ} dn={DN} rot={ROT} close_steps={args.close_steps} v_max={args.v_max} ref={args.ref} "
       f"grasp_thr={env.cfg.contact_force_threshold} close_speed={env.cfg.synergy_close_speed}", flush=True)
 for side in [s.strip() for s in args.sides.split(",") if s.strip()]:
     for thr in [float(x) for x in args.freeze.split(",")]:
