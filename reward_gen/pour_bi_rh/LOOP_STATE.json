@@ -1,20 +1,16 @@
 {
- "iter": 0,
- "label": "t2r_rh2_i00",
- "round": 1,
+ "iter": 1,
+ "label": "t2r_rh2_i01",
+ "round": 2,
  "host": "vision-3090",
  "gpu": 0,
  "num_envs": 1024,
  "best": null,
- "started": 1789628906,
+ "started": 1789636673,
  "success_ticks": 0,
- "prev_label": null,
+ "prev_label": "t2r_rh2_i00",
  "restart": null,
  "reset_0917": "09.17 사용자 지시 '파지·들기 이슈 재조사 t2r 다시 리셋 시작' — 1~12 라운드(iter_00~10)는 archive_r1-12 로 보관. notes_reset_iter00.md = 대본 프로브(grasp_lift~4·cup_trace) 측정 사실만. 환경·보상 계약 무변경.",
- "pids_launch": [
-  3073702,
-  3073709,
-  3073714
- ],
- "commit": "ff71cbd7"
+ "commit": "2e7f71c7",
+ "env_change_0917": "robot 마찰 2.0 · cup_friction_range (2.0,2.0) · contact_freeze_threshold 1.0 N — iter_01 부터. 보상 = iter_00 재사용."
 }

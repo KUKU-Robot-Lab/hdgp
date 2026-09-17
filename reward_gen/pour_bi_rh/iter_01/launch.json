@@ -1,0 +1,11 @@
+{
+ "label": "t2r_rh2_i01",
+ "num_envs": 1024,
+ "started": 1789636673,
+ "commit": "2e7f71c7",
+ "host": "vision-3090",
+ "iter": "reward_gen/pour_bi_rh/iter_01",
+ "round": 2,
+ "fresh": true,
+ "note": "09.17 사용자 결정: 손·컵 재질 마찰 2.0 + 접촉 동결 1.0 N(fric 프로브 근거). 보상은 재생성 없이 iter_00 compute_reward.py 그대로(ingest PASS) — env 만 바뀐 비교. fresh(체크포인트 미사용)."
+}
