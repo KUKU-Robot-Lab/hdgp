@@ -38,7 +38,7 @@ KEY_TAGS = ("task/episode_success", "task/success_now", "task/src_grasped", "tas
             "task/src_hand_foreign_rate", "task/rcv_hand_foreign_rate", "adr/progress", "dr/wrench_force_scale",
             "task/src_closure", "task/rcv_closure",   # 09.14 라운드 5: 인벨롭 파지 판정용
             # 09.16 라운드 9: 조준 전 틸트 래치·리시버 정지 대기·비드 부피 DR
-            "task/rcv_tilt_deg", "task/premature_tilt_rate", "task/tilt_far_deg", "task/rcv_palm_speed",
+            "task/rcv_tilt_deg", "task/premature_tilt_rate", "task/tilt_far_deg", "task/rcv_palm_speed", "task/pour_lip_dist", "task/tilt_limit_deg",
             "bead/fill_level", "bead/n_active", "dr/bead_active_hi")
 
 
