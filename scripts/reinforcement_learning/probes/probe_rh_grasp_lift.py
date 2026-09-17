@@ -45,6 +45,11 @@ parser.add_argument("--enter_steps", type=int, default=110)
 parser.add_argument("--pre_tilt_deg", type=float, default=5.0, help="오므리기 전 컵 교란 판정: 기울기 [deg]")
 parser.add_argument("--pre_shift_m", type=float, default=0.010, help="오므리기 전 컵 교란 판정: 수평 밀림 [m]")
 parser.add_argument("--table_obstacle", type=int, default=1)
+parser.add_argument("--mu_hand", type=float, default=0.0, help="손(로봇 전체) 마찰 고정값. 0=기본(1.0) 유지")
+parser.add_argument("--mu_cup", type=float, default=0.0, help="컵 마찰 고정값. 0=기본 범위(cfg.cup_friction_range) 유지")
+parser.add_argument("--mu_table", type=float, default=-1.0, help="테이블 마찰(cfg.surface_friction). <0=기본 유지")
+parser.add_argument("--restitution", type=float, default=-1.0, help="로봇·컵 반발계수 고정값. <0=기본(1.0) 유지")
+parser.add_argument("--tag", default="", help="로그 구분용 조건 이름")
 parser.add_argument("--out_json", default="")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -66,6 +71,21 @@ COMBOS = list(itertools.product(range(len(DZ)), range(len(DN)), range(len(ROT)))
 
 cfg = parse_env_cfg(args.task, device=args.device, num_envs=args.num_envs)
 cfg.fabric_table_obstacle = bool(args.table_obstacle)
+# 09.17 마찰/반발 비교. 재질 term 은 생성 시 버킷을 1회 샘플링하므로 반드시 gym.make 전에 cfg 로 넣는다.
+# 유효 마찰은 PhysX 기본 combine(average) 가정: 손-컵=(mu_hand+mu_cup)/2, 컵-테이블=(mu_cup+mu_table)/2.
+if args.mu_table >= 0.0:
+    cfg.surface_friction = float(args.mu_table)
+if args.mu_cup > 0.0:
+    cfg.cup_friction_range = (float(args.mu_cup), float(args.mu_cup))
+if cfg.events is not None:
+    if args.mu_hand > 0.0:
+        cfg.events.robot_material.params["static_friction_range"] = (float(args.mu_hand), float(args.mu_hand))
+        cfg.events.robot_material.params["dynamic_friction_range"] = (float(args.mu_hand), float(args.mu_hand))
+    if args.restitution >= 0.0:
+        for _t in (cfg.events.robot_material, cfg.events.source_cup_material, cfg.events.receiver_cup_material):
+            _t.params["restitution_range"] = (float(args.restitution), float(args.restitution))
+elif args.mu_hand > 0.0 or args.restitution >= 0.0:
+    raise SystemExit("cfg.events 가 None 이라 손 마찰/반발 오버라이드를 걸 수 없다")
 env = gym.make(args.task, cfg=cfg).unwrapped
 N, A = env.num_envs, env.cfg.action_space
 HALF = A // 2
@@ -308,7 +328,7 @@ def run_trial(side: str, freeze_thr: float, plan_name: str = "full") -> list[dic
     for i in range(N):
         zi, ni, ri = COMBOS[int(combo_id[i])]
         rows.append(dict(
-            side=side, freeze=freeze_thr, plan=plan_name, env=i, dz=DZ[zi], dn=DN[ni], rot=list(ROT[ri]),
+            tag=args.tag, side=side, freeze=freeze_thr, plan=plan_name, env=i, dz=DZ[zi], dn=DN[ni], rot=list(ROT[ri]),
             pre_rel_mm=[round(float(x) * 1000, 1) for x in pre_rel[i]],
             pre_fid=(fingers[int(pre_fid[i])] if int(pre_fid[i]) >= 0 else ""),
             phys=bool(phys[i]), strict=bool(strict[i]), grasp=round(float(grasp[i]), 3),
@@ -426,6 +446,27 @@ def report(rows, side, thr):
               f"mu={r['mu']} close={r['close']}", flush=True)
 
 
+def _mat_stats(asset):
+    m = asset.root_physx_view.get_material_properties()
+    return [round(float(m[..., k].mean()), 3) for k in range(3)], [round(float(m[..., 0].min()), 3), round(float(m[..., 0].max()), 3)]
+
+
+def print_applied():
+    """오버라이드가 런타임 PhysX 재질에 실제로 들어갔는지 확인(리셋 이벤트 적용 뒤에 읽는다)."""
+    env.reset()
+    import omni.usd
+    st = omni.usd.get_context().get_stage()
+    tp = st.GetPrimAtPath("/World/Materials/taskSurface")
+    t_mu = tp.GetAttribute("physics:staticFriction").Get() if tp and tp.IsValid() else None
+    for nm, a in (("robot", env.robot), ("source_cup", env.source_cup), ("receiver_cup", env.receiver_cup)):
+        mean3, rng = _mat_stats(a)
+        print(f"[applied] {nm}: static/dynamic/restitution 평균 {mean3} · static 범위 {rng}", flush=True)
+    print(f"[applied] table: cfg.surface_friction={env.cfg.surface_friction} usd staticFriction={t_mu} · "
+          f"bounce_threshold_velocity={env.cfg.sim.physx.bounce_threshold_velocity} · tag={args.tag!r} "
+          f"args mu_hand={args.mu_hand} mu_cup={args.mu_cup} mu_table={args.mu_table} restitution={args.restitution}", flush=True)
+
+
+print_applied()
 all_rows = []
 print(f"[cfg] N={N} combos={len(COMBOS)} dz={DZ} dn={DN} rot={ROT} close_steps={args.close_steps} v_max={args.v_max} ref={args.ref} "
       f"grasp_thr={env.cfg.contact_force_threshold} close_speed={env.cfg.synergy_close_speed}", flush=True)
