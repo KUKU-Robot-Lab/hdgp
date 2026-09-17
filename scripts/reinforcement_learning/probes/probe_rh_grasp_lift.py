@@ -121,6 +121,8 @@ def run_trial(side: str, freeze_thr: float, plan_name: str = "full") -> list[dic
     i_ix = bn.index(rig.profile.fingertip_bodies[1])
     i_ix1 = bn.index(rig.profile.finger_sensor_bodies["index"][0])
     fingers = list(rig.fingers)
+    global _FINGERS_ORDER
+    _FINGERS_ORDER = fingers
     grp_b = [fingers.index(f) for f in rig.profile.contact_group_b]
 
     def cup_local():
@@ -203,6 +205,14 @@ def run_trial(side: str, freeze_thr: float, plan_name: str = "full") -> list[dic
     pre_palm = torch.zeros(N, device=dev)
     pre_speed = torch.zeros(N, device=dev)
     phase_end = {}
+    # 오므리는 동안 컵이 처음 교란된 시점(오므림 시작 자세 기준)과 그때의 손가락별 힘.
+    cl_step = torch.full((N,), -1, device=dev, dtype=torch.long)
+    cl_forces = torch.zeros(N, len(fingers), device=dev)
+    cl_palm = torch.zeros(N, device=dev)
+    cl_closure = torch.zeros(N, device=dev)
+    cl_first_step = torch.full((N,), -1, device=dev, dtype=torch.long)
+    cl_first_fid = torch.full((N,), -1, device=dev, dtype=torch.long)
+    cl_ref, cl_tilt0 = None, None
     grasp_sum = torch.zeros(N, device=dev)
     grasp_n = 0
     tilt_max = torch.zeros(N, device=dev)
@@ -234,8 +244,23 @@ def run_trial(side: str, freeze_thr: float, plan_name: str = "full") -> list[dic
             # 회전 델타도 첫 60 스텝에 걸쳐 올린다(한 번에 주면 손끝이 수 cm 휘둘린다).
             a = servo(g_cmd, hand_cmd, rot_k=(min(1.0, (u + 1) / 60.0) if pi == 0 else 1.0))
             prev_pocket = pocket_now.clone()
+            if name == "close" and u == 0:
+                cl_ref, cl_tilt0 = cup_local().clone(), cup_tilt_deg().clone()
             env.step(a)
             state["step"] += 1
+            if name == "close":
+                ff = rig.finger_forces()
+                first = (cl_first_step < 0) & (ff.max(dim=1).values > 0.05)
+                if bool(first.any()):
+                    cl_first_step[first] = u
+                    cl_first_fid[first] = ff.argmax(dim=1)[first]
+                hit = (cl_step < 0) & ((cup_tilt_deg() - cl_tilt0 > args.pre_tilt_deg)
+                                       | ((cup_local()[:, :2] - cl_ref[:, :2]).norm(dim=-1) > args.pre_shift_m))
+                if bool(hit.any()):
+                    cl_step[hit] = u
+                    cl_forces[hit] = ff[hit]
+                    cl_palm[hit] = rig.palm_force()[hit]
+                    cl_closure[hit] = rig.closure()[hit]
             if name in ("above", "down", "enter"):
                 # 오므리기 전에 컵이 이미 교란됐는가(손이 지나가며 침). 첫 교란 시점의 단계·손가락 힘·손 속도를 남긴다.
                 cl = cup_local()
@@ -294,6 +319,9 @@ def run_trial(side: str, freeze_thr: float, plan_name: str = "full") -> list[dic
             pre_step=int(pre_step[i]), pre_phase=(plan[int(pre_phase[i])][0] if int(pre_phase[i]) >= 0 else ""),
             pre_finger=round(float(pre_finger[i]), 2), pre_palm=round(float(pre_palm[i]), 2),
             pre_speed=round(float(pre_speed[i]), 3), clean=bool(pre_step[i] < 0),
+            cl=dict(step=int(cl_step[i]), forces=fmt(cl_forces[i], 2), palm=round(float(cl_palm[i]), 2),
+                    closure=round(float(cl_closure[i]), 3), first_step=int(cl_first_step[i]),
+                    first_fid=(fingers[int(cl_first_fid[i])] if int(cl_first_fid[i]) >= 0 else "")),
             close=dict(closure=round(float(snap["closure"][i]), 3), forces=fmt(snap["forces"][i], 2),
                        palm_f=round(float(snap["palm_f"][i]), 2), chord_mm=round(float(snap["chord"][i]) * 1000, 1),
                        tip_z_mm=fmt(snap["tips"][i, :, 2] * 1000, 1),
@@ -317,6 +345,7 @@ def mean(rows, f):
 
 
 def report(rows, side, thr):
+    fingers_order = list(_FINGERS_ORDER)
     tag = f"{side} thr={thr:g}"
     n = len(rows)
     print(f"\n==== [{tag}] env {n} · phys {sum(r['phys'] for r in rows)} · strict {sum(r['strict'] for r in rows)} ====", flush=True)
@@ -345,6 +374,27 @@ def report(rows, side, thr):
     print(f"[{tag}] 교란 없는 env {len(clean)}: phys {rate(clean, 'phys'):.2f} strict {rate(clean, 'strict'):.2f} "
           f"grasp {mean(clean, lambda r: r['grasp']):.2f} lift_min {mean(clean, lambda r: r['lift_min'])*100:.1f}cm "
           f"tilt_max {mean(clean, lambda r: r['tilt_max']):.1f}° slip {mean(clean, lambda r: r['slip'])*1000:.1f}mm", flush=True)
+    med = lambda v: (sorted(v)[len(v) // 2] if v else float("nan"))
+    hitc = [r for r in clean if r["cl"]["step"] >= 0]
+    print(f"[{tag}] 오므리는 중 컵 교란(오므림 시작 자세 기준, 접근 교란 없는 env): {len(hitc)}/{len(clean)}", flush=True)
+    if hitc:
+        fid, first = {}, {}
+        for r in hitc:
+            f = r["cl"]["forces"]
+            k = fingers_order[max(range(len(f)), key=lambda j: f[j])] if max(f) > 0.05 else "none"
+            fid[k] = fid.get(k, 0) + 1
+            first[r["cl"]["first_fid"] or "none"] = first.get(r["cl"]["first_fid"] or "none", 0) + 1
+        one = sum(1 for r in hitc if (r["cl"]["forces"][0] > 0.05) != (max(r["cl"]["forces"][1:]) > 0.05))
+        two = sum(1 for r in hitc if r["cl"]["forces"][0] > 0.05 and max(r["cl"]["forces"][1:]) > 0.05)
+        zero = sum(1 for r in hitc if max(r["cl"]["forces"]) <= 0.05 and r["cl"]["palm"] <= 0.05)
+        print(f"[{tag}]   교란 시점 최대 힘 손가락 {fid} · 첫 접촉 손가락 {first} · 한쪽만 접촉 {one} 양쪽 접촉 {two} 손 힘 0 {zero} · "
+              f"최대 손가락 힘 중앙 {med([max(r['cl']['forces']) for r in hitc]):.2f}N · closure 중앙 {med([r['cl']['closure'] for r in hitc]):.2f} · "
+              f"오므림 스텝 중앙 {med([r['cl']['step'] for r in hitc])} (첫 접촉 스텝 중앙 {med([r['cl']['first_step'] for r in hitc])})", flush=True)
+    keep = [r for r in clean if r["cl"]["step"] < 0]
+    if keep:
+        two = [r for r in keep if r["close"]["forces"][0] > 0.05 and max(r["close"]["forces"][1:]) > 0.05]
+        print(f"[{tag}]   오므림 끝까지 컵 안 움직인 env {len(keep)}: 양쪽 접촉 {len(two)} · 그중 lift_min>2cm {sum(1 for r in two if r['lift_min'] > 0.02)} · "
+              f"힘 합 중앙 {med([sum(r['close']['forces']) for r in two]):.2f}N · 엄지 끝 z 중앙 {med([r['close']['tip_z_mm'][0] for r in two]):.0f}mm", flush=True)
     print(f"[{tag}] 전체 평균: grasp {mean(rows, lambda r: r['grasp']):.2f} · lift_min {mean(rows, lambda r: r['lift_min'])*100:.1f}cm · "
           f"tilt_max {mean(rows, lambda r: r['tilt_max']):.1f}° · slip {mean(rows, lambda r: r['slip'])*1000:.1f}mm · "
           f"오므림 끝 closure {mean(rows, lambda r: r['close']['closure']):.2f} · 밀림 {mean(rows, lambda r: r['close']['shift_mm']):.1f}mm · "
