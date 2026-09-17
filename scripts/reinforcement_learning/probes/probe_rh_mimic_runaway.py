@@ -23,6 +23,7 @@ parser.add_argument("--num_envs", type=int, default=8)
 parser.add_argument("--variants", default="step,ramp,step_damp,ramp_damp")
 parser.add_argument("--damping", type=float, default=1.5)
 parser.add_argument("--mimic_nf", type=float, default=0.0, help=">0 이면 mimic naturalFrequency 를 이 값으로 덮은 USD 사본 사용")
+parser.add_argument("--sensor_mass", type=float, default=0.0, help=">0 이면 *_sensor 링크 질량을 이 값[kg]으로(관성은 같은 비율) 덮은 USD 사본 사용")
 parser.add_argument("--cycles", type=int, default=5)
 parser.add_argument("--leg_steps", type=int, default=60)
 parser.add_argument("--scenario", default="free", choices=["free", "contact"], help="free=접촉 없는 팔 이동 · contact=소스 손을 컵 입구/벽으로 쓸기")
@@ -41,27 +42,41 @@ import openarm.agnostic.tasks.pour_fabric_mimic.config  # noqa: E402,F401
 
 cfg = parse_env_cfg(args.task, device=args.device, num_envs=args.num_envs)
 
-if args.mimic_nf > 0.0:
-    from pxr import Sdf, Usd
+if args.mimic_nf > 0.0 or args.sensor_mass > 0.0:
+    from pxr import Gf, Sdf, Usd
     orig = cfg.robot_cfg.spawn.usd_path
-    tmp = f"/tmp/rh56f1_mimic_nf{int(args.mimic_nf)}.usda"
+    tmp = f"/tmp/rh56f1_override_nf{int(args.mimic_nf)}_sm{args.sensor_mass:g}.usda"
     stage = Usd.Stage.CreateNew(tmp)
     stage.GetRootLayer().subLayerPaths.append(orig)
     dp = Sdf.Layer.FindOrOpen(orig).defaultPrim
     if dp:
         stage.SetDefaultPrim(stage.GetPrimAtPath(f"/{dp}"))
-    n_set = 0
+    n_nf = n_m = 0
     for prim in stage.Traverse():
-        for s in prim.GetAppliedSchemas():
-            if s.startswith("PhysxMimicJointAPI:"):
-                attr = prim.GetAttribute(f"physxMimicJoint:{s.split(':', 1)[1]}:naturalFrequency")
-                if attr:
-                    attr.Set(float(args.mimic_nf))
-                    n_set += 1
+        if args.mimic_nf > 0.0:
+            for sch in prim.GetAppliedSchemas():
+                if sch.startswith("PhysxMimicJointAPI:"):
+                    attr = prim.GetAttribute(f"physxMimicJoint:{sch.split(':', 1)[1]}:naturalFrequency")
+                    if attr:
+                        attr.Set(float(args.mimic_nf))
+                        n_nf += 1
+        if args.sensor_mass > 0.0 and prim.GetName().endswith("_sensor"):
+            m = prim.GetAttribute("physics:mass")
+            if m and m.Get() is not None:
+                old = float(m.Get())
+                m.Set(float(args.sensor_mass))
+                inert = prim.GetAttribute("physics:diagonalInertia")
+                if inert and inert.Get() is not None and old > 0.0:
+                    k = float(args.sensor_mass) / old
+                    v = inert.Get()
+                    inert.Set(Gf.Vec3f(v[0] * k, v[1] * k, v[2] * k))
+                n_m += 1
+                if n_m <= 3:
+                    print(f"[usd] {prim.GetPath()} mass {old:g} → {args.sensor_mass:g}", flush=True)
     stage.GetRootLayer().Save()
-    print(f"[usd] mimic naturalFrequency → {args.mimic_nf} ({n_set}개 조인트) · {tmp} (defaultPrim {dp})", flush=True)
-    if n_set == 0:
-        raise SystemExit("mimic 조인트를 하나도 못 찾았다 — 오버라이드 무효")
+    print(f"[usd] override nf→{args.mimic_nf or '-'}({n_nf}) sensor_mass→{args.sensor_mass or '-'}({n_m}) · {tmp}", flush=True)
+    if (args.mimic_nf > 0.0 and n_nf == 0) or (args.sensor_mass > 0.0 and n_m == 0):
+        raise SystemExit("오버라이드 대상 prim 을 못 찾았다 — 무효")
     cfg.robot_cfg.spawn.usd_path = tmp
 
 env = gym.make(args.task, cfg=cfg).unwrapped
