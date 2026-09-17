@@ -1,0 +1,13 @@
+{
+ "track": "grasp_fj_rand",
+ "label": "fj_rand_i00",
+ "task": "open-short_r_grasp_fj_t2r_rand-lstm",
+ "sapg": false,
+ "num_envs": 4096,
+ "started": 1789614625.7041376,
+ "commit": "8ad5a1ae8fed323767e209cda841f62b5e5b4bee",
+ "gpu": 0,
+ "pid": 2362040,
+ "console": "/home/oem/rl_ws/our_source/fj_t2r_runs/fj_rand_i00.out",
+ "killed": []
+}
