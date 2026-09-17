@@ -8,8 +8,9 @@ fixed policy never had:
      stage-1 EMA law (``grasp_stage.hand_targets``, not a new filter);
   2. the observation grows from 38 to 39 with the EMA-filtered grip state, so the (non-recurrent) policy can
      perceive its own grip;
-  3. ``_get_dones`` replaces the old end-of-episode keypoint check with ``place_stage.place_step``'s four-way,
-     consecutive-steps predicate (placed & released & resting & still), so a hovering hand cannot "succeed";
+  3. ``_get_dones`` replaces the old end-of-episode keypoint check with ``place_stage.place_step``'s five-way,
+     trailing-window predicate (placed & released & resting & still & home), so a hovering hand cannot
+     "succeed" and a hand lifted away instead of returning to its rest posture cannot either;
   4. ``_get_rewards`` builds a ``RewardContext`` from the same step state the predicate used and calls
      generated code (``t2r2.loader``) instead of the fixed IKER reward.
 
@@ -79,10 +80,30 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         # fix round 2: this step's t2r_reward/*+place/* log, so _log_episode_end can merge it back into
         # self.extras["log"] after the parent's own _log_episode_end replaces that dict wholesale.
         self._t2r_log: dict[str, float] | None = None
+        # Success condition `home` (2026-09-17): env-local palm position with the arm at the profile's default
+        # posture. Measured once by writing the default joint state and taking one physics step (a written pose is
+        # only read back after a step in this repo, see t2r2_smoke.py), holding position targets plus gravity
+        # compensation exactly as `_apply_action` does; the first env.reset() overwrites this state. Every env must
+        # agree (the robot base sits at the same env-local pose everywhere), so any spread means the measurement is
+        # wrong. Inlined rather than a helper method: this class overrides only the hooks the contract test lists.
+        home_q = self._robot.data.default_joint_pos.clone()
+        self._robot.write_joint_state_to_sim(home_q, torch.zeros_like(home_q))
+        self._robot.set_joint_position_target(home_q)
+        tau = self._robot.root_physx_view.get_gravity_compensation_forces()
+        self._robot.set_joint_effort_target(tau[:, self._gravity_ids], joint_ids=self._gravity_ids)
+        self.scene.write_data_to_sim()
+        self.sim.step(render=False)
+        self.scene.update(self.physics_dt)
+        home_palm = self._robot.data.body_pos_w[:, self._palm] - self.scene.env_origins
+        self._home_palm_pos = home_palm.mean(dim=0)
+        spread = float((home_palm - self._home_palm_pos).norm(dim=-1).max())
+        if spread > 1e-3:
+            raise RuntimeError(f"home palm position disagrees across envs by {spread:.4f} m; measurement is wrong")
 
         digest = hashlib.sha256(Path(cfg.reward_code_path).read_bytes()).hexdigest() if cfg.reward_code_path else "none"
+        home = ", ".join(f"{v:.3f}" for v in self._home_palm_pos.tolist())
         print(f"[iker_t2r] reward {self._reward_origin} sha256 {digest} · hand joints {len(self._hand_ids)} · "
-              f"observations 39 (38 + grip) · action 7 (6 palm + 1 grip)", flush=True)
+              f"observations 39 (38 + grip) · action 7 (6 palm + 1 grip) · home palm ({home})", flush=True)
 
     # --------------------------------------------------------------- action
 
@@ -154,6 +175,7 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         shoe_bottom_z = surface[..., 2].min(dim=-1).values
         palm_gap = gs.nearest_distance(palm_pos[:, None, :], surface)[:, 0]
         palm_shoe_dist = (palm_pos - shoe_pos).norm(dim=-1)
+        palm_home_dist = (palm_pos - self._home_palm_pos).norm(dim=-1)
         current = self._keypoints_local()
         targets = self._targets.expand(n, NUM_KEYPOINTS, 3)
         keypoint_err = (current - targets).norm(dim=-1)
@@ -162,7 +184,7 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         shoe_ang_speed = sd.root_ang_vel_w.norm(dim=-1)  # fix round 3: a shoe spinning in place is not "still"
 
         step = ps.place_step(keypoint_dist, palm_shoe_dist, shoe_bottom_z, shoe_speed, self._place_window, self.cfg.place,
-                             shoe_ang_speed=shoe_ang_speed)
+                             shoe_ang_speed=shoe_ang_speed, palm_home_dist=palm_home_dist)
         self._place_window = step.window
         self._keypoint_distance = keypoint_dist  # keep the parent's field valid for _log_episode_end / eval_iker.py
 
@@ -185,7 +207,8 @@ class IkerShoeT2rEnv(IkerShoeEnv):
             shoe_surface=surface, shoe_bottom_z=shoe_bottom_z, palm_gap=palm_gap, palm_shoe_dist=palm_shoe_dist,
             target_keypoints=targets, keypoints=current, init_keypoints=self._init_keypoints,
             keypoint_err=keypoint_err, keypoint_dist=keypoint_dist,
-            placed=step.placed, released=step.released, resting=step.resting, still=step.still,
+            placed=step.placed, released=step.released, resting=step.resting, still=step.still, home=step.home,
+            home_palm_pos=self._home_palm_pos.expand(n, 3), palm_home_dist=palm_home_dist,
             stable_count=step.stable_count, success=step.success,
         )
 
@@ -214,6 +237,7 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         log["place/released"] = ctx.released.float().mean().item()
         log["place/resting"] = ctx.resting.float().mean().item()
         log["place/still"] = ctx.still.float().mean().item()
+        log["place/home"] = ctx.home.float().mean().item()
         retreated = (self._t2r_last["palm_pos"] - self._palm_start).norm(dim=-1) <= RETREAT_M
         log["place/retreated"] = retreated.float().mean().item()
         # merge (not replace): on a step where no env resets, _log_episode_end never runs, and whatever
@@ -231,15 +255,16 @@ class IkerShoeT2rEnv(IkerShoeEnv):
             episode_steps=int(self.max_episode_length), control_dt=float(self.step_dt),
             place_tolerance=float(rc.place_tolerance), release_radius=float(rc.release_radius),
             resting_tol=float(rc.resting_tol), still_speed=float(rc.still_speed), stable_steps=int(rc.stable_steps),
-            window_steps=int(rc.window_steps),
+            window_steps=int(rc.window_steps), home_radius=float(rc.home_radius),
             palm_pos=last["palm_pos"], palm_quat=last["palm_quat"], palm_normal=quat_apply(last["palm_quat"], self._palmar_axis),
             arm_q=last["arm_q"], arm_qd=last["arm_qd"],
+            home_palm_pos=last["home_palm_pos"], palm_home_dist=last["palm_home_dist"],
             grip_norm=self._grip_scalar.reshape(n),
             shoe_pos=last["shoe_pos"], shoe_quat=last["shoe_quat"], shoe_lin_vel=last["shoe_lin_vel"], shoe_ang_vel=last["shoe_ang_vel"],
             shoe_surface=last["shoe_surface"], shoe_bottom_z=last["shoe_bottom_z"], palm_gap=last["palm_gap"], palm_shoe_dist=last["palm_shoe_dist"],
             target_keypoints=last["target_keypoints"], keypoints=last["keypoints"], init_keypoints=last["init_keypoints"],
             keypoint_err=last["keypoint_err"], keypoint_dist=last["keypoint_dist"],
-            placed=last["placed"], released=last["released"], resting=last["resting"], still=last["still"],
+            placed=last["placed"], released=last["released"], resting=last["resting"], still=last["still"], home=last["home"],
             stable_count=last["stable_count"], success=last["success"],
             episode_progress=self.episode_length_buf.float() / float(self.max_episode_length),
             actions=self.actions, prev_actions=self._t2r_prev_actions,

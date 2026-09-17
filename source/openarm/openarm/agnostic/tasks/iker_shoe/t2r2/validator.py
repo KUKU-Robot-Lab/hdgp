@@ -126,7 +126,9 @@ def make_fake_context(n: int = 16, *, device: str = "cpu", seed: int = 0) -> Rew
         episode_steps=200, control_dt=0.1,
         place_tolerance=cfg.place_tolerance, release_radius=cfg.release_radius, resting_tol=cfg.resting_tol,
         still_speed=cfg.still_speed, stable_steps=cfg.stable_steps, window_steps=cfg.window_steps,
+        home_radius=cfg.home_radius,
         palm_pos=r(n, 3, lo=0.0, hi=0.6), palm_quat=unit(n, 4), palm_normal=unit(n, 3),
+        home_palm_pos=r(n, 3, lo=0.0, hi=0.6), palm_home_dist=r(n, lo=0.0, hi=0.5),
         arm_q=r(n, NUM_ARM), arm_qd=r(n, NUM_ARM),
         grip_norm=r(n, lo=-1.0, hi=1.0),
         shoe_pos=r(n, 3, lo=0.0, hi=0.6), shoe_quat=unit(n, 4), shoe_lin_vel=r(n, 3), shoe_ang_vel=r(n, 3),
@@ -135,7 +137,7 @@ def make_fake_context(n: int = 16, *, device: str = "cpu", seed: int = 0) -> Rew
         target_keypoints=r(n, NUM_KEYPOINTS, 3, lo=0.0, hi=0.6), keypoints=r(n, NUM_KEYPOINTS, 3, lo=0.0, hi=0.6),
         init_keypoints=r(n, NUM_KEYPOINTS, 3, lo=0.0, hi=0.6), keypoint_err=r(n, NUM_KEYPOINTS, lo=0.0, hi=0.3),
         keypoint_dist=r(n, lo=0.0, hi=0.3),
-        placed=r(n) > 0.0, released=r(n) > 0.0, resting=r(n) > 0.0, still=r(n) > 0.0,
+        placed=r(n) > 0.0, released=r(n) > 0.0, resting=r(n) > 0.0, still=r(n) > 0.0, home=r(n) > 0.0,
         stable_count=torch.floor(r(n, lo=0.0, hi=25.0)), success=r(n) > 0.8,
         episode_progress=r(n, lo=0.0, hi=1.0), actions=r(n, NUM_ACTIONS), prev_actions=r(n, NUM_ACTIONS),
     )

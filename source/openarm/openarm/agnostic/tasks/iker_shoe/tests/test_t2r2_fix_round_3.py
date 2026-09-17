@@ -26,7 +26,7 @@ PARENT_SRC = (ROOT / "iker_shoe_env.py").read_text(encoding="utf-8")
 
 class _FakeCtx:
     def __init__(self, value: float = 1.0):
-        self.placed = self.released = self.resting = self.still = torch.tensor([value > 0])
+        self.placed = self.released = self.resting = self.still = self.home = torch.tensor([value > 0])
 
 
 def _extract_get_rewards_log_slice():
@@ -124,7 +124,7 @@ def _extract_dones_counter_slice():
         name="_counter_slice",
         args=ast.arguments(posonlyargs=[], args=[ast.arg(arg=a) for a in
                             ("self", "keypoint_dist", "palm_shoe_dist", "shoe_bottom_z", "shoe_speed", "shoe_pos",
-                             "shoe_ang_speed")],
+                             "shoe_ang_speed", "palm_home_dist")],
                             kwonlyargs=[], kw_defaults=[], defaults=[]),
         body=sliced + [ast.Return(value=ast.Tuple(elts=[
             ast.Attribute(value=ast.Name(id="self", ctx=ast.Load()), attr=a, ctx=ast.Load())
@@ -184,6 +184,7 @@ def test_iker_counters_satisfy_the_parents_actual_strict_comparison_exactly_when
             fake, keypoint_dist=torch.tensor([keypoint_dist]), palm_shoe_dist=torch.tensor([0.30]),
             shoe_bottom_z=torch.tensor([cfg.rack_top_z]), shoe_speed=torch.tensor([shoe_speed]),
             shoe_pos=torch.tensor([[0.0, 0.0, shoe_pos_z]]), shoe_ang_speed=torch.tensor([0.0]),
+            palm_home_dist=torch.tensor([0.0]),
         )
         return success_count, failure_count
 

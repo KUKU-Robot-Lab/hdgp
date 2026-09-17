@@ -74,12 +74,15 @@ part of the reward). `ctx.keypoints` are the shoe's own 4 keypoints in its curre
 the start of the episode (already in the grasped pose), `ctx.keypoint_err` the per-keypoint distance to the target and \
 `ctx.keypoint_dist` their mean.
 5. Placement success is computed by the environment and cannot be redefined by the reward. A step counts toward it when \
-all four of these hold: `ctx.keypoint_dist <= {place_tol}` m (`ctx.placed`), `ctx.palm_shoe_dist > {release_radius}` m \
+all five of these hold: `ctx.keypoint_dist <= {place_tol}` m (`ctx.placed`), `ctx.palm_shoe_dist > {release_radius}` m \
 (`ctx.released`, the hand has let go), `abs(ctx.shoe_bottom_z - ctx.rack_top_z) <= ctx.resting_tol` (`ctx.resting`, the \
-shoe rests on the rack rather than floating or sinking), and `ctx.shoe_lin_vel.norm(dim=-1) < {still_speed}` m/s \
-(`ctx.still`). `ctx.stable_count` is how many of the last {window_steps} steps had all four true — one bad step costs \
-one count and does NOT reset it — and `ctx.success` is True on the step `ctx.stable_count` reaches {stable_steps}. The \
-policy may therefore set the shoe down, nudge it back into place, and let go again, all within that window. You may add a \
+shoe rests on the rack rather than floating or sinking), `ctx.shoe_lin_vel.norm(dim=-1) < {still_speed}` m/s \
+(`ctx.still`), and `ctx.palm_home_dist <= {home_radius}` m (`ctx.home`, the hand is back at `ctx.home_palm_pos`, where \
+the palm sits when the arm is in its default rest posture). `ctx.stable_count` is how many of the last {window_steps} \
+steps had all five true — one bad step costs one count and does NOT reset it — and `ctx.success` is True on the step \
+`ctx.stable_count` reaches {stable_steps}. The policy may therefore set the shoe down, nudge it back into place, let go, \
+and bring the hand home, all within that window. Moving the hand anywhere other than home after letting go (for \
+example lifting the arm high) never counts toward success. You may add a \
 bonus on `ctx.success` or on the individual conditions such as `ctx.placed` or `ctx.released`.
 6. The episode ends on a success, when the shoe falls off its support, or after `ctx.episode_steps - 1` steps. Nothing is \
 added to the reward outside your function.
@@ -109,7 +112,7 @@ the weights.
 FEEDBACK_HEADER = """\
 We trained an RL policy (PPO) using the reward function below and tracked the values of the individual reward \
 components (t2r_reward/*) as well as task metrics computed by the environment (the placement flags place/placed, \
-place/released, place/resting and place/retreated, the keypoint distance iker/keypoint_distance_m, the success rate \
+place/released, place/resting, place/still, place/home and place/retreated, the keypoint distance iker/keypoint_distance_m, the success rate \
 iker/success_5cm, the drop rate iker/dropped, episode length and total reward) at {n_points} evenly spaced points \
 during training, plus the min / mean / max encountered:
 """
@@ -137,7 +140,7 @@ class PromptSpec:
 
 
 FEEDBACK_TAG_PREFIXES = (
-    "t2r_reward/", "place/placed", "place/released", "place/resting", "place/retreated",
+    "t2r_reward/", "place/placed", "place/released", "place/resting", "place/still", "place/home", "place/retreated",
     "iker/success_5cm", "iker/keypoint_distance_m", "iker/dropped", "episode_lengths", "rewards",
 )
 
@@ -161,7 +164,7 @@ def render_prompt(spec: PromptSpec, cfg: PlaceRewardCfg | None = None) -> str:
     )
     knowledge = ADDITIONAL_KNOWLEDGE.format(
         place_tol=cfg.place_tolerance, release_radius=cfg.release_radius, still_speed=cfg.still_speed,
-        stable_steps=cfg.stable_steps, window_steps=cfg.window_steps,
+        stable_steps=cfg.stable_steps, window_steps=cfg.window_steps, home_radius=cfg.home_radius,
     )
     parts = [
         "You are an expert in robotics, reinforcement learning and code generation.",

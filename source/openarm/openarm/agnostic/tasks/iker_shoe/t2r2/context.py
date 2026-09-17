@@ -29,13 +29,16 @@ class RewardContext:
     release_radius: float          # palm_shoe_dist above this counts as released (hand let go) [m]
     resting_tol: float             # shoe_bottom_z may sit this far from rack_top_z and still count as resting [m]
     still_speed: float             # shoe_lin_vel norm below this counts as still [m/s]
-    stable_steps: int              # placed & released & resting & still must hold this many steps WITHIN the last window_steps for success
+    stable_steps: int              # placed & released & resting & still & home must hold this many steps WITHIN the last window_steps for success
     window_steps: int              # length of that trailing window, in steps
+    home_radius: float             # palm_home_dist at or below this counts as home (hand back at its rest position) [m]
 
     # ---- palm: left Tesollo DG-5F hand on the 7-DOF arm -------------------------------------
     palm_pos: torch.Tensor         # (N,3) palm frame origin
     palm_quat: torch.Tensor        # (N,4) palm orientation quaternion (w,x,y,z)
     palm_normal: torch.Tensor      # (N,3) unit vector pointing out of the palm's grasping side
+    home_palm_pos: torch.Tensor    # (N,3) where palm_pos sits when the arm is in its default rest posture; the same point for every env and every step
+    palm_home_dist: torch.Tensor   # (N,) distance from palm_pos to home_palm_pos [m]
 
     # ---- arm: 7-DOF ------------------------------------------------------------------------
     arm_q: torch.Tensor            # (N,7) arm joint angles [rad]
@@ -66,7 +69,8 @@ class RewardContext:
     released: torch.Tensor         # (N,) bool, palm_shoe_dist > release_radius this step
     resting: torch.Tensor          # (N,) bool, |shoe_bottom_z - rack_top_z| <= resting_tol this step
     still: torch.Tensor            # (N,) bool, shoe speed below still_speed this step
-    stable_count: torch.Tensor     # (N,) how many of the last window_steps steps had placed & released & resting & still all true; a single bad step costs 1, it does not reset the count
+    home: torch.Tensor             # (N,) bool, palm_home_dist <= home_radius this step
+    stable_count: torch.Tensor     # (N,) how many of the last window_steps steps had placed & released & resting & still & home all true; a single bad step costs 1, it does not reset the count
     success: torch.Tensor          # (N,) bool, True on the step stable_count reaches stable_steps (the episode then ends)
     episode_progress: torch.Tensor  # (N,) elapsed fraction [0,1] of episode_steps
 

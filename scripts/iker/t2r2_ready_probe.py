@@ -72,7 +72,7 @@ class GateRecorder:
     "이 env 의 첫 에피소드가 끝났다"를 표시한다.
     """
 
-    KEYS = ("ready", "placed", "resting", "still", "released", "ok")
+    KEYS = ("ready", "placed", "resting", "still", "released", "home", "ok")
 
     def __init__(self, u):
         n, dev = u.num_envs, u.device
@@ -100,8 +100,8 @@ class GateRecorder:
         # 생성 보상과 같은 정의: grip_norm -1(뱅크 파지) → 0, +1(프로필 개방) → 1
         open_frac = ((u._grip_scalar.reshape(-1) + 1.0) * 0.5).clamp(0.0, 1.0)
         masks = {"ready": ready, "placed": placed, "resting": resting,
-                 "still": last["still"], "released": last["released"],
-                 "ok": ready & last["still"] & last["released"]}
+                 "still": last["still"], "released": last["released"], "home": last["home"],
+                 "ok": ready & last["still"] & last["released"] & last["home"]}
         for key, mask in masks.items():
             self.counts[key] += mask.float() * live
         self.steps += live
