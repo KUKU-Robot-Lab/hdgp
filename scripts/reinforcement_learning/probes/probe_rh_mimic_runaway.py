@@ -25,6 +25,8 @@ parser.add_argument("--damping", type=float, default=1.5)
 parser.add_argument("--mimic_nf", type=float, default=0.0, help=">0 이면 mimic naturalFrequency 를 이 값으로 덮은 USD 사본 사용")
 parser.add_argument("--cycles", type=int, default=5)
 parser.add_argument("--leg_steps", type=int, default=60)
+parser.add_argument("--scenario", default="free", choices=["free", "contact"], help="free=접촉 없는 팔 이동 · contact=소스 손을 컵 입구/벽으로 쓸기")
+parser.add_argument("--contact_variants", default="rim_bead,rim_nobead,wall_bead,rim_bead_damp")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
@@ -81,7 +83,8 @@ LEG[HALF + 6:A] = -1.0
 print(f"[cfg] envs={N} cycles={args.cycles} leg_steps={args.leg_steps} mimic_nf={args.mimic_nf or 'asset(500)'} "
       f"thr dep_qd={env.cfg.mimic_runaway_dep_qd} err={env.cfg.mimic_runaway_err_rad} hand_damp_asset={float(base_damp.mean()):.2f}", flush=True)
 
-for var in [v.strip() for v in args.variants.split(",") if v.strip()]:
+FREE_VARIANTS = [v.strip() for v in args.variants.split(",") if v.strip()] if args.scenario == "free" else []
+for var in FREE_VARIANTS:
     damp = torch.full_like(base_damp, args.damping) if var.endswith("_damp") else base_damp
     env.robot.write_joint_damping_to_sim(damp, joint_ids=hand_ids)
     env.reset()
@@ -111,9 +114,71 @@ for var in [v.strip() for v in args.variants.split(",") if v.strip()]:
                 err_max = max(err_max, float(ex["ctrl/mimic_err_max"]))
                 qd_trace.append(qd)
     steps = args.cycles * 2 * args.leg_steps
+    moved = float((env.src.palm_pos() - env.src.anchor_env[:, :3]).norm(dim=-1).mean())
     over100 = sum(1 for q in qd_trace if q > 100.0)
     print(f"[{var:9s}] 종료 {terms:.0f}회({terms/N/steps*900:.2f}/에피소드 환산) · mimic 폭주 {mim:.0f} · 팔 폭주 {arm:.0f} · "
-          f"hand_dep_qd 최대 {qd_max:.0f} rad/s · >100 rad/s 스텝 {over100}/{steps} · mimic 오차 최대 {err_max:.2f} rad", flush=True)
+          f"(마지막 palm-앵커 {moved*100:.1f}cm) · hand_dep_qd 최대 {qd_max:.2f} rad/s · >100 rad/s 스텝 {over100}/{steps} · mimic 오차 최대 {err_max:.2f} rad", flush=True)
+
+# ---- contact ------------------------------------------------------------------------------
+if args.scenario == "contact":
+    rig, cup_asset = env.src, env.source_cup
+    bn = env.robot.data.body_names
+    i_th = bn.index(rig.profile.fingertip_bodies[0]); i_ix = bn.index(rig.profile.fingertip_bodies[1])
+    i_ix1 = bn.index(rig.profile.finger_sensor_bodies["index"][0])
+    mouth, mid = float(env.cfg.cup_mouth_z), 0.5 * float(env.cfg.cup_mouth_z)
+
+    def hand_frame():
+        pos = env.robot.data.body_pos_w - env.scene.env_origins[:, None, :]
+        pocket = 0.5 * (pos[:, i_th] + pos[:, i_ix])
+        f = pos[:, i_ix, :2] - pos[:, i_ix1, :2]
+        f = f / (f.norm(dim=-1, keepdim=True) + 1e-9)
+        return pocket, torch.stack([-f[:, 1], f[:, 0]], dim=1)
+
+    def to_action(d):
+        a = torch.zeros(N, 3, device=dev)
+        for k in range(3):
+            v = d[:, k]
+            a[:, k] = torch.where(v >= 0, (v / rig.delta_hi[k]).clamp(max=1.0), -(v / rig.delta_lo[k]).clamp(max=1.0))
+        return a
+
+    for var in [v.strip() for v in args.contact_variants.split(",") if v.strip()]:
+        damp = torch.full_like(base_damp, args.damping) if var.endswith("_damp") else base_damp
+        env.robot.write_joint_damping_to_sim(damp, joint_ids=hand_ids)
+        env.reset()
+        for _ in range(hold):
+            env.step(torch.zeros(N, A, device=dev))
+        if "nobead" in var:
+            st = env.beads.data.object_state_w.clone()
+            st[:, :, 0] += 1.5
+            st[:, :, 7:] = 0.0
+            env.beads.write_object_state_to_sim(st)
+        z_off = mouth if var.startswith("rim") else mid
+        terms = mim = 0.0
+        qd_max = err_max = fmax = 0.0
+        over = 0
+        steps = 0
+        for c in range(args.cycles):
+            for leg in (1.0, -1.0):
+                for u in range(args.leg_steps):
+                    frac = (u + 1) / args.leg_steps
+                    s_ = 0.12 - 0.16 * frac if leg > 0 else -0.04 + 0.16 * frac
+                    cp = env._local(cup_asset.data.root_pos_w)
+                    pocket, n = hand_frame()
+                    goal = torch.cat([cp[:, :2] + s_ * n, (cp[:, 2] + z_off).unsqueeze(1)], dim=1)
+                    a = torch.zeros(N, A, device=dev)
+                    a[:, 0:3] = to_action(rig.palm_pos() + (goal - pocket) - rig.anchor_env[:, :3])
+                    a[:, 6:HALF] = -1.0
+                    _, _, term, _, ex = env.step(a)
+                    steps += 1
+                    terms += float(term.float().sum())
+                    mim += float(ex["done/mimic_runaway"]) * N
+                    q = float(ex["ctrl/hand_dep_qd_max"])
+                    qd_max = max(qd_max, q); over += int(q > 100.0)
+                    err_max = max(err_max, float(ex["ctrl/mimic_err_max"]))
+                    fmax = max(fmax, float(rig.finger_forces().max()))
+        print(f"[contact {var:13s}] 종료 {terms:.0f}회({terms/N/steps*900:.2f}/에피소드 환산) · mimic 폭주 {mim:.0f} · "
+              f"hand_dep_qd 최대 {qd_max:.0f} rad/s · >100 rad/s 스텝 {over}/{steps} · mimic 오차 최대 {err_max:.2f} rad · "
+              f"손가락 접촉력 최대 {fmax:.0f} N", flush=True)
 
 env.close()
 app.close()
