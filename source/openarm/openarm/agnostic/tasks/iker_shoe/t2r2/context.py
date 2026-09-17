@@ -29,7 +29,8 @@ class RewardContext:
     release_radius: float          # palm_shoe_dist above this counts as released (hand let go) [m]
     resting_tol: float             # shoe_bottom_z may sit this far from rack_top_z and still count as resting [m]
     still_speed: float             # shoe_lin_vel norm below this counts as still [m/s]
-    stable_steps: int              # placed & released & resting & still must hold this many consecutive steps for success
+    stable_steps: int              # placed & released & resting & still must hold this many steps WITHIN the last window_steps for success
+    window_steps: int              # length of that trailing window, in steps
 
     # ---- palm: left Tesollo DG-5F hand on the 7-DOF arm -------------------------------------
     palm_pos: torch.Tensor         # (N,3) palm frame origin
@@ -65,7 +66,7 @@ class RewardContext:
     released: torch.Tensor         # (N,) bool, palm_shoe_dist > release_radius this step
     resting: torch.Tensor          # (N,) bool, |shoe_bottom_z - rack_top_z| <= resting_tol this step
     still: torch.Tensor            # (N,) bool, shoe speed below still_speed this step
-    stable_count: torch.Tensor     # (N,) consecutive steps (up to this one) where placed & released & resting & still all held; 0 the moment any breaks
+    stable_count: torch.Tensor     # (N,) how many of the last window_steps steps had placed & released & resting & still all true; a single bad step costs 1, it does not reset the count
     success: torch.Tensor          # (N,) bool, True on the step stable_count reaches stable_steps (the episode then ends)
     episode_progress: torch.Tensor  # (N,) elapsed fraction [0,1] of episode_steps
 

@@ -171,7 +171,12 @@ def test_iker_counters_satisfy_the_parents_actual_strict_comparison_exactly_when
 
     def run(shoe_pos_z: float, keypoint_dist: float, shoe_speed: float, stable_count_in: float):
         fake = type("_S", (), {})()
-        fake._stable_count = torch.tensor([stable_count_in])
+        # 창 방식(2026-09-17): "들어갈 때 이미 충족된 스텝 수" 를 창의 최근 쪽에 채운다. 가장 오래된
+        # 칸(0번)이 비어 있어야 roll 이 0 을 버리고 이번 스텝 결과를 더해 count 가 +1 된다.
+        window = ps.new_window(1, cfg, "cpu")
+        if stable_count_in > 0:
+            window[0, -int(stable_count_in):] = 1.0
+        fake._place_window = window
         fake._success_count = torch.zeros(1)
         fake._failure_count = torch.zeros(1)
         fake.cfg = _FakeSelfCfg(cfg, fall_height=0.168, sustain_steps=sustain)

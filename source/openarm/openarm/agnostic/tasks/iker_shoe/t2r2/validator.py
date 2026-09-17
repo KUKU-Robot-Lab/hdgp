@@ -125,7 +125,7 @@ def make_fake_context(n: int = 16, *, device: str = "cpu", seed: int = 0) -> Rew
         rack_y_min=layout.RACK_Y_RANGE[0], rack_y_max=layout.RACK_Y_RANGE[1], rack_top_z=cfg.rack_top_z,
         episode_steps=200, control_dt=0.1,
         place_tolerance=cfg.place_tolerance, release_radius=cfg.release_radius, resting_tol=cfg.resting_tol,
-        still_speed=cfg.still_speed, stable_steps=cfg.stable_steps,
+        still_speed=cfg.still_speed, stable_steps=cfg.stable_steps, window_steps=cfg.window_steps,
         palm_pos=r(n, 3, lo=0.0, hi=0.6), palm_quat=unit(n, 4), palm_normal=unit(n, 3),
         arm_q=r(n, NUM_ARM), arm_qd=r(n, NUM_ARM),
         grip_norm=r(n, lo=-1.0, hi=1.0),

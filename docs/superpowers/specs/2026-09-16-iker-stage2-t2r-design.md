@@ -86,19 +86,28 @@ validation.json, generator.json, smoke.json, feedback.md}`.
 
 ## 3. 성공 판정
 
-아래 네 조건을 **연속 N 스텝** 만족하면 성공이고 그 스텝에 에피소드가 끝난다.
+아래 네 조건을 **최근 W 스텝 중 N 스텝** 만족하면 성공이고 그 스텝에 에피소드가 끝난다.
 
 | 항 | 기준 | 출처 |
 |---|---|---|
-| 놓인 자리 | 키포인트 4개 평균 거리 ≤ **0.05 m** | `IkerShoeEnvCfg.eval_success_distance_m`(기존) |
+| 놓인 자리 | 키포인트 4개 평균 거리 ≤ **0.03 m** | `PlaceRewardCfg.place_tolerance` — 2026-09-17 에 0.05 에서 조였다(아래) |
 | 손을 뗌 | `palm_shoe_dist` > **0.15 m** | 평가의 `HOLD_RADIUS_M` 과 같은 값 — 두 지표가 같은 기준을 쓴다 |
 | 받침에 얹힘 | 신발 hull 최저점이 `RACK_TOP_Z`(0.325 m) ± `resting_tol` | `shoe_meta.hull_local` + `gs.surface_subsample`(256점) |
 | 정지 | `shoe_lin_vel.norm()` < **0.05 m/s** | 1단계 `success_speed` 와 동일 |
 
-**N = `stable_steps` = 20 스텝(2초)** — 1단계 `success_steps` 와 맞춘다.
+**N = `stable_steps` = 20 스텝(2초)**, **W = `window_steps` = 30 스텝(3초)**.
 
-카운터는 **연속**이다. 조건이 깨지면 0 으로 되돌린다. 기존 IKER 2단계의 `success_count` 는 조건이 깨져도 0 으로
-돌아가지 않는 **누적** 카운터였고(코드 확인), 그러면 흩어진 21스텝으로도 성공이 되어 "놓고 버틴다"를 보증하지 못한다.
+판정 방식은 세 번 바뀌었다. ①기존 IKER 2단계의 `success_count` 는 조건이 깨져도 0 으로 돌아가지 않는 **누적**
+카운터였고(코드 확인), 흩어진 21스텝으로도 성공이 되어 "놓고 버틴다"를 보증하지 못했다. ②그래서 **연속**
+카운터로 바꿨다(깨지면 0). ③2026-09-17, 연속 방식이 노이즈에 부서지는 것을 실측했다 — 같은 ep250 정책을
+노이즈 off/on 으로 재면 조건 충족률(`ok` 점유율 0.184 vs 0.172, 도달 env 0.520 vs 0.559)은 거의 같은데
+**20스텝 완주율만 0.391 → 0.0078 로 50배** 무너졌다(한 스텝만 흔들려도 0 이 되므로). 학습 지표가 실제
+실력(39 %)이 아니라 취약성(0.8 %)을 찍고 있었다. 그래서 **창 방식**으로 바꾼다: 최근 W 스텝의 충족 수를
+세고, 한 스텝 깨져도 1 만 줄어든다. 흐트러짐은 여전히 걸러내면서 노이즈에는 견딘다.
+
+같은 결정에서 **`place_tolerance` 를 0.05 → 0.03 으로 조인다.** 설계상 두 신발 사이 틈이 2.8 cm 인데
+허용오차가 5 cm 여서, 판정상 성공해도 눈으로는 옆 신발에 붙지 않은 것으로 보였다(실측 틈 중앙값 6.1 cm,
+키포인트 오차 중앙값 4.6 cm). 창 방식으로 정책이 **놓은 뒤 신발을 밀어 고칠 여지**가 생기므로 도달 가능하다고 본다.
 
 **물러나기는 판정에서 뺀다.** 대신 ①생성 보상의 과제문에 명시하고 ②`retreated`(종료 시 손이 시작 자세 근처로 복귀)를
 `placed` 와 함께 **보고용 지표**로 평가에 추가한다.
@@ -133,7 +142,7 @@ frozen dataclass, 모든 텐서는 배치 `(N,…)`·env-local·복사본(`clone
 
 | 묶음 | 필드 |
 |---|---|
-| 상수(python) | `table_top_z`, `rack_x_min/max`, `rack_y_min/max`, `rack_top_z`, `episode_steps`(200), `control_dt`(0.1), `place_tolerance`(0.05), `release_radius`(0.15), `resting_tol`, `still_speed`(0.05), `stable_steps`(20) |
+| 상수(python) | `table_top_z`, `rack_x_min/max`, `rack_y_min/max`, `rack_top_z`, `episode_steps`(200), `control_dt`(0.1), `place_tolerance`(0.03), `release_radius`(0.15), `resting_tol`, `still_speed`(0.05), `stable_steps`(20), `window_steps`(30) |
 | 팔바닥 | `palm_pos (N,3)`, `palm_quat (N,4 wxyz)`, `palm_normal (N,3)` |
 | 팔 | `arm_q`, `arm_qd (N,7)` |
 | 그립 | `grip_norm (N,)` — EMA 후 그립 상태(−1 쥠 … +1 폄) |
@@ -150,7 +159,7 @@ frozen dataclass, 모든 텐서는 배치 `(N,…)`·env-local·복사본(`clone
   `hull_local → surface_subsample`, 그립 버퍼 초기화. 부팅 줄에 보상 코드 경로·sha256 을 찍는다.
 - `_pre_physics_step`: 팔 6축은 부모와 동일(DLS IK), `action[6]` 으로 손 칼럼을 4절 법칙으로 갱신.
 - `_get_observations`: 부모 38칸 + 그립 상태 1칸.
-- `_get_dones`: 3절 판정(연속 카운터) · 종료 3종.
+- `_get_dones`: 3절 판정(창 버퍼 `_place_window`) · 종료 3종.
 - `_get_rewards`: `_get_dones` 가 계산한 **같은 스텝 상태**로 `_build_context` → `call_reward_fn` → `nan_to_num`.
 - `_build_context`: 위 필드, 모든 텐서 `clone`.
 - `_reset_idx`: 부모 리셋 뒤 `prev_actions` 0, 그립 목표를 뱅크 값으로.
@@ -252,7 +261,8 @@ getattr` 류 금지 · **ctx 제자리 연산** 금지 · 없는 필드 접근 �
 - t2r 포크: 컨텍스트 원문 = 프롬프트 env 설명 · 가짜 ctx 형상 = 5절 · 좋은 코드 통과 · 없는 필드/금지 import/ctx 대입/
   제자리 연산/cuda 장치 불일치 거부 · 로컬 텐서 제자리 연산 허용 · 로더 반환 형상 · 빈 경로 = 영 보상 ·
   프롬프트 판정 수치가 cfg 에서 오는지(리터럴 금지) · 피드백 표 렌더.
-- **성공 판정**: 연속 카운터가 조건이 깨질 때 0 으로 복귀(기존 누적 동작의 회귀 테스트) · 놓음 0.15 m · 얹힘 허용치 ·
+- **성공 판정**: 한 스텝 깨져도 0 으로 리셋되지 않고 1 만 준다 · 창 밖으로 밀려난 충족은 빠진다 · 흩어진 충족도
+  창 안에서 N 을 채우면 성공(누적·연속 두 옛 동작의 회귀 테스트) · 허용오차 0.03 m · 놓음 0.15 m · 얹힘 허용치 ·
   정지 0.05 m/s · 네 조건 AND · 종료 3종.
 - **액션·관측**: 액션 7 · 관측 39 · 그립 축이 손 칼럼을 1단계 `hand_targets` 법칙으로 갱신 · 백스톱 한계 안에 머문다 ·
   리셋 직후 그립 = 뱅크 값.

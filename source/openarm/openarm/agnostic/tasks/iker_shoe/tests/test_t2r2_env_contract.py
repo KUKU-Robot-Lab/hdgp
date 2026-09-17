@@ -37,7 +37,7 @@ def test_context_tensors_are_copies():
 
 def test_reset_zeroes_previous_actions_and_restores_the_bank_grip():
     block = ENV.split("def _reset_idx")[1]
-    assert "_t2r_prev_actions" in block and "_grip_targets" in block and "_stable_count" in block
+    assert "_t2r_prev_actions" in block and "_grip_targets" in block and "_place_window" in block
 
 
 def test_registration_adds_the_t2r_ids():

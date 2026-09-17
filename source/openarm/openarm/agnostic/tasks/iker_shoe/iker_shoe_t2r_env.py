@@ -70,7 +70,7 @@ class IkerShoeT2rEnv(IkerShoeEnv):
 
         self._grip_targets = self._joint_targets[:, self._hand_ids].clone()  # placeholder; _reset_idx sets the real value
         self._grip_scalar = -torch.ones(n, 1, device=dev)
-        self._stable_count = torch.zeros(n, device=dev)
+        self._place_window = ps.new_window(n, self.cfg.place, dev)
         self._t2r_prev_actions = torch.zeros(n, int(cfg.action_space), device=dev)
         # fix round 1 (finding 3): env-local palm position captured at reset, for place/retreated ("did the
         # hand come back near where it started"). Placeholder here; _reset_idx sets the real value.
@@ -161,9 +161,9 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         shoe_speed = sd.root_lin_vel_w.norm(dim=-1)
         shoe_ang_speed = sd.root_ang_vel_w.norm(dim=-1)  # fix round 3: a shoe spinning in place is not "still"
 
-        step = ps.place_step(keypoint_dist, palm_shoe_dist, shoe_bottom_z, shoe_speed, self._stable_count, self.cfg.place,
+        step = ps.place_step(keypoint_dist, palm_shoe_dist, shoe_bottom_z, shoe_speed, self._place_window, self.cfg.place,
                              shoe_ang_speed=shoe_ang_speed)
-        self._stable_count = step.stable_count
+        self._place_window = step.window
         self._keypoint_distance = keypoint_dist  # keep the parent's field valid for _log_episode_end / eval_iker.py
 
         # fix round 3 (critical 2): the parent's _log_episode_end reads _success_count/_failure_count with a
@@ -231,6 +231,7 @@ class IkerShoeT2rEnv(IkerShoeEnv):
             episode_steps=int(self.max_episode_length), control_dt=float(self.step_dt),
             place_tolerance=float(rc.place_tolerance), release_radius=float(rc.release_radius),
             resting_tol=float(rc.resting_tol), still_speed=float(rc.still_speed), stable_steps=int(rc.stable_steps),
+            window_steps=int(rc.window_steps),
             palm_pos=last["palm_pos"], palm_quat=last["palm_quat"], palm_normal=quat_apply(last["palm_quat"], self._palmar_axis),
             arm_q=last["arm_q"], arm_qd=last["arm_qd"],
             grip_norm=self._grip_scalar.reshape(n),
@@ -269,7 +270,7 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         self._t2r_prev_actions[env_ids] = 0.0
         self._grip_targets[env_ids] = self._joint_targets[env_ids][:, self._hand_ids]  # the bank's hand target
         self._grip_scalar[env_ids] = -1.0
-        self._stable_count[env_ids] = 0.0
+        self._place_window[env_ids] = 0.0
         # fix round 1 (finding 3): the parent's bank restore above already wrote the new joint state via
         # write_joint_state_to_sim, so body_pos_w already reflects it (same idiom eval_iker.py's FirstEpisodeRecorder
         # uses right after reset_player, no extra physics step needed).

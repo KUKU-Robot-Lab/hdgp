@@ -77,8 +77,9 @@ the start of the episode (already in the grasped pose), `ctx.keypoint_err` the p
 all four of these hold: `ctx.keypoint_dist <= {place_tol}` m (`ctx.placed`), `ctx.palm_shoe_dist > {release_radius}` m \
 (`ctx.released`, the hand has let go), `abs(ctx.shoe_bottom_z - ctx.rack_top_z) <= ctx.resting_tol` (`ctx.resting`, the \
 shoe rests on the rack rather than floating or sinking), and `ctx.shoe_lin_vel.norm(dim=-1) < {still_speed}` m/s \
-(`ctx.still`). `ctx.stable_count` counts consecutive steps where all four hold (it drops to 0 the moment any one breaks, \
-it is not cumulative) and `ctx.success` is True on the step `ctx.stable_count` reaches {stable_steps}. You may add a \
+(`ctx.still`). `ctx.stable_count` is how many of the last {window_steps} steps had all four true — one bad step costs \
+one count and does NOT reset it — and `ctx.success` is True on the step `ctx.stable_count` reaches {stable_steps}. The \
+policy may therefore set the shoe down, nudge it back into place, and let go again, all within that window. You may add a \
 bonus on `ctx.success` or on the individual conditions such as `ctx.placed` or `ctx.released`.
 6. The episode ends on a success, when the shoe falls off its support, or after `ctx.episode_steps - 1` steps. Nothing is \
 added to the reward outside your function.
@@ -160,7 +161,7 @@ def render_prompt(spec: PromptSpec, cfg: PlaceRewardCfg | None = None) -> str:
     )
     knowledge = ADDITIONAL_KNOWLEDGE.format(
         place_tol=cfg.place_tolerance, release_radius=cfg.release_radius, still_speed=cfg.still_speed,
-        stable_steps=cfg.stable_steps,
+        stable_steps=cfg.stable_steps, window_steps=cfg.window_steps,
     )
     parts = [
         "You are an expert in robotics, reinforcement learning and code generation.",
