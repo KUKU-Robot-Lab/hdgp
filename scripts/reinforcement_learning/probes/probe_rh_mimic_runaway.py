@@ -27,6 +27,9 @@ parser.add_argument("--cup_approx", default="", help="컵 충돌 근사 덮기(�
 parser.add_argument("--sim_dt_div", type=int, default=1, help="physics dt 를 1/k 로(decimation×k, 정책 60 Hz 유지)")
 parser.add_argument("--solver_iters", type=int, default=0, help=">0 이면 로봇·컵 solver 위치 반복 수")
 parser.add_argument("--sensor_mass", type=float, default=0.0, help=">0 이면 *_sensor 링크 질량을 이 값[kg]으로(관성은 같은 비율) 덮은 USD 사본 사용")
+parser.add_argument("--tip_fix", default="", choices=["", "inertia", "split"],
+                    help="손끝 _sensor/_tip 토큰(1e-5 kg·관성 1e-7=회전반경 10 cm) 교정. inertia=질량 유지·관성만 m·(5mm)² · "
+                         "split=벤더 마지막 마디 질량·관성을 마디와 _sensor 에 반씩(총량 보존, 벤더는 센서 질량 0·같은 입체)")
 parser.add_argument("--cycles", type=int, default=5)
 parser.add_argument("--leg_steps", type=int, default=60)
 parser.add_argument("--scenario", default="free", choices=["free", "contact"], help="free=접촉 없는 팔 이동 · contact=소스 손을 컵 입구/벽으로 쓸기")
@@ -45,10 +48,10 @@ import openarm.agnostic.tasks.pour_fabric_mimic.config  # noqa: E402,F401
 
 cfg = parse_env_cfg(args.task, device=args.device, num_envs=args.num_envs)
 
-if args.mimic_nf > 0.0 or args.sensor_mass > 0.0:
+if args.mimic_nf > 0.0 or args.sensor_mass > 0.0 or args.tip_fix:
     from pxr import Gf, Sdf, Usd
     orig = cfg.robot_cfg.spawn.usd_path
-    tmp = f"/tmp/rh56f1_override_nf{int(args.mimic_nf)}_sm{args.sensor_mass:g}.usda"
+    tmp = f"/tmp/rh56f1_override_nf{int(args.mimic_nf)}_sm{args.sensor_mass:g}_tip{args.tip_fix or 0}.usda"
     stage = Usd.Stage.CreateNew(tmp)
     stage.GetRootLayer().subLayerPaths.append(orig)
     dp = Sdf.Layer.FindOrOpen(orig).defaultPrim
@@ -76,6 +79,33 @@ if args.mimic_nf > 0.0 or args.sensor_mass > 0.0:
                 n_m += 1
                 if n_m <= 3:
                     print(f"[usd] {prim.GetPath()} mass {old:g} → {args.sensor_mass:g}", flush=True)
+    n_tip = 0
+    if args.tip_fix:
+        import re as _re
+        R2 = 0.005 ** 2
+        prims = {p.GetName(): p for p in stage.Traverse() if p.GetAttribute("physics:mass") and p.GetAttribute("physics:mass").Get() is not None}
+        for name, prim in prims.items():
+            mt = _re.fullmatch(r"([rl])_hl_(thumb|index|middle|ring|pinky)_(sensor|tip)", name)
+            if not mt:
+                continue
+            m_attr, i_attr = prim.GetAttribute("physics:mass"), prim.GetAttribute("physics:diagonalInertia")
+            if args.tip_fix == "inertia" or mt.group(3) == "tip":
+                m = float(m_attr.Get())
+                i_attr.Set(Gf.Vec3f(m * R2, m * R2, m * R2))
+            else:
+                last = f"{mt.group(1)}_hl_{mt.group(2)}_{4 if mt.group(2) == 'thumb' else 2}"
+                lp = prims[last]
+                lm, li = float(lp.GetAttribute("physics:mass").Get()), lp.GetAttribute("physics:diagonalInertia").Get()
+                half = Gf.Vec3f(li[0] * 0.5, li[1] * 0.5, li[2] * 0.5)
+                lp.GetAttribute("physics:mass").Set(lm * 0.5)
+                lp.GetAttribute("physics:diagonalInertia").Set(half)
+                m_attr.Set(lm * 0.5)
+                i_attr.Set(half)
+            n_tip += 1
+            if n_tip <= 4:
+                print(f"[usd tip_fix={args.tip_fix}] {name} mass {float(m_attr.Get()):.2e} I {i_attr.Get()}", flush=True)
+        if n_tip == 0:
+            raise SystemExit("tip_fix 대상 prim 을 못 찾았다 — 무효")
     stage.GetRootLayer().Save()
     print(f"[usd] override nf→{args.mimic_nf or '-'}({n_nf}) sensor_mass→{args.sensor_mass or '-'}({n_m}) · {tmp}", flush=True)
     if (args.mimic_nf > 0.0 and n_nf == 0) or (args.sensor_mass > 0.0 and n_m == 0):

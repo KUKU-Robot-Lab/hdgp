@@ -165,6 +165,7 @@ class PourFabricMimicEnv(DirectRLEnv):
         self._success_now = torch.zeros(N, dtype=torch.bool, device=dev)
         self._success_streak = torch.zeros(N, dtype=torch.long, device=dev)
         self._dropped = torch.zeros(N, dtype=torch.bool, device=dev)
+        self._mim_qd_streak = torch.zeros(N, dtype=torch.long, device=dev)
         self._src_spawn = torch.zeros(N, 3, device=dev)
         self._rcv_spawn = torch.zeros(N, 3, device=dev)
         self._src_grasped = torch.zeros(N, dtype=torch.bool, device=dev)
@@ -784,12 +785,18 @@ class PourFabricMimicEnv(DirectRLEnv):
         # 09.14 라운드 1: 속도 기준을 빠져나간 느린 폭주 → 결합 오차 자체도 종료(사용자 결정 "2 추가").
         q = self.robot.data.joint_pos
         mim_err = (q[:, self._mim_dep_t] - self._mim_mult * q[:, self._mim_lead_t]).abs().max(dim=-1).values
-        mimic_runaway = (dep_qd > float(cfg.mimic_runaway_dep_qd)) | (mim_err > float(cfg.mimic_runaway_err_rad))
+        # 09.17 사용자 결정: 속도 튐은 연속 K 스텝 지속일 때만 종료(충돌 순간 한 번은 통과) · 오차·비유한 상태는 즉시.
+        qd_spike = dep_qd > float(cfg.mimic_runaway_dep_qd)
+        self._mim_qd_streak = torch.where(qd_spike, self._mim_qd_streak + 1, torch.zeros_like(self._mim_qd_streak))
+        nonfinite = ~(torch.isfinite(self.robot.data.joint_pos).all(dim=-1) & torch.isfinite(self.robot.data.joint_vel).all(dim=-1))
+        mimic_runaway = ((self._mim_qd_streak >= int(cfg.mimic_runaway_qd_steps))
+                         | (mim_err > float(cfg.mimic_runaway_err_rad)) | nonfinite)
         terminated = runaway | mimic_runaway | self._dropped
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         self.extras["task/runaway_rate"] = runaway.float().mean()
         self.extras["done/mimic_runaway"] = mimic_runaway.float().mean()
         self.extras["done/mimic_err_runaway"] = (mim_err > float(cfg.mimic_runaway_err_rad)).float().mean()
+        self.extras["done/mimic_qd_spike"] = qd_spike.float().mean()
         return terminated, truncated
 
     # ==================================================================
@@ -798,6 +805,7 @@ class PourFabricMimicEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
         n, dev, cfg = len(env_ids), self.device, self.cfg
+        self._mim_qd_streak[env_ids] = 0
 
         q0 = self._reset_q.unsqueeze(0).expand(n, -1).contiguous()
         self.robot.write_joint_state_to_sim(q0, torch.zeros_like(q0), env_ids=env_ids)

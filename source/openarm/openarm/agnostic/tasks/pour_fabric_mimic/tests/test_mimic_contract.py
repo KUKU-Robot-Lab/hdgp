@@ -188,6 +188,20 @@ def test_mimic_blowup_terminates_episode():
     assert 'self.extras["done/mimic_runaway"]' in _ENV
 
 
+def test_transient_dep_qd_spike_does_not_terminate():
+    """09.17 사용자 결정: 컵 충돌 순간의 종속관절 속도 튐 한 번으로는 에피소드를 끝내지 않는다(학습 초반 에피소드
+    50~90 % 가 이 종료로 끊겨 "컵에 닿으면 죽는다"를 가르쳤을 정황). 속도 기준은 연속 K 스텝 지속일 때만,
+    결합 오차·비유한 상태는 즉시 종료."""
+    m = re.search(r"mimic_runaway_qd_steps:\s*int\s*=\s*([0-9]+)", _CFG)
+    assert m and int(m.group(1)) >= 2
+    code = _code_only(_ENV)
+    assert "self . _mim_qd_streak >= int ( cfg . mimic_runaway_qd_steps )" in code
+    assert "torch . isfinite" in code.split("def _get_dones")[1].split("def _reset_idx")[0]
+    assert "self . _mim_qd_streak [ env_ids ] = 0" in code
+    assert 'self.extras["done/mimic_qd_spike"]' in _ENV
+    assert "mimic_runaway_qd_steps" in _CFG.split("def _validate_mimic_fields")[1]
+
+
 def test_slow_mimic_drift_also_terminates():
     """09.14 라운드 1: 오차가 epoch 321-323(39→236 rad)·348-351(7→18 rad) 동안 속도 100 rad/s 아래로 천천히 벌어져
     속도 기준을 빠져나갔다 → 사용자 결정 "2 추가": 결합 오차 자체도 종료 조건."""
@@ -195,7 +209,7 @@ def test_slow_mimic_drift_also_terminates():
     assert m and 1.7 < float(m.group(1)) < 7.0, "정상 epoch 최대 1.7 rad · 느린 폭주 시작 7 rad 사이"
     code = _code_only(_ENV)
     assert "cfg . mimic_runaway_err_rad" in code
-    assert "mimic_runaway = ( dep_qd > float ( cfg . mimic_runaway_dep_qd ) ) | ( mim_err > float ( cfg . mimic_runaway_err_rad ) )" in code
+    assert "| ( mim_err > float ( cfg . mimic_runaway_err_rad ) ) |" in code
     assert 'self.extras["done/mimic_err_runaway"]' in _ENV
     assert "mimic_runaway_err_rad" in _CFG.split("def _validate_mimic_fields")[1]
 

@@ -309,6 +309,9 @@ class PourFabricMimicEnvCfg(DirectRLEnvCfg):
     #   348-351 7→18 rad)가 위 기준을 빠져나갔다. 정상 epoch 의 전 env 최대 오차는 ≤1.7 rad → 결합 오차 자체도 종료 조건
     #   (사용자 결정 09.14 "2 추가").
     mimic_runaway_err_rad: float = 3.0
+    # ★09.17 사용자 결정: 속도 기준은 **연속 이 스텝 수** 지속일 때만 종료. 컵 충돌 순간 튐 한 번에 끊으면 학습 초반
+    #   에피소드 50~90 % 가 끊겨 "컵에 닿으면 죽는다"를 가르친다(정황). 결합 오차·비유한 상태는 즉시 종료 유지.
+    mimic_runaway_qd_steps: int = 3
 
     # ---- 접촉 --------------------------------------------------------------------
     contact_force_threshold: float = 1.0      # N — 파지(대향) 판정(env grasp 플래그)
@@ -422,6 +425,8 @@ def _validate_mimic_fields(cfg: "PourFabricMimicEnvCfg", pair) -> None:
         errs.append("mimic_dep_limit_margin_rad 는 ≥ 0")
     if float(cfg.mimic_runaway_err_rad) <= 0.0:
         errs.append("mimic_runaway_err_rad 는 > 0 (0 이면 모든 env 가 매 스텝 종료)")
+    if int(cfg.mimic_runaway_qd_steps) < 1:
+        errs.append("mimic_runaway_qd_steps 는 ≥ 1 (1 = 튐 한 번에 종료)")
     cols = (int(cfg.ctx_palm_normal_col), int(cfg.ctx_palm_second_col))
     if not all(0 <= c <= 2 for c in cols) or cols[0] == cols[1]:
         errs.append(f"ctx_palm_normal_col/ctx_palm_second_col 는 0~2 의 서로 다른 열: {cols}")
