@@ -260,3 +260,22 @@ def test_spawn_center_override_is_applied_after_parent_boot_to_the_runtime_profi
     _ordered(init, ["super().__init__(cfg, render_mode, **kw)",
                     'getattr(self.cfg, "object_spawn_center_override", ())',
                     "self.profile = dataclasses.replace(self.profile, object_spawn_center="])
+
+
+def test_rand_leaf_rejects_spawns_under_the_start_hand_and_on_the_table_pocket():
+    # ★09.17 소환 점검(4096 표본): 겹침 10.4 % · 상판 이상 4.8 % → 사용자 "문제 위치만 다시 뽑기"
+    blk = _CFG.split("class GraspFJT2RRandEnvCfg", 1)[1]
+    assert "spawn_reject_hand_box: tuple = (0.0, 0.27, -0.34, -0.26, 0.385)" in blk
+    assert "spawn_reject_pocket: tuple = (0.135, 0.0, 0.035)" in blk
+    reach = _CFG.split("class GraspFJT2RReachEnvCfg", 1)[1].split("class GraspFJT2RRandEnvCfg", 1)[0]
+    assert "spawn_reject" not in reach
+    reset = _fn_block(_ENV, "_reset_idx")
+    # 부모 리셋이 컵·첫 목표를 놓은 뒤에 옮긴다 · 목표도 같은 xy 로 · 리셋 env 를 다시 쓴다
+    _ordered(reset, ["super()._reset_idx(env_ids)", 'getattr(self, "_t2r_rej", None)',
+                     "self.goal_pos[idx, 0:2] = torch.where(move", "self.object_spawn_pos[idx, 0:2] = new_xy",
+                     "self.object.write_root_state_to_sim(root, env_ids=idx)"])
+    # 리셋은 매 스텝 일부 env 에서 돈다 — host 동기화(bool()/.item()/불리언 인덱싱 뒤 len) 금지
+    rej_part = reset.split('getattr(self, "_t2r_rej", None)', 1)[1]
+    for tok in ("bool(", ".item()", "idx[bad]"):
+        assert tok not in rej_part, tok
+    assert 'ex["diag/spawn_resampled_frac"]' in _ENV and 'ex["diag/spawn_reject_failed"]' in _ENV

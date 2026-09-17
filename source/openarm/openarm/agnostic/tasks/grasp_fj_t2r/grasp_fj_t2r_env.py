@@ -68,6 +68,21 @@ class GraspFJT2REnv(GraspFJEnv):
             _r = float(self._adr_spawn_range)
             print(f"[grasp_fj_t2r] 컵 소환 중심 ({_ctr[0]:.3f}, {_ctr[1]:.3f}) ± {_r:.3f} → "
                   f"x [{_ctr[0] - _r:.2f}, {_ctr[0] + _r:.2f}] · y [{_ctr[1] - _r:.2f}, {_ctr[1] + _r:.2f}]", flush=True)
+        # ★09.17 소환 거부 영역(rand leaf 만) — 종별 윗면 높이·윗면 반경·바닥 반경을 뱅크 순서(= `_species_ids`)로 굳힌다.
+        self._t2r_rej = None
+        _hb, _pk = tuple(getattr(self.cfg, "spawn_reject_hand_box", ())), tuple(getattr(self.cfg, "spawn_reject_pocket", ()))
+        if _hb or _pk:
+            from ...modules import object_bank as _ob
+            _spec = {s.id: s for s in _ob.get(self.cfg.object_bank).specs}
+            _sp = [_spec[nm] for nm in self._species_names]
+            _t = lambda v: torch.tensor(v, device=self.device, dtype=torch.float32)  # noqa: E731
+            self._t2r_rej = dict(
+                hand_box=tuple(float(v) for v in _hb), pocket=tuple(float(v) for v in _pk),
+                top=_t([float(self.cfg.table_surface_z) + s.origin_offset_z + s.rim_z for s in _sp]),
+                r_top=_t([s.grasp_radius_m for s in _sp]), r_base=_t([s.outer_radius_m for s in _sp]),
+                stats=torch.zeros(3, device=self.device))          # [리셋 env 누적, 다시 뽑은 env, 끝내 못 뽑은 env]
+            print(f"[grasp_fj_t2r] 소환 거부 — 손 그림자 {_hb or '없음'} · 상판 홈 {_pk or '없음'} · 윗면 z "
+                  f"{[round(float(v), 3) for v in self._t2r_rej['top']]}", flush=True)
         self._t2r_prev_actions = torch.zeros(self.num_envs, int(self.cfg.action_space), device=self.device)
         self._t2r_ctx = None
         # 성공 순간 접촉 이벤트 EMA — [손가락 수 · 마디 수 · 손바닥] 과 손가락별. 음수 = 아직 성공 없음(센티널).
@@ -281,6 +296,11 @@ class GraspFJT2REnv(GraspFJEnv):
         # ★09.16 손바닥 상판 여유 — 부모 `hand_z_min` 의 사각지대(손바닥 제외)를 메우는 진단.
         ex["diag/palm_clearance"] = ctx.palm_clearance.mean()
         ex["diag/palm_on_table_frac"] = (ctx.palm_clearance < 0.0).to(touching.dtype).mean()
+        rej = getattr(self, "_t2r_rej", None)
+        if rej is not None:
+            # ★09.17 소환 거부 — 누적 리셋 중 다시 뽑은 비율 · 32 후보가 전부 걸려 못 옮긴 env 수(0 이어야 한다)
+            ex["diag/spawn_resampled_frac"] = rej["stats"][1] / rej["stats"][0].clamp(min=1.0)
+            ex["diag/spawn_reject_failed"] = rej["stats"][2]
         for k, finger in enumerate(self._finger_names):
             ex[f"contact/finger_{finger}"] = touching[:, k].amax(dim=1).mean()
         # ★성공 **순간**의 접촉(09.14 t2r 루프) — "성공이 인벨롭이었나"는 스텝 평균으로 못 가른다(접근 중 env 가 뭉갠다).
@@ -363,3 +383,46 @@ class GraspFJT2REnv(GraspFJEnv):
                     # ★09.16 사용자 "가까운 출발 = 접근 완료로 시작" — 컵 옆 기본 자세 출발은 접근이 끝난 것으로 보고 2단계(자리 맞추기·
                     #   닫기·접촉)부터 시작한다. 4.5 cm 판을 1단계로 두자 컵이 손 앞인데도 닫기 보상이 켜지지 않았다(i02 e240 래치 0).
                     self._t2r_gate_approach[pick] = True
+        rej = getattr(self, "_t2r_rej", None)
+        if rej is not None:
+            # ★09.17 사용자 "문제 위치만 다시 뽑기" — 부모 리셋이 컵을 놓고 첫 목표를 뽑은 **뒤**, 거부 영역에 걸린 env 만 같은 범위
+            #   (소환 중심 ± spawn_range)에서 후보 32개를 뽑아 첫 통과 후보로 옮긴다. 목표는 컵과 같은 xy 만큼 옮겨 "컵 + 오프셋"
+            #   관계를 지키고 목표 박스로 클램프한다. 관측 지연 큐는 다음 관측에서 flush 되므로 옮긴 위치만 보인다.
+            idx = torch.as_tensor(ids, device=self.device, dtype=torch.long)
+
+            def _bad(xy: torch.Tensor, sid: torch.Tensor) -> torch.Tensor:        # xy (m, k, 2) · sid (m,) → (m, k)
+                out = torch.zeros(xy.shape[:2], dtype=torch.bool, device=self.device)
+                if rej["hand_box"]:
+                    x0, x1, y0, y1, zc = rej["hand_box"]
+                    dx = torch.clamp(torch.maximum(x0 - xy[..., 0], xy[..., 0] - x1), min=0.0)
+                    dy = torch.clamp(torch.maximum(y0 - xy[..., 1], xy[..., 1] - y1), min=0.0)
+                    out |= (torch.hypot(dx, dy) < rej["r_top"][sid].unsqueeze(1)) & (rej["top"][sid] > zc).unsqueeze(1)
+                if rej["pocket"]:
+                    px, py, pr = rej["pocket"]
+                    out |= torch.hypot(xy[..., 0] - px, xy[..., 1] - py) < (rej["r_base"][sid] + pr).unsqueeze(1)
+                return out
+
+            # ★host 동기화 0(리셋은 매 스텝 일부 env 에서 돈다) — 불리언 인덱싱·.any() 없이 마스크로 섞고, 리셋 env 전부를 다시 쓴다
+            #   (옮기지 않은 env 는 부모가 쓴 것과 같은 상태).
+            sid = self._species_ids[idx]
+            cur = self.object_spawn_pos[idx, :2]
+            bad = _bad(cur.unsqueeze(1), sid).squeeze(1)
+            ctr = torch.tensor(self.profile.object_spawn_center, device=self.device, dtype=torch.float32)
+            cand = ctr + (torch.rand(len(idx), 32, 2, device=self.device) * 2.0 - 1.0) * float(self._adr_spawn_range)
+            ok = ~_bad(cand, sid)
+            has = ok.any(dim=1)
+            move = (bad & has).unsqueeze(1)
+            new_xy = torch.where(move, cand[torch.arange(len(idx), device=self.device), torch.argmax(ok.int(), dim=1)], cur)
+            g_lo = torch.tensor(self._goal_cfg.box_min[:2], device=self.device, dtype=torch.float32)
+            g_hi = torch.tensor(self._goal_cfg.box_max[:2], device=self.device, dtype=torch.float32)
+            goal = self.goal_pos[idx, :2]
+            self.goal_pos[idx, 0:2] = torch.where(move, torch.minimum(torch.maximum(goal + (new_xy - cur), g_lo), g_hi), goal)
+            self.object_spawn_pos[idx, 0:2] = new_xy
+            root = torch.zeros(len(idx), 13, device=self.device)
+            root[:, :3] = self.object_spawn_pos[idx] + self.scene.env_origins[idx]
+            root[:, 2] += float(self.cfg.object_spawn_pad)
+            root[:, 3] = 1.0
+            self.object.write_root_state_to_sim(root, env_ids=idx)
+            self._seed_palm_integrator(idx)
+            rej["stats"] += torch.stack([torch.ones((), device=self.device) * len(idx), bad.sum().float(),
+                                         (bad & ~has).sum().float()])
