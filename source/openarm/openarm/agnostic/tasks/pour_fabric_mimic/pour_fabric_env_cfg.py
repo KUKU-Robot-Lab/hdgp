@@ -158,7 +158,9 @@ def _mass_term(asset: str) -> EventTermCfg:
 
 @configclass
 class PourFabricEventCfg:
-    robot_material = _material_term("robot", 1.0, 1.0)
+    # 09.17 사용자 결정: 손(로봇) 마찰 2.0 — probe_rh_grasp_lift fric 6조건에서 손-컵 쌍 마찰 ~0.97 → 2.0 일 때만
+    #   직립+양쪽 파지가 들기로 이어졌다(1/73 → 25/86). 컵도 cup_friction_range 로 2.0 고정(평균 combine → 쌍 2.0).
+    robot_material = _material_term("robot", 2.0, 2.0)
     source_cup_material = _material_term("source_cup", 1.0, 1.0)     # resolve_cfg 가 범위 적용
     receiver_cup_material = _material_term("receiver_cup", 1.0, 1.0)
     robot_joint_stiffness_and_damping = EventTermCfg(
@@ -318,7 +320,9 @@ class PourFabricMimicEnvCfg(DirectRLEnvCfg):
     # 09.17 리셋 진단: 동결이 파지 판정과 같은 1 N 에 걸려 손가락이 1 N 에서 닫기를 멈췄다 → 힘이 1~2 N 에서
     #   더 안 오르고 플래그가 깜빡이며 들기 중 컵을 놓쳤다(probe_rh_reset_diag). 동결은 따로 4 N(사용자 결정).
     #   실기 RH56F1 펌웨어 forceSet 을 같은 값으로 맞춘다.
-    contact_freeze_threshold: float = 4.0     # N — 손가락 닫기 동결 판정
+    # 09.17 사용자 결정(fric 프로브 뒤): 마찰 2.0 과 함께 1.0 N 으로 되돌린다 — 마찰 2.0 에서 제대로 든 시행이
+    #   동결 1.0 N 36건 vs 4.0 N 5건(fric_up 753 clean 중). 위 4 N 근거는 마찰 ~0.97 조건에서만 잰 것이다.
+    contact_freeze_threshold: float = 1.0     # N — 손가락 닫기 동결 판정
     contact_obs_clip: float = 20.0
     # ---- 손끝 촉각 actor obs (사용자 결정 09.14 "3 추가") ------------------------------------
     # 실기 출처: RH56F1 TouchData1.finger_forces[5] (정전용량 손끝 법선력, 0.01 N 단위, 1024 = 10.24 N).
@@ -376,7 +380,8 @@ class PourFabricMimicEnvCfg(DirectRLEnvCfg):
     # ---- 물리 DR / ADR (09.14) --------------------------------------------------------
     enable_events: bool = True
     events: PourFabricEventCfg = PourFabricEventCfg()
-    cup_friction_range: tuple = (0.7, 1.2)    # 재질은 처음부터 고정 범위(런타임 확장 불가)
+    # 재질은 처음부터 고정 범위(런타임 확장 불가). 09.17 사용자 결정: (0.7, 1.2) → 2.0 고정(fric_up 조건과 동일).
+    cup_friction_range: tuple = (2.0, 2.0)
     enable_adr: bool = True
     adr_num_increments: int = 30
     adr_increment_interval: int = 3000        # 정책 스텝
