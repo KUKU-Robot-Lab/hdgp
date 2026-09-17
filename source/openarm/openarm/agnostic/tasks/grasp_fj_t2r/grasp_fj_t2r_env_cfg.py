@@ -115,6 +115,9 @@ class GraspFJT2RRandEnvCfg(GraspFJT2RReachEnvCfg):
 
     near_start_frac: float = 0.0
     spawn_range: float = 0.15
+    #: ★09.17 두 번째 부팅 실패로 발견 — 부모가 ADR 축을 enable_adr 와 무관하게 부팅에서 검사해 max < base 면 죽는다
+    #:   (승급할수록 쉬워지는 역방향 축 방지). ADR 은 꺼져 있으므로 base 와 같게 두어 항등 축으로 만든다.
+    adr_spawn_range_max: float = 0.15
     #: env-local (x, y). 빈 튜플이면 프로필 중심 그대로(다른 판은 이 필드가 없다).
     object_spawn_center_override: tuple = (0.25, -0.15)
     start_palm_dist_band_m: tuple = (0.25, 0.38)

@@ -241,7 +241,7 @@ def test_rand_leaf_carries_the_user_decisions_of_0917():
     # ★사용자 결정(09.17): 컵 소환 x 0.10–0.40 · y −0.30–0.00 · 가까운 출발 끔. reach 판은 그대로 둔다(i00~i09 재현).
     assert "class GraspFJT2RRandEnvCfg(GraspFJT2RReachEnvCfg)" in _CFG
     blk = _CFG.split("class GraspFJT2RRandEnvCfg", 1)[1]
-    for tok in ("near_start_frac: float = 0.0", "spawn_range: float = 0.15",
+    for tok in ("near_start_frac: float = 0.0", "spawn_range: float = 0.15", "adr_spawn_range_max: float = 0.15",
                 "object_spawn_center_override: tuple = (0.25, -0.15)", "start_palm_dist_band_m: tuple = (0.25, 0.38)"):
         assert tok in blk, tok
     cx, cy, r = 0.25, -0.15, 0.15
