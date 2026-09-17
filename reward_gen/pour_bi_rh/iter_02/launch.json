@@ -1,0 +1,11 @@
+{
+ "label": "t2r_rh2_i02",
+ "num_envs": 1024,
+ "started": 1789685859,
+ "commit": "5944f829",
+ "host": "vision-3090",
+ "iter": "reward_gen/pour_bi_rh/iter_02",
+ "round": 3,
+ "fresh": true,
+ "note": "09.18 round 3: trace_i01(64 env·900 스텝) 근거 운영자 패치 - PAD 0.010->0, reach_tips 2-스케일(30+160), touch_first 단조화. env 는 i01 과 동일(마찰 2.0·동결 1.0 N). LLM 재생성 없음(ingest PASS). fresh."
+}
