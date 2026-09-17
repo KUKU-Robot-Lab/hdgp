@@ -40,3 +40,5 @@ log_archive/
 
 # 그림자 기록 산출물 — 재생성 가능하고 크다(npz). 판정 결과만 docs 로 남긴다.
 logs/shadow/
+# 로컬 play 영상·프레임 추출물
+our_source/
