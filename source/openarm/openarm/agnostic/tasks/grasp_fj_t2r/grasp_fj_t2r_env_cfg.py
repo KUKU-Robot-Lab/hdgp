@@ -118,3 +118,20 @@ class GraspFJT2RRandEnvCfg(GraspFJT2RReachEnvCfg):
     #: env-local (x, y). 빈 튜플이면 프로필 중심 그대로(다른 판은 이 필드가 없다).
     object_spawn_center_override: tuple = (0.25, -0.15)
     start_palm_dist_band_m: tuple = (0.25, 0.38)
+    #: ★09.17 부팅 실패로 발견 — 첫 목표 = 정착한 컵 + xy U(±goal_first_xy_range 0.05) + 들기 높이, 목표 박스(= 스폰 중심 ±
+    #:   반폭)로 클램프한다. 반폭이 0.08 이면 넓은 소환에서 목표가 박스 가장자리로 잘려 "컵을 제자리에서 들기"가 "옆으로 옮기기"가
+    #:   된다 — cfg 검증(spawn_range + goal_first_xy_range ≤ 반폭)이 막았다. 반폭 = 0.15 + 0.05 로 컵 위치 그대로 들게 한다.
+    #:   Track B 는 관절공간 증분이라 부모의 목표 박스 팔 도달성 부팅 검사(`_assert_goal_box_in_arm_reach`)는 건너뛴다.
+    goal_box_xy_halfwidth: float = 0.20
+
+    def _derive_goal_box(self, profile) -> None:
+        """목표 박스 중심도 소환 중심 덮어쓰기를 따른다 — 부모는 프로필 중심을 읽어 원래 소환 중심 (0.362, −0.16) 에 둔다."""
+        _ctr = tuple(self.object_spawn_center_override)
+        if not _ctr:
+            super()._derive_goal_box(profile)
+            return
+        cx, cy = (float(v) for v in _ctr)
+        h = float(self.goal_box_xy_halfwidth)
+        z0 = float(self.table_surface_z) + float(self.object_origin_offset_z)
+        self.goal_box_min = (cx - h, cy - h, z0 + float(self.goal_box_z_range[0]))
+        self.goal_box_max = (cx + h, cy + h, z0 + float(self.goal_box_z_range[1]))

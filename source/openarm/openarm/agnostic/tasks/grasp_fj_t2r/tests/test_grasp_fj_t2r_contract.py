@@ -250,6 +250,9 @@ def test_rand_leaf_carries_the_user_decisions_of_0917():
     assert "near_start_frac: float = 0.25" in reach and "object_spawn_center_override" not in reach
     assert "spawn_range" not in reach, "reach 판 소환 범위는 부모 기본(0.02) 그대로여야 한다"
     assert '("short_r", "grasp_fj_t2r_rand"): GraspFJT2RRandEnvCfg' in _REG
+    # 첫 목표(컵 + xy ±0.05)가 목표 박스에 잘리지 않아야 "제자리에서 들기"다 — 부모 cfg 검증과 같은 부등식
+    assert "goal_box_xy_halfwidth: float = 0.20" in blk and 0.15 + 0.05 <= 0.20
+    assert "def _derive_goal_box(self, profile)" in blk and "self.object_spawn_center_override" in blk
 
 
 def test_spawn_center_override_is_applied_after_parent_boot_to_the_runtime_profile_only():
