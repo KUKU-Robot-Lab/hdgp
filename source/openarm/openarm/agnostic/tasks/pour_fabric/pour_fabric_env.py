@@ -292,14 +292,14 @@ class PourFabricEnv(DirectRLEnv):
                 for body in bodies:
                     s = ContactSensor(ContactSensorCfg(
                         prim_path=f"/World/envs/env_.*/Robot/{body}",
-                        filter_prim_paths_expr=flt, history_length=1, track_air_time=False))
+                        filter_prim_paths_expr=flt, history_length=0, track_air_time=False))
                     ss.append(s)
                     self.scene.sensors[f"contact_{role}_{finger}_{body}"] = s
                 store[finger] = ss
             self._sensor_store[role] = store
             ps = ContactSensor(ContactSensorCfg(
                 prim_path=f"/World/envs/env_.*/Robot/{prof.palm_body}",
-                filter_prim_paths_expr=flt, history_length=1, track_air_time=False))
+                filter_prim_paths_expr=flt, history_length=0, track_air_time=False))
             self.scene.sensors[f"contact_{role}_palm"] = ps
             self._palm_store[role] = ps
 
@@ -316,7 +316,7 @@ class PourFabricEnv(DirectRLEnv):
         # 컵↔컵 접촉(09.14 s2r 충돌 신호): 소스 컵 센서를 리시버 컵으로 필터.
         self._cup_cup_sensor = ContactSensor(ContactSensorCfg(
             prim_path=_cfg.SOURCE_CUP_PRIM, filter_prim_paths_expr=[_cfg.RECEIVER_CUP_PRIM],
-            history_length=1, track_air_time=False))
+            history_length=0, track_air_time=False))
         self.scene.sensors["contact_cups"] = self._cup_cup_sensor
         self.beads = RigidObjectCollection(cfg.beads_cfg)
         self.scene.rigid_object_collections["beads"] = self.beads
@@ -568,7 +568,11 @@ class PourFabricEnv(DirectRLEnv):
         if self.adr.maybe_increment(float(self._success_now.float().mean())):
             print(f"[pour_fabric][ADR] 증분 {self.adr.increment_counter}/{self.adr.num_increments} "
                   f"(progress {self.adr.progress:.2f})", flush=True)
-        self._log(total, terms, flags, ctx)
+        # ★09.17 속도: extras(평균 46개)는 N 스텝마다만 갱신 — 사이 스텝은 직전 값이 남는다
+        self._log_tick += 1
+        k, every = int(self.cfg.extras_log_interval), int(self.cfg.console_log_interval)
+        if k <= 1 or self._log_tick % k == 0 or (every > 0 and self._log_tick % every == 0):
+            self._log(total, terms, flags, ctx)
         return total
 
     def trace_snapshot(self) -> dict:
@@ -598,7 +602,35 @@ class PourFabricEnv(DirectRLEnv):
         for tag, cup in (("src", self.source_cup), ("rcv", self.receiver_cup)):
             snap[f"{tag}_cup_pos"] = _np(cup.data.root_pos_w - self.scene.env_origins)
             snap[f"{tag}_cup_up"] = _np(self._cup_up(cup))
+            snap[f"{tag}_cup_quat"] = _np(cup.data.root_quat_w)
+        # s2r 골든(09.17): 실기 노드가 재현해야 할 중간값. 읽기 전용 — 지각 버퍼(_perceive)는 건드리지 않는다.
+        for tag, rig, cup, grasped in (("src", self.src, self.source_cup, self._src_grasped),
+                                       ("rcv", self.rcv, self.receiver_cup, self._rcv_grasped)):
+            snap[f"{tag}_fabric_q"] = _np(rig.fabric_q)
+            snap[f"{tag}_fabric_qd"] = _np(rig.fabric_qd)
+            snap[f"{tag}_close_gate"] = _np(self._close_gate(rig, cup, grasped))
+            snap[f"{tag}_grasped"] = _np(grasped.float())
+            snap[f"{tag}_tips"] = _np(rig.tips_pos())
+        snap["hold"] = _np(self._hold_mask().float())
+        snap["joint_pos"] = _np(self.robot.data.joint_pos)
+        snap["joint_vel"] = _np(self.robot.data.joint_vel)
+        snap["joint_pos_target"] = _np(self.robot.data.joint_pos_target)
+        snap["joint_vel_target"] = _np(self.robot.data.joint_vel_target)
         return snap
+
+    def trace_meta(self) -> dict:
+        """골든 메타(에피소드 불변): PhysX 관절 순서와 rig 별 인덱스 — 실기 관절 매핑의 진실원천."""
+        meta = {"joint_names": list(self.robot.data.joint_names),
+                "policy_dt": float(self._policy_dt),
+                "palm_ema_alpha": float(self.cfg.palm_action_ema_alpha)}
+        for tag, rig in (("src", self.src), ("rcv", self.rcv)):
+            meta[f"{tag}_arm_ids"] = [int(i) for i in rig.arm_ids]
+            meta[f"{tag}_hand_ids"] = [int(i) for i in rig.hand_ids]
+            meta[f"{tag}_syn_ids"] = [int(i) for i in rig.syn_ids]
+            meta[f"{tag}_fab_ids"] = [int(i) for i in rig.fab_t.tolist()]
+            meta[f"{tag}_anchor"] = rig.anchor[0].tolist()
+            meta[f"{tag}_fab_to_env"] = rig.fab_to_env.tolist()
+        return meta
 
     def _log(self, total, terms, flags, ctx: RewardContext) -> None:
         cfg = self.cfg
@@ -658,7 +690,6 @@ class PourFabricEnv(DirectRLEnv):
             rerr = rig.palm_targets[:, 3:] - rig.palm_pose_6d()[:, 3:]
             rerr = torch.remainder(rerr + math.pi, 2 * math.pi) - math.pi
             self.extras[f"fabric/{tag}_rot_err_deg"] = torch.rad2deg(rerr.abs().max(dim=1).values).mean()
-        self._log_tick += 1
         every = int(cfg.console_log_interval)
         if every > 0 and self._log_tick % every == 0:
             print(f"[METRICS] step={self._log_tick:>8d} rew={total.mean():+.3f} "

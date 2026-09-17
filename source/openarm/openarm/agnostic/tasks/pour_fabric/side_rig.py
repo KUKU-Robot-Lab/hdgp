@@ -218,7 +218,14 @@ class SideRig:
     # 접촉
     # ==================================================================
     def _mag(self, sensor) -> torch.Tensor:
-        return sensor.data.force_matrix_w.view(self.N, -1, 3).sum(dim=1).norm(dim=-1)
+        # ★09.17 속도: 같은 env 스텝 안의 반복 읽기(관측·보상·종료)를 1회로 — 프로파일 _mag 7.4%
+        step = int(self.env.common_step_counter)
+        if getattr(self, "_mag_step", None) != step:
+            self._mag_step, self._mag_cache = step, {}
+        key = id(sensor)
+        if key not in self._mag_cache:
+            self._mag_cache[key] = sensor.data.force_matrix_w.view(self.N, -1, 3).sum(dim=1).norm(dim=-1)
+        return self._mag_cache[key]
 
     def finger_forces(self) -> torch.Tensor:
         """손가락별 자기 컵 접촉력 합 (N,F)."""
