@@ -1,0 +1,14 @@
+{
+ "label": "t2r_i11",
+ "num_envs": 4096,
+ "started": 1789610340.793285,
+ "started_local": "2026-09-17 10:59",
+ "commit": "5767f0d6",
+ "gpu": 1,
+ "server_pids": [
+  2274151,
+  2274158
+ ],
+ "env_round": 11,
+ "reward": "reward_gen/pour_bi/iter_11/compute_reward.py (42 terms, ingest PASS)"
+}
