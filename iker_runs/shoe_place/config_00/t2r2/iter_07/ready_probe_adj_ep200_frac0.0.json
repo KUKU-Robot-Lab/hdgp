@@ -1,0 +1,157 @@
+{
+ "schema": 1,
+ "summary": {
+  "checkpoint": "/home/user/rl_ws/hdgp-iker/log/rl_games/open-sens/left/iker-shoe-t2r/iker_t2r2_c00_i07adj/nn/last_open-sens_l_iker_shoe_t2r_ep_200_rew_1403.3759.pth",
+  "reward_code_path": "/home/user/rl_ws/hdgp-iker/iker_runs/shoe_place/config_00/t2r2/iter_07/reward_fn.py",
+  "num_envs": 64,
+  "noise": false,
+  "adjust_frac": 0.0,
+  "episode_steps_mean": 124.16,
+  "step_rate": {
+   "ready": 0.369,
+   "placed": 0.3692,
+   "resting": 0.685,
+   "still": 0.6894,
+   "released": 0.6808,
+   "home": 0.1885,
+   "ok": 0.1778
+  },
+  "ever_true_env_frac": {
+   "ready": 0.5625,
+   "placed": 0.5625,
+   "resting": 0.9844,
+   "still": 0.9219,
+   "released": 0.9375,
+   "home": 0.5312,
+   "ok": 0.5156
+  },
+  "open_frac": {
+   "mean_all_steps": 0.6864,
+   "max_per_env_mean": 0.9202,
+   "max_per_env_p90": 1.0,
+   "mean_on_ready_steps": 0.983
+  },
+  "stable_count_max": {
+   "mean": 10.312,
+   "p90": 20.0,
+   "max": 20.0,
+   "target": 20,
+   "at_target_frac": 0.5156
+  },
+  "final_vs_other": {
+   "target_gap_xy_m": 0.1369,
+   "final_gap_xy_q10_50_90": [
+    0.1235,
+    0.1494,
+    0.2477
+   ],
+   "final_keypoint_dist_q10_50_90": [
+    0.0156,
+    0.0297,
+    0.1714
+   ],
+   "final_palm_home_dist_q10_50_90": [
+    0.0001,
+    0.0006,
+    0.3667
+   ],
+   "min_palm_home_dist_q10_50_90": [
+    0.0001,
+    0.0002,
+    0.1875
+   ],
+   "home_joint_tol": 0.035,
+   "episodes": 64
+  },
+  "failure_breakdown": {
+   "episodes": 64,
+   "failures": 31,
+   "dropped": {
+    "frac_of_episodes": 0.0156,
+    "final_kp_q10_50_90": [
+     0.7741,
+     0.7741,
+     0.7741
+    ],
+    "min_kp_q10_50_90": [
+     0.214,
+     0.214,
+     0.214
+    ],
+    "ever_within_tol_frac": 0.0,
+    "steps_mean": 31.0,
+    "final_palm_gap_q10_50_90": [
+     0.6359,
+     0.6359,
+     0.6359
+    ]
+   },
+   "still_holding": {
+    "frac_of_episodes": 0.0625,
+    "final_kp_q10_50_90": [
+     0.1192,
+     0.1236,
+     0.1263
+    ],
+    "min_kp_q10_50_90": [
+     0.1054,
+     0.1152,
+     0.124
+    ],
+    "ever_within_tol_frac": 0.0,
+    "steps_mean": 199.0,
+    "final_palm_gap_q10_50_90": [
+     0.0469,
+     0.0514,
+     0.0665
+    ]
+   },
+   "on_rack_off_target": {
+    "frac_of_episodes": 0.2969,
+    "final_kp_q10_50_90": [
+     0.0326,
+     0.0379,
+     0.091
+    ],
+    "min_kp_q10_50_90": [
+     0.0324,
+     0.0377,
+     0.0824
+    ],
+    "ever_within_tol_frac": 0.0,
+    "steps_mean": 199.0,
+    "final_palm_gap_q10_50_90": [
+     0.2149,
+     0.2698,
+     0.3554
+    ]
+   },
+   "released_not_resting": {
+    "frac_of_episodes": 0.1094,
+    "final_kp_q10_50_90": [
+     0.1686,
+     0.1942,
+     0.3437
+    ],
+    "min_kp_q10_50_90": [
+     0.0233,
+     0.0434,
+     0.1374
+    ],
+    "ever_within_tol_frac": 0.4286,
+    "steps_mean": 199.0,
+    "final_palm_gap_q10_50_90": [
+     0.559,
+     0.7962,
+     0.8627
+    ]
+   }
+  },
+  "gate_cfg": {
+   "place_tolerance": 0.03,
+   "resting_tol": 0.01,
+   "release_radius": 0.15,
+   "still_speed": 0.05
+  }
+ }
+}
