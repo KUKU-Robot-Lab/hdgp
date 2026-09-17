@@ -114,43 +114,6 @@ if "diag" in modes:
     print(f"[diag hold] pos_err={perr*1000:.1f}mm rot_raw={float(torch.rad2deg(raw.abs().max(dim=1).values).mean()):.1f}deg "
           f"rot_wrapped={float(torch.rad2deg(wrap(raw).abs().max(dim=1).values).mean()):.1f}deg", flush=True)
 
-# ---- extract ----------------------------------------------------------------------------
-if "extract" in modes:
-    settle()
-    far = cup_local().clone()
-    far[:, 0] += 0.8
-    root = torch.zeros(N, 13, device=dev)
-    root[:, :3] = far + env.scene.env_origins
-    root[:, 3] = 1.0
-    cup_asset.write_root_state_to_sim(root)
-    sc = rig.profile.object_spawn_center
-    vc = torch.tensor([sc[0], sc[1], rest_z], device=dev).repeat(N, 1)
-    for u in range(160):
-        _, n = hand_frame()
-        goal = torch.cat([vc[:, :2] + args.side_m * n, (vc[:, 2] + mid_z).unsqueeze(1)], dim=1)
-        env.step(servo(goal, -1.0))
-    pocket, n = hand_frame()
-    goal = torch.cat([vc[:, :2] + args.side_m * n, (vc[:, 2] + mid_z).unsqueeze(1)], dim=1)
-    resid = float((pocket - goal).norm(dim=-1).mean())
-    q = env.robot.data.joint_pos[:, rig.arm_ids]
-    palm = rig.palm_pos()
-    cup_xy = pocket[:, :2] - args.side_m * n
-    rel = (cup_xy - palm[:, :2]).mean(dim=0)
-    names = [env.robot.data.joint_names[i] for i in rig.arm_ids]
-    print(f"[extract] 포켓 잔여 {resid*1000:.1f}mm · q 산포 {float(q.std(dim=0).max()):.4f}rad · "
-          f"palm={fmt(palm.mean(0))} cup_rel_xy={fmt(rel)} q={fmt(q.mean(0), 4)}", flush=True)
-    data = {}
-    if os.path.exists(args.out_json):
-        with open(args.out_json) as fh:
-            data = json.load(fh)
-    data[args.side] = {"arm_joint_names": names, "q_arm": fmt(q.mean(0), 5), "palm_env": fmt(palm.mean(0), 5),
-                       "cup_rel_xy": fmt(rel, 5), "side_m": args.side_m, "pocket_residual_mm": round(resid * 1000, 2),
-                       "note": "probe_rh_reset_diag extract 09.17 — 컵 치운 상태에서 가상 컵 옆 대기 자세"}
-    os.makedirs(os.path.dirname(args.out_json), exist_ok=True)
-    with open(args.out_json, "w") as fh:
-        json.dump(data, fh, indent=1, ensure_ascii=False)
-    print(f"[extract] 저장 {args.out_json}", flush=True)
-
 # ---- gate -------------------------------------------------------------------------------
 if "gate" in modes:
     settle()
@@ -175,14 +138,41 @@ if "gate" in modes:
             else:
                 spawn_z = (env._src_spawn if SI == 0 else env._rcv_spawn)[:, 2]
                 goal = torch.cat([c[:, :2], (spawn_z + mid_z).unsqueeze(1)], dim=1)
-                a = servo(goal, 1.0, extra_z=0.10)
+                k_up = min(1.0, (u + 1) / 60.0) if name == "lift" else 1.0
+                a = servo(goal, 1.0, extra_z=0.10 * k_up)
             _, _, term, _, ex = env.step(a)
             tag = "src" if SI == 0 else "rcv"
+            if bool(term.any()):
+                print(f"[gate {name} u={u} TERM] drop={float(env._dropped.float().mean()):.2f} "
+                      f"arm_runaway={float(ex['task/runaway_rate']):.2f} mimic_runaway={float(ex['done/mimic_runaway']):.2f} "
+                      f"mimic_err_runaway={float(ex['done/mimic_err_runaway']):.2f} mimic_err_max={float(ex['ctrl/mimic_err_max']):.2f} "
+                      f"hand_dep_qd_max={float(ex['ctrl/hand_dep_qd_max']):.1f}", flush=True)
             pocket, _ = hand_frame()
             rec[name].append(dict(grasp=float(ex[f"task/{tag}_grasped"]), lift=float(ex[f"task/{tag}_cup_lift"]),
                                   tilt=float(ex[f"task/{tag}_tilt_deg"]), term=bool(term.any()),
                                   pc=float((pocket[:, :2] - c[:, :2]).norm(dim=-1).mean()),
                                   f=[round(v, 2) for v in rig.finger_forces()[0].tolist()]))
+        if name == "down" and "extract" in modes:
+            q = env.robot.data.joint_pos[:, rig.arm_ids]
+            palm = rig.palm_pos()
+            c = cup_local()
+            pocket, n = hand_frame()
+            rel = (c[:, :2] - palm[:, :2]).mean(dim=0)
+            names = [env.robot.data.joint_names[i] for i in rig.arm_ids]
+            resid = float((pocket[:, :2] - (c[:, :2] + args.side_m * n)).norm(dim=-1).mean())
+            data = {}
+            if os.path.exists(args.out_json):
+                with open(args.out_json) as fh:
+                    data = json.load(fh)
+            data[args.side] = {"arm_joint_names": names, "q_arm": fmt(q.mean(0), 5), "q_arm_std_max": round(float(q.std(dim=0).max()), 5),
+                               "palm_env": fmt(palm.mean(0), 5), "cup_rel_xy": fmt(rel, 5), "side_m": args.side_m,
+                               "pocket_residual_mm": round(resid * 1000, 2), "cup_tilt_deg": round(float(env.extras[f"task/{'src' if SI == 0 else 'rcv'}_tilt_deg"]), 2),
+                               "note": "probe_rh_reset_diag gate 'down' 끝 09.17 — 컵 옆 열린 쪽 대기 자세(위에서 내려옴)"}
+            os.makedirs(os.path.dirname(args.out_json), exist_ok=True)
+            with open(args.out_json, "w") as fh:
+                json.dump(data, fh, indent=1, ensure_ascii=False)
+            print(f"[extract] 저장 {args.side} 포켓 잔여 {resid*1000:.1f}mm q 산포 {float(q.std(dim=0).max()):.4f}rad "
+                  f"palm={fmt(palm.mean(0))} cup_rel_xy={fmt(rel)} q={fmt(q.mean(0), 4)}", flush=True)
         last = rec[name][-1]
         print(f"[gate {name:5s}] 포켓-컵 {last['pc']*1000:.0f}mm · 파지 {last['grasp']:.2f} · 들기 {last['lift']*100:+.1f}cm · "
               f"기울기 {last['tilt']:.1f}° · 힘[th,ix,md,rg,pk] {last['f']} · 구간 최대 기울기 "
