@@ -112,6 +112,9 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         self._adjust_bank = (ab.load_bank(cfg.adjust_bank_path, joint_names, dev)
                              if cfg.adjust_bank_path and cfg.adjust_start_frac > 0.0 else None)
         self._adjust_start = torch.zeros(n, dtype=torch.bool, device=dev)  # this episode began from the adjust bank
+        # last-known success per start kind; written on EVERY step because rl_games' observer indexes each step's
+        # log with the keys of the first one it saw (a key present only on some steps raised KeyError at epoch 1)
+        self._adjust_log = {"place/success_adjust_start": 0.0, "place/success_grasp_start": 0.0}
 
         digest = hashlib.sha256(Path(cfg.reward_code_path).read_bytes()).hexdigest() if cfg.reward_code_path else "none"
         home = ", ".join(f"{v:.3f}" for v in self._home_palm_pos.tolist())
@@ -273,6 +276,8 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         log["place/retracting"] = ctx.retracting.float().mean().item()
         retreated = (self._t2r_last["palm_pos"] - self._palm_start).norm(dim=-1) <= RETREAT_M
         log["place/retreated"] = retreated.float().mean().item()
+        if self._adjust_bank is not None:
+            log.update(self._adjust_log)
         # merge (not replace): on a step where no env resets, _log_episode_end never runs, and whatever
         # iker/* the last reset step wrote should keep reading as the last-known value here too, exactly as it
         # would in the un-modified base environment.
@@ -327,7 +332,8 @@ class IkerShoeT2rEnv(IkerShoeEnv):
             adjust = self._adjust_start[finished]
             for name, group in (("adjust", adjust), ("grasp", ~adjust)):
                 if bool(group.any()):
-                    self.extras.setdefault("log", {})[f"place/success_{name}_start"] = won[group].float().mean().item()
+                    self._adjust_log[f"place/success_{name}_start"] = won[group].float().mean().item()
+            self.extras.setdefault("log", {}).update(self._adjust_log)
 
     # ----------------------------------------------------------------- reset
 
