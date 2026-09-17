@@ -388,6 +388,7 @@ def learned_bank_metadata(
     seeds: Sequence[int],
     captured: int,
     verified: int,
+    lift_verified: bool = True,
 ) -> dict:
     """Metadata of a bank harvested from a stage-1 checkpoint: the environments' boot comparison keys and its origin."""
     missing = [key for key in LEARNED_BOOT_KEYS if key not in boot]
@@ -407,4 +408,6 @@ def learned_bank_metadata(
         "seeds": [int(seed) for seed in seeds],
         "captured": int(captured),
         "verified": int(verified),
+        # False when the harvest kept every captured success without the lift re-verification (chain measurement)
+        "lift_verified": bool(lift_verified),
     }

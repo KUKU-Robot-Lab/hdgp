@@ -256,6 +256,14 @@ def test_sorted_joint_columns_load_back_in_articulation_order():
     assert bank.joint_pos.tolist() == [[1.0, 2.0, 3.0, 4.0]] and bank.joint_target.tolist() == [[5.0, 6.0, 7.0, 8.0]]
 
 
+def test_learned_bank_metadata_records_whether_the_lift_verification_ran():
+    """연결 측정용 뱅크(--skip-verify)는 들어올림 재검증을 건너뛴다 — 뱅크 자체에 그 사실이 남아야 한다."""
+    common = dict(side_sign=-1.0, checkpoint="/b/ep350.pth", checkpoint_sha256="ab", stage1_reward={}, seeds=[0])
+    assert gb.learned_bank_metadata(BOOT, captured=10, verified=4, **common)["lift_verified"] is True
+    skipped = gb.learned_bank_metadata(BOOT, captured=10, verified=10, lift_verified=False, **common)
+    assert skipped["lift_verified"] is False
+
+
 def test_learned_bank_metadata_keeps_the_boot_keys_and_records_the_origin():
     meta = gb.learned_bank_metadata(BOOT, side_sign=-1.0, checkpoint="/b/ep350.pth", checkpoint_sha256="ab",
                                     stage1_reward={"g_min": 0.5}, seeds=(0, 1), captured=90, verified=70)

@@ -32,6 +32,10 @@ parser.add_argument("--config-index", type=int, default=0)
 parser.add_argument("--num-envs", type=int, default=512)
 parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3])
 parser.add_argument("--min-entries", type=int, default=64)
+# Chain measurement (2026-09-18): a live stage-1 -> stage-2 handover passes on EVERY state the stage-1 policy calls a
+# success, including the ones the lift re-verification would reject. --skip-verify keeps them all, so the stage-2
+# measurement sees the handover distribution a chained rollout would really produce.
+parser.add_argument("--skip-verify", action="store_true", help="키우지 않고 성공 포착 상태를 그대로 담는다(연결 측정용)")
 parser.add_argument("--out", default="", help="bank file (default: iker_runs/shoe_place/config_XX/grasp_bank.json)")
 parser.add_argument("--t2r-iter", type=int, default=-1, help="t2r round of the checkpoint (with --reward-code)")
 parser.add_argument("--reward-code", default="", help="generated reward the checkpoint trained with; recorded as stage1_reward")
@@ -191,10 +195,15 @@ def main() -> int:
             if len(rows) == 0:
                 print(f"HARVEST seed {seed} envs {u.num_envs} first-episode successes 0 verified 0", flush=True)
                 continue
+            captured += len(rows)
+            if args.skip_verify:
+                for field in BANK_FIELDS:
+                    kept[field].append(getattr(u._capture, field)[rows].clone())
+                print(f"HARVEST seed {seed} envs {u.num_envs} first-episode successes {len(rows)} verify skipped", flush=True)
+                continue
             result = verify(u, rows)
             for field in BANK_FIELDS:
                 kept[field].append(getattr(u._capture, field)[rows[result["held"]]].clone())
-            captured += len(rows)
             print(f"HARVEST seed {seed} envs {u.num_envs} first-episode successes {len(rows)} verified {int(result['held'].sum())} "
                   f"q10/50/90: shoe rise m {quantiles(result['rise'])} palm rise after lift {quantiles(result['palm_lift'])} "
                   f"after hold {quantiles(result['palm_rise'])} slip in palm m {quantiles(result['slip'])} "
@@ -208,7 +217,7 @@ def main() -> int:
         metadata = gb.learned_bank_metadata(
             u._boot_metadata, side_sign=gb.side_sign(robot.profile().hand_joint_names), checkpoint=str(checkpoint),
             checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(), stage1_reward=stage1_reward_record(),
-            seeds=args.seeds, captured=captured, verified=verified,
+            seeds=args.seeds, captured=captured, verified=verified, lift_verified=not args.skip_verify,
         )
         run_files.write_json(out, gb.bank_document(columns, names, metadata))
     print(f"HARVEST config {args.config_index:02d} checkpoint {checkpoint.name} captured {captured} verified {verified} "
