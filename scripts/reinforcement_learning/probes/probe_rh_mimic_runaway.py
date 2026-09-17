@@ -23,6 +23,9 @@ parser.add_argument("--num_envs", type=int, default=8)
 parser.add_argument("--variants", default="step,ramp,step_damp,ramp_damp")
 parser.add_argument("--damping", type=float, default=1.5)
 parser.add_argument("--mimic_nf", type=float, default=0.0, help=">0 이면 mimic naturalFrequency 를 이 값으로 덮은 USD 사본 사용")
+parser.add_argument("--cup_approx", default="", help="컵 충돌 근사 덮기(예: convexDecomposition, convexHull). 빈값=자산 그대로")
+parser.add_argument("--sim_dt_div", type=int, default=1, help="physics dt 를 1/k 로(decimation×k, 정책 60 Hz 유지)")
+parser.add_argument("--solver_iters", type=int, default=0, help=">0 이면 로봇·컵 solver 위치 반복 수")
 parser.add_argument("--sensor_mass", type=float, default=0.0, help=">0 이면 *_sensor 링크 질량을 이 값[kg]으로(관성은 같은 비율) 덮은 USD 사본 사용")
 parser.add_argument("--cycles", type=int, default=5)
 parser.add_argument("--leg_steps", type=int, default=60)
@@ -78,6 +81,40 @@ if args.mimic_nf > 0.0 or args.sensor_mass > 0.0:
     if (args.mimic_nf > 0.0 and n_nf == 0) or (args.sensor_mass > 0.0 and n_m == 0):
         raise SystemExit("오버라이드 대상 prim 을 못 찾았다 — 무효")
     cfg.robot_cfg.spawn.usd_path = tmp
+
+if args.cup_approx:
+    from pxr import Sdf as _Sdf, Usd as _Usd
+    corig = cfg.source_cup_cfg.spawn.usd_path
+    ctmp = f"/tmp/cup_override_{args.cup_approx}.usda"
+    cst = _Usd.Stage.CreateNew(ctmp)
+    cst.GetRootLayer().subLayerPaths.append(corig)
+    cdp = _Sdf.Layer.FindOrOpen(corig).defaultPrim
+    if cdp:
+        cst.SetDefaultPrim(cst.GetPrimAtPath(f"/{cdp}"))
+    found = []
+    for prim in cst.Traverse():
+        a = prim.GetAttribute("physics:approximation")
+        if a and a.Get() is not None:
+            found.append((str(prim.GetPath()), a.Get()))
+            a.Set(args.cup_approx)
+    cst.GetRootLayer().Save()
+    print(f"[cup] 충돌 근사 {found} → {args.cup_approx} · {ctmp}", flush=True)
+    if not found:
+        for prim in cst.Traverse():
+            print("   ", prim.GetPath(), prim.GetAppliedSchemas(), flush=True)
+        raise SystemExit("컵 physics:approximation 속성을 못 찾았다 — 오버라이드 무효")
+    cfg.source_cup_cfg.spawn.usd_path = ctmp
+    cfg.receiver_cup_cfg.spawn.usd_path = ctmp
+if args.sim_dt_div > 1:
+    cfg.sim.dt = cfg.sim.dt / args.sim_dt_div
+    cfg.decimation = cfg.decimation * args.sim_dt_div
+    cfg.sim.render_interval = cfg.decimation
+    print(f"[sim] dt={cfg.sim.dt:.6f} decimation={cfg.decimation}", flush=True)
+if args.solver_iters > 0:
+    cfg.robot_cfg.spawn.articulation_props.solver_position_iteration_count = args.solver_iters
+    cfg.source_cup_cfg.spawn.rigid_props.solver_position_iteration_count = args.solver_iters
+    cfg.receiver_cup_cfg.spawn.rigid_props.solver_position_iteration_count = args.solver_iters
+    print(f"[sim] solver position iterations={args.solver_iters}", flush=True)
 
 env = gym.make(args.task, cfg=cfg).unwrapped
 N, A = env.num_envs, env.cfg.action_space
