@@ -1,0 +1,11 @@
+{
+ "label": "t2r_rh2_i00",
+ "num_envs": 1024,
+ "started": 1789628906,
+ "commit": "ff71cbd7",
+ "host": "vision-3090",
+ "iter": "reward_gen/pour_bi_rh/iter_00",
+ "round": 1,
+ "fresh": true,
+ "note": "09.17 리셋 — 파지·들기 재조사(대본 프로브 grasp_lift1~4) 측정 사실만 notes 로 넣고 iter_00 부터 재생성. 체크포인트 미사용. 1~12 라운드는 archive_r1-12."
+}
