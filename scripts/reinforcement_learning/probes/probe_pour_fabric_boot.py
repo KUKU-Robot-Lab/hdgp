@@ -67,6 +67,7 @@ if args.solver_pos > 0:
 
     _pcfg.resolve_cfg = _resolve_with_solver
     _resolve_with_solver(env_cfg)
+env_cfg.extras_log_interval = 1  # 프로브는 매 스텝 extras 를 읽는다(학습 기본은 4)
 env = gym.make(args.task, cfg=env_cfg).unwrapped
 obs, _ = env.reset()
 N = env.num_envs
