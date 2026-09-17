@@ -140,6 +140,7 @@ class GateRecorder:
                     "released": bool(last["released"][env]), "resting": bool(last["resting"][env]),
                     "final_kp": float(last["keypoint_dist"][env]), "min_kp": float(self.min_kp[env]),
                     "steps": int(self.steps[env]),
+                    "final_palm_gap": float(last["palm_gap"][env]),
                 })
         self.live[ended] = False
         self._log_episode_end(env_ids)
@@ -196,6 +197,7 @@ def _failure_breakdown(rec: GateRecorder) -> dict:
             "min_kp_q10_50_90": _quantiles([r["min_kp"] for r in group]),
             "ever_within_tol_frac": round(sum(r["min_kp"] <= tol for r in group) / max(1, len(group)), 4),
             "steps_mean": round(sum(r["steps"] for r in group) / max(1, len(group)), 1),
+            "final_palm_gap_q10_50_90": _quantiles([r["final_palm_gap"] for r in group]),
         }
     return out
 
