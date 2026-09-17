@@ -77,12 +77,15 @@ the start of the episode (already in the grasped pose), `ctx.keypoint_err` the p
 all five of these hold: `ctx.keypoint_dist <= {place_tol}` m (`ctx.placed`), `ctx.palm_shoe_dist > {release_radius}` m \
 (`ctx.released`, the hand has let go), `abs(ctx.shoe_bottom_z - ctx.rack_top_z) <= ctx.resting_tol` (`ctx.resting`, the \
 shoe rests on the rack rather than floating or sinking), `ctx.shoe_lin_vel.norm(dim=-1) < {still_speed}` m/s \
-(`ctx.still`), and `ctx.palm_home_dist <= {home_radius}` m (`ctx.home`, the hand is back at `ctx.home_palm_pos`, where \
-the palm sits when the arm is in its default rest posture). `ctx.stable_count` is how many of the last {window_steps} \
-steps had all five true — one bad step costs one count and does NOT reset it — and `ctx.success` is True on the step \
-`ctx.stable_count` reaches {stable_steps}. The policy may therefore set the shoe down, nudge it back into place, let go, \
-and bring the hand home, all within that window. Moving the hand anywhere other than home after letting go (for \
-example lifting the arm high) never counts toward success. You may add a \
+(`ctx.still`), and `ctx.arm_home_err <= {home_joint_tol}` rad (`ctx.home`, every arm joint back in the rest posture). \
+`ctx.stable_count` is how many of the last {window_steps} steps had all five true — one bad step costs one count and does \
+NOT reset it — and `ctx.success` is True on the step `ctx.stable_count` reaches {stable_steps}.
+   THE RETURN TO THE REST POSTURE IS NOT THE POLICY'S JOB. The first step the shoe is placed, resting and still while \
+the grip is open at least {retract_open_min} (open fraction `(ctx.grip_norm + 1) / 2`), the environment takes over the arm: \
+it opens the hand fully and moves the arm joints to the rest posture over {retract_steps} steps, and from then on the \
+policy's actions have no effect (`ctx.retracting` is True). The policy's task therefore ends at setting the shoe down \
+still in the target pose and opening the hand; success follows if the shoe stays placed and still while the arm \
+withdraws. Any reward paid while `ctx.retracting` is True cannot be influenced by the policy. You may add a \
 bonus on `ctx.success` or on the individual conditions such as `ctx.placed` or `ctx.released`.
 6. The episode ends on a success, when the shoe falls off its support, or after `ctx.episode_steps - 1` steps. Nothing is \
 added to the reward outside your function.
@@ -140,7 +143,7 @@ class PromptSpec:
 
 
 FEEDBACK_TAG_PREFIXES = (
-    "t2r_reward/", "place/placed", "place/released", "place/resting", "place/still", "place/home", "place/retreated",
+    "t2r_reward/", "place/placed", "place/released", "place/resting", "place/still", "place/home", "place/retracting", "place/retreated",
     "iker/success_5cm", "iker/keypoint_distance_m", "iker/dropped", "episode_lengths", "rewards",
 )
 
@@ -164,7 +167,8 @@ def render_prompt(spec: PromptSpec, cfg: PlaceRewardCfg | None = None) -> str:
     )
     knowledge = ADDITIONAL_KNOWLEDGE.format(
         place_tol=cfg.place_tolerance, release_radius=cfg.release_radius, still_speed=cfg.still_speed,
-        stable_steps=cfg.stable_steps, window_steps=cfg.window_steps, home_radius=cfg.home_radius,
+        stable_steps=cfg.stable_steps, window_steps=cfg.window_steps, home_joint_tol=cfg.home_joint_tol,
+        retract_steps=cfg.retract_steps, retract_open_min=cfg.retract_open_min,
     )
     parts = [
         "You are an expert in robotics, reinforcement learning and code generation.",

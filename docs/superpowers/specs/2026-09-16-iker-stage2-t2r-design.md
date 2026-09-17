@@ -94,7 +94,7 @@ validation.json, generator.json, smoke.json, feedback.md}`.
 | 손을 뗌 | `palm_shoe_dist` > **0.15 m** | 평가의 `HOLD_RADIUS_M` 과 같은 값 — 두 지표가 같은 기준을 쓴다 |
 | 받침에 얹힘 | 신발 hull 최저점이 `RACK_TOP_Z`(0.325 m) ± `resting_tol` | `shoe_meta.hull_local` + `gs.surface_subsample`(256점) |
 | 정지 | `shoe_lin_vel.norm()` < **0.05 m/s** | 1단계 `success_speed` 와 동일 |
-| 복귀 | 손바닥이 **홈 자세의 손바닥 위치** 0.05 m 이내 | 프로필 `init_joint_pos` 를 env 가 부팅 때 1 물리스텝으로 측정 |
+| 복귀 | 팔 관절 최대 오차가 프로필 `init_joint_pos` 에서 **0.035 rad**(약 2°) 이내 | **스크립트 복귀**가 보장(아래) |
 
 **N = `stable_steps` = 20 스텝(2초)**, **W = `window_steps` = 30 스텝(3초)**.
 
@@ -122,6 +122,16 @@ validation.json, generator.json, smoke.json, feedback.md}`.
 관절값 조건은 학습으로 도달할 수 없다. 허용 반경 0.05 m 는 위 프로브의 p90(3.2 cm)에 여유를 둔 값이다.
 
 `retreated`(종료 시 손이 에피소드 시작 위치 근처)는 기존 비교를 위해 보고용 지표로 남긴다.
+
+**복귀는 학습하지 않고 스크립트로 한다(2026-09-17, 위 손바닥 위치 조건을 대체한다).** 손바닥 위치 조건으로 학습한
+iter_04 ep500 을 재 보니, 손바닥이 홈 5 cm 안에 든 env 에서도 팔 관절이 home 과 중앙값 34·5·54·40·25·25·62°,
+손바닥 방향이 126° 달랐다(영상에서 팔을 벌린 자세). 조건이 위치만 보고, 정책은 여유 자유도를 제어할 수 없다.
+사용자 결정: 복귀는 정해진 궤적으로. `placed & resting & still` 이고 그립 개방도 ≥ `retract_open_min`(0.9)인 첫 스텝에
+env 가 팔을 넘겨받아 손을 편 채 관절을 home 값까지 `retract_steps`(20) 스텝 smoothstep 보간하고, 이후 정책 액션은
+무시한다(`retracting`). `home` 은 관절 최대 오차 ≤ `home_joint_tol`(0.035 rad).
+게이트 프로브(iter_04 ep500, 64 env): 트리거 65.6 %, 트리거된 env 100 % 성공, 신발 이동 최대 0.9 mm, 손바닥-신발 최소 8 cm,
+종료 관절 오차 0.13°. env 구현 확인(iter_04 ep650, 이 방식으로 학습 안 됨): 5조건 성공 53.1 %, 종료 손바닥-홈 중앙값 0.6 mm.
+최종 목표(사용자): 집기·놓기·역방향(선반→테이블)을 home 에서 시작해 home 에서 끝나게 이어 반복한다.
 
 **종료**는 성공 · 낙하(`fall_height` 아래) · 200스텝 시간초과 셋이고, 생성 보상은 종료를 소유하지 않는다.
 
@@ -153,7 +163,7 @@ frozen dataclass, 모든 텐서는 배치 `(N,…)`·env-local·복사본(`clone
 
 | 묶음 | 필드 |
 |---|---|
-| 상수(python) | `table_top_z`, `rack_x_min/max`, `rack_y_min/max`, `rack_top_z`, `episode_steps`(200), `control_dt`(0.1), `place_tolerance`(0.03), `release_radius`(0.15), `resting_tol`, `still_speed`(0.05), `stable_steps`(20), `window_steps`(30), `home_radius`(0.05) |
+| 상수(python) | `table_top_z`, `rack_x_min/max`, `rack_y_min/max`, `rack_top_z`, `episode_steps`(200), `control_dt`(0.1), `place_tolerance`(0.03), `release_radius`(0.15), `resting_tol`, `still_speed`(0.05), `stable_steps`(20), `window_steps`(30), `home_joint_tol`(0.035), `retract_steps`(20), `retract_open_min`(0.9) |
 | 팔바닥 | `palm_pos (N,3)`, `palm_quat (N,4 wxyz)`, `palm_normal (N,3)` |
 | 팔 | `arm_q`, `arm_qd (N,7)` |
 | 그립 | `grip_norm (N,)` — EMA 후 그립 상태(−1 쥠 … +1 폄) |

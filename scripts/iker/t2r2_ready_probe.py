@@ -153,7 +153,7 @@ def _final_vs_other(rec: GateRecorder) -> dict:
         "final_keypoint_dist_q10_50_90": _quantiles(rec.final_kp),
         "final_palm_home_dist_q10_50_90": _quantiles(rec.final_home),
         "min_palm_home_dist_q10_50_90": _quantiles(rec.min_home[torch.isfinite(rec.min_home)].cpu().tolist()),
-        "home_radius": float(rec.u.cfg.place.home_radius),
+        "home_joint_tol": float(rec.u.cfg.place.home_joint_tol),
         "episodes": len(rec.final_gap_xy),
     }
 

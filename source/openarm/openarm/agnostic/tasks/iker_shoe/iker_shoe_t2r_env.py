@@ -10,7 +10,10 @@ fixed policy never had:
      perceive its own grip;
   3. ``_get_dones`` replaces the old end-of-episode keypoint check with ``place_stage.place_step``'s five-way,
      trailing-window predicate (placed & released & resting & still & home), so a hovering hand cannot
-     "succeed" and a hand lifted away instead of returning to its rest posture cannot either;
+     "succeed". The return to the rest posture is scripted, not learned (2026-09-17): the first step the shoe is
+     placed, resting and still with the grip open past ``retract_open_min``, the env takes over the arm and
+     smoothsteps its joints to the profile's default joints over ``retract_steps`` steps with the hand open,
+     ignoring the policy's actions from then on; ``home`` means the arm joints are within ``home_joint_tol``;
   4. ``_get_rewards`` builds a ``RewardContext`` from the same step state the predicate used and calls
      generated code (``t2r2.loader``) instead of the fixed IKER reward.
 
@@ -99,6 +102,12 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         spread = float((home_palm - self._home_palm_pos).norm(dim=-1).max())
         if spread > 1e-3:
             raise RuntimeError(f"home palm position disagrees across envs by {spread:.4f} m; measurement is wrong")
+        # Scripted home return (2026-09-17, user decision): target joints = the profile's default arm joints.
+        self._home_arm_q = self._robot.data.default_joint_pos[0, self._arm_ids].clone()
+        self._retracting = torch.zeros(n, dtype=torch.bool, device=dev)
+        self._retract_k = torch.zeros(n, dtype=torch.long, device=dev)
+        self._retract_q0 = torch.zeros(n, self._home_arm_q.numel(), device=dev)
+        self._arm_ids_t = torch.tensor(self._arm_ids, device=dev)  # parent's find_joints gives a list; advanced indexing needs a tensor
 
         digest = hashlib.sha256(Path(cfg.reward_code_path).read_bytes()).hexdigest() if cfg.reward_code_path else "none"
         home = ", ".join(f"{v:.3f}" for v in self._home_palm_pos.tolist())
@@ -120,8 +129,15 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         arm_targets = self._ik.compute(palm_pos_b, palm_quat_b, jacobian, self._robot.data.joint_pos[:, self._arm_ids])
         limits = self._robot.data.soft_joint_pos_limits[:, self._arm_ids]
         self._joint_targets[:, self._arm_ids] = torch.clamp(arm_targets, limits[..., 0], limits[..., 1])
+        if bool(self._retracting.any()):
+            # scripted home return: overwrite the policy's arm targets for the envs the env has taken over
+            ids = self._retracting.nonzero(as_tuple=True)[0]
+            self._joint_targets[ids[:, None], self._arm_ids_t[None, :]] = ps.retract_targets(
+                self._retract_q0[ids], self._home_arm_q, self._retract_k[ids], self.cfg.place)
+            self._retract_k[ids] += 1
 
-        a = self.actions[:, 6]  # the grip axis: -1 bank grip pose, +1 profile open pose
+        a = self.actions[:, 6].clone()  # the grip axis: -1 bank grip pose, +1 profile open pose
+        a[self._retracting] = 1.0  # the hand stays fully open while the env retracts the arm
         self._grip_targets = gs.hand_targets(a[:, None] * self._grip_dir, self._grip_lo, self._grip_hi,
                                              self._grip_targets, alpha=gs.HAND_EMA_ALPHA)
         self._joint_targets[:, self._hand_ids] = self._grip_targets
@@ -176,6 +192,7 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         palm_gap = gs.nearest_distance(palm_pos[:, None, :], surface)[:, 0]
         palm_shoe_dist = (palm_pos - shoe_pos).norm(dim=-1)
         palm_home_dist = (palm_pos - self._home_palm_pos).norm(dim=-1)
+        arm_home_err = (rd.joint_pos[:, self._arm_ids] - self._home_arm_q).abs().max(dim=-1).values
         current = self._keypoints_local()
         targets = self._targets.expand(n, NUM_KEYPOINTS, 3)
         keypoint_err = (current - targets).norm(dim=-1)
@@ -184,7 +201,7 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         shoe_ang_speed = sd.root_ang_vel_w.norm(dim=-1)  # fix round 3: a shoe spinning in place is not "still"
 
         step = ps.place_step(keypoint_dist, palm_shoe_dist, shoe_bottom_z, shoe_speed, self._place_window, self.cfg.place,
-                             shoe_ang_speed=shoe_ang_speed, palm_home_dist=palm_home_dist)
+                             shoe_ang_speed=shoe_ang_speed, arm_home_err=arm_home_err)
         self._place_window = step.window
         self._keypoint_distance = keypoint_dist  # keep the parent's field valid for _log_episode_end / eval_iker.py
 
@@ -201,6 +218,13 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         dropped = shoe_pos[:, 2] < self.cfg.reward.fall_height  # fix round 1 (finding 1): inherited threshold, not a new drop_z
         self._failure_count = torch.where(dropped, sustain + 1.0, torch.zeros_like(self._failure_count))
 
+        open_frac = ((self._grip_scalar.reshape(-1) + 1.0) * 0.5).clamp(0.0, 1.0)
+        start = ps.retract_trigger(step.placed, step.resting, step.still, open_frac, self._retracting, self.cfg.place)
+        if bool(start.any()):
+            self._retracting |= start
+            self._retract_k[start] = 0
+            self._retract_q0[start] = rd.joint_pos[start][:, self._arm_ids]
+
         self._t2r_last = dict(
             palm_pos=palm_pos, palm_quat=palm_quat, arm_q=rd.joint_pos[:, self._arm_ids], arm_qd=rd.joint_vel[:, self._arm_ids],
             shoe_pos=shoe_pos, shoe_quat=shoe_quat, shoe_lin_vel=sd.root_lin_vel_w, shoe_ang_vel=sd.root_ang_vel_w,
@@ -209,6 +233,7 @@ class IkerShoeT2rEnv(IkerShoeEnv):
             keypoint_err=keypoint_err, keypoint_dist=keypoint_dist,
             placed=step.placed, released=step.released, resting=step.resting, still=step.still, home=step.home,
             home_palm_pos=self._home_palm_pos.expand(n, 3), palm_home_dist=palm_home_dist,
+            arm_home_err=arm_home_err, retracting=self._retracting.clone(),
             stable_count=step.stable_count, success=step.success,
         )
 
@@ -238,6 +263,7 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         log["place/resting"] = ctx.resting.float().mean().item()
         log["place/still"] = ctx.still.float().mean().item()
         log["place/home"] = ctx.home.float().mean().item()
+        log["place/retracting"] = ctx.retracting.float().mean().item()
         retreated = (self._t2r_last["palm_pos"] - self._palm_start).norm(dim=-1) <= RETREAT_M
         log["place/retreated"] = retreated.float().mean().item()
         # merge (not replace): on a step where no env resets, _log_episode_end never runs, and whatever
@@ -255,10 +281,12 @@ class IkerShoeT2rEnv(IkerShoeEnv):
             episode_steps=int(self.max_episode_length), control_dt=float(self.step_dt),
             place_tolerance=float(rc.place_tolerance), release_radius=float(rc.release_radius),
             resting_tol=float(rc.resting_tol), still_speed=float(rc.still_speed), stable_steps=int(rc.stable_steps),
-            window_steps=int(rc.window_steps), home_radius=float(rc.home_radius),
+            window_steps=int(rc.window_steps), home_joint_tol=float(rc.home_joint_tol),
+            retract_steps=int(rc.retract_steps), retract_open_min=float(rc.retract_open_min),
             palm_pos=last["palm_pos"], palm_quat=last["palm_quat"], palm_normal=quat_apply(last["palm_quat"], self._palmar_axis),
             arm_q=last["arm_q"], arm_qd=last["arm_qd"],
             home_palm_pos=last["home_palm_pos"], palm_home_dist=last["palm_home_dist"],
+            arm_home_err=last["arm_home_err"], retracting=last["retracting"],
             grip_norm=self._grip_scalar.reshape(n),
             shoe_pos=last["shoe_pos"], shoe_quat=last["shoe_quat"], shoe_lin_vel=last["shoe_lin_vel"], shoe_ang_vel=last["shoe_ang_vel"],
             shoe_surface=last["shoe_surface"], shoe_bottom_z=last["shoe_bottom_z"], palm_gap=last["palm_gap"], palm_shoe_dist=last["palm_shoe_dist"],
@@ -296,6 +324,8 @@ class IkerShoeT2rEnv(IkerShoeEnv):
         self._grip_targets[env_ids] = self._joint_targets[env_ids][:, self._hand_ids]  # the bank's hand target
         self._grip_scalar[env_ids] = -1.0
         self._place_window[env_ids] = 0.0
+        self._retracting[env_ids] = False
+        self._retract_k[env_ids] = 0
         # fix round 1 (finding 3): the parent's bank restore above already wrote the new joint state via
         # write_joint_state_to_sim, so body_pos_w already reflects it (same idiom eval_iker.py's FirstEpisodeRecorder
         # uses right after reset_player, no extra physics step needed).
