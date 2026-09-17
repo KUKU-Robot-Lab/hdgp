@@ -754,6 +754,7 @@ class PourFabricMimicEnv(DirectRLEnv):
             self.extras[f"fabric/{tag}_palm_err"] = perr.mean()
             # 회전 추종(각 슬롯 wrap 후 최대 절대 오차) — 붓기 tilt 지령이 실제로 도달하는지의 근거
             rerr = rig.palm_targets[:, 3:] - rig.palm_pose_6d()[:, 3:]
+            rerr = torch.atan2(torch.sin(rerr), torch.cos(rerr))   # 09.17: ±π 경계 wrap(없으면 360° 가짜 오차)
             rerr = torch.remainder(rerr + math.pi, 2 * math.pi) - math.pi
             self.extras[f"fabric/{tag}_rot_err_deg"] = torch.rad2deg(rerr.abs().max(dim=1).values).mean()
         self._log_tick += 1

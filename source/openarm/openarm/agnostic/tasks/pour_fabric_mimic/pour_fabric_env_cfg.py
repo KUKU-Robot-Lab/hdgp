@@ -311,7 +311,11 @@ class PourFabricMimicEnvCfg(DirectRLEnvCfg):
     mimic_runaway_err_rad: float = 3.0
 
     # ---- 접촉 --------------------------------------------------------------------
-    contact_force_threshold: float = 1.0      # N — 파지(대향) 게이트·동결 판정
+    contact_force_threshold: float = 1.0      # N — 파지(대향) 판정(env grasp 플래그)
+    # 09.17 리셋 진단: 동결이 파지 판정과 같은 1 N 에 걸려 손가락이 1 N 에서 닫기를 멈췄다 → 힘이 1~2 N 에서
+    #   더 안 오르고 플래그가 깜빡이며 들기 중 컵을 놓쳤다(probe_rh_reset_diag). 동결은 따로 4 N(사용자 결정).
+    #   실기 RH56F1 펌웨어 forceSet 을 같은 값으로 맞춘다.
+    contact_freeze_threshold: float = 4.0     # N — 손가락 닫기 동결 판정
     contact_obs_clip: float = 20.0
     # ---- 손끝 촉각 actor obs (사용자 결정 09.14 "3 추가") ------------------------------------
     # 실기 출처: RH56F1 TouchData1.finger_forces[5] (정전용량 손끝 법선력, 0.01 N 단위, 1024 = 10.24 N).

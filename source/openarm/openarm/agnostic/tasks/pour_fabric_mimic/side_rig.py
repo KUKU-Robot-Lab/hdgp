@@ -199,7 +199,7 @@ class SideRig:
         delta = torch.where(delta > 0.0, delta * g, delta)      # 닫는 방향만 게이트
         if bool(cfg.synergy_contact_freeze):
             mid, dist, _ = self.finger_link_forces()
-            thr = float(cfg.contact_force_threshold)
+            thr = float(cfg.contact_freeze_threshold)       # 09.17: 파지 판정(1 N)과 분리
             h_mid = (mid > thr)[:, self.syn_fi]
             h_dist = (dist > thr)[:, self.syn_fi]
             # 손가락당 구동관절이 하나뿐이라 "닿은 마디만" 스코프는 정의되지 않는다 — finger 스코프만.
