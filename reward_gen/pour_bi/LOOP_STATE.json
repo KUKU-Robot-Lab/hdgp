@@ -1,8 +1,8 @@
 {
- "iter": 11,
- "label": "t2r_i11",
- "round": 12,
- "round10_note": "env \uc218\uc815 b3a07d0e(\ub798\uce58\ub97c \uc811\ucd09 \uae30\ubc18 \uc18c\uc2a4 \ud30c\uc9c0 \uc131\ub9bd \uc2dc\uc5d0\ub9cc) \ub4a4 \uc7ac\ud559\uc2b5. \ubcf4\uc0c1 iter_09(37\ud56d, raise_src \ucd94\uac00). \uadf8 \uc678 env \ub294 \ub77c\uc6b4\ub4dc 9 \uc640 \ub3d9\uc77c. \ud2f1 \uc608\uc57d \uc740 \uc544\ub798 launch_i09.cron",
+ "iter": 12,
+ "label": "t2r_i12",
+ "round": 13,
+ "round10_note": "env 수정 b3a07d0e(래치를 접촉 기반 소스 파지 성립 시에만) 뒤 재학습. 보상 iter_09(37항, raise_src 추가). 그 외 env 는 라운드 9 와 동일. 틱 예약 은 아래 launch_i09.cron",
  "launch_i09": {
   "label": "t2r_i09",
   "num_envs": 4096,
@@ -15,20 +15,20 @@
   "started": 1789572499.0,
   "started_local": "2026-09-17 00:28",
   "cron": "b60ea453 (2h, :23)",
-  "note": "1\ucc28 \uae30\ub3d9(PID 1926763/1926770, 25865920)\uc740 fabric FK \uac8c\uc774\ud2b8 5.43 mm > 5 mm \ub85c \ucd08\uae30\ud654 \uc2e4\ud328 \u2192 \ud5c8\uc6a9\uce58 10 mm(48e098c8) \ud6c4 \uc7ac\uae30\ub3d9"
+  "note": "1차 기동(PID 1926763/1926770, 25865920)은 fabric FK 게이트 5.43 mm > 5 mm 로 초기화 실패 → 허용치 10 mm(48e098c8) 후 재기동"
  },
- "round9_note": "env \ub77c\uc6b4\ub4dc 9(\uc0ac\uc6a9\uc790 \uacb0\uc815 09.16 \uad8c\uc7a5\uc548 A): \ube44\ub4dc 30 mm\u00b7\uc2a4\ud3f0 20\u00b7\ud65c\uc131 6~20(ADR \uc0c1\ud55c 12\u219220)\u00b7\ud30c\ud0b9, \ucc44\uc6c0 \uc815\ub3c4 obs(actor\u00b7critic +1 \u2192 223/293), \uc870\uc900 \uc804 \ud2f8\ud2b8 \ub798\uce58(30\u00b0\u00b7\uc785\uad6c xy 0.10 m \u2192 \uc131\uacf5 \ubb34\ud6a8), hold 45, \ubc14\ub2e5 \ud310\uc815 \uc5ec\uc720 3 mm. \ubcf4\uc0c1 iter_08(36\ud56d, upright_src\u00b7premature_latch\u00b7rcv_still \ucd94\uac00, tilt_premature \uc81c\uac70). MAX_ROUNDS 8\u219212. \ud504\ub85c\ube0c: \uac8c\uc774\ud2b8 3\uc885 PASS, \ud758\ub9bc \uac00\ub4dd 69\u00b0/\uc870\uae08 89\u00b0(iter_08 prompt \ub294 95\u00b0 \ud45c\uae30, 5\u00b0 \ucc28\uc774 \ubc29\ud5a5 \ub3d9\uc77c)",
+ "round9_note": "env 라운드 9(사용자 결정 09.16 권장안 A): 비드 30 mm·스폰 20·활성 6~20(ADR 상한 12→20)·파킹, 채움 정도 obs(actor·critic +1 → 223/293), 조준 전 틸트 래치(30°·입구 xy 0.10 m → 성공 무효), hold 45, 바닥 판정 여유 3 mm. 보상 iter_08(36항, upright_src·premature_latch·rcv_still 추가, tilt_premature 제거). MAX_ROUNDS 8→12. 프로브: 게이트 3종 PASS, 흘림 가득 69°/조금 89°(iter_08 prompt 는 95° 표기, 5° 차이 방향 동일)",
  "ended_i08": {
   "epoch": 159,
   "hours": 1.3,
-  "reason": "\uc0ac\uc6a9\uc790 \uacb0\uc815 09.17 '\uc218\uc815\ud6c4 \uc7ac\uc2dc\uc791': \uc18c\uc2a4 \ud30c\uc9c0 0.000 \u2014 \uc870\uc900 \uc804 \ud2f8\ud2b8 \ub798\uce58\uc5d0 \ud30c\uc9c0 \uc870\uac74\uc774 \uc5c6\uc5b4 \ud0d0\uc0c9\uc774 \ub118\uc5b4\ub728\ub9b0 \ucef5\uae4c\uc9c0 \ub798\uce58(\uccab epoch 19.8 %, \ud30c\uc9c0 0) \u2192 \uc815\ucc45\uc774 \uc18c\uc2a4 \ucef5 \ud68c\ud53c(\uc774\ubb3c 15\u21922 %, \uae30\uc6b8\uae30 16.6\u21920.1\u00b0). \ub9ac\uc2dc\ubc84 \ucabd\uc740 \ud30c\uc9c0 0.78\u00b7\ub4e4\uae30 0.22 m \ub85c \uc815\uc0c1",
-  "fix": "b3a07d0e \u2014 \ub798\uce58\ub97c \uadf8 \uc2a4\ud15d\uc758 \uc811\ucd09 \uae30\ubc18 \uc18c\uc2a4 \ud30c\uc9c0 \uc131\ub9bd \uc2dc\uc5d0\ub9cc(\ub9ac\uc2dc\ubc84 \uaddc\uce59\uacfc \uac19\uc740 \uc6d0\uce59). \uac8c\uc774\ud2b8 \ud504\ub85c\ube0c PASS(\uc815\ucc29 0.951)",
+  "reason": "사용자 결정 09.17 '수정후 재시작': 소스 파지 0.000 — 조준 전 틸트 래치에 파지 조건이 없어 탐색이 넘어뜨린 컵까지 래치(첫 epoch 19.8 %, 파지 0) → 정책이 소스 컵 회피(이물 15→2 %, 기울기 16.6→0.1°). 리시버 쪽은 파지 0.78·들기 0.22 m 로 정상",
+  "fix": "b3a07d0e — 래치를 그 스텝의 접촉 기반 소스 파지 성립 시에만(리시버 규칙과 같은 원칙). 게이트 프로브 PASS(정착 0.951)",
   "server_pids_killed": [
    1873810,
    1873817
   ],
   "final_ckpt": "last_open-short_b_pour_fab_ep_150_rew_2020.0004.pth",
-  "reward_terms_at_159": "lift_rcv +1.44 \u00b7 grasp_rcv +0.90 \u00b7 approach_rcv +0.66 \u00b7 approach_src +0.44 \u00b7 grasp_src +0.02 (\ucd1d 2.8; i07 e160 8.0, i05 10.2)"
+  "reward_terms_at_159": "lift_rcv +1.44 · grasp_rcv +0.90 · approach_rcv +0.66 · approach_src +0.44 · grasp_src +0.02 (총 2.8; i07 e160 8.0, i05 10.2)"
  },
  "launch_i08": {
   "label": "t2r_i08",
@@ -40,7 +40,7 @@
    1873817
   ],
   "started_local": "2026-09-16 22:44",
-  "note": "GPU1 \ub2e8\ub3c5(\uae30\ub3d9 \uc804 21 MiB), \ub77c\ubca8\u00b7\ub85c\uadf8 \ud3f4\ub354 \uc911\ubcf5 \uc5c6\uc74c \ud655\uc778 \ud6c4 \uae30\ub3d9"
+  "note": "GPU1 단독(기동 전 21 MiB), 라벨·로그 폴더 중복 없음 확인 후 기동"
  },
  "best": {
   "iter": 5,
@@ -56,23 +56,23 @@
   "hand_foreign_rcv": 0.042,
   "adr_progress": 1.0,
   "time": 1789464906.1567261,
-  "note": "\ub77c\uc6b4\ub4dc3 env(DR\u00b7ADR\u00b7\uc9c0\uac01\ub178\uc774\uc988\u00b7\ucda9\ub3cc\uc2e0\ud638)\uc5d0\uc11c \ub2ec\uc131, \uc601\uc0c1 \uac8c\uc774\ud2b8 ep800 pass"
+  "note": "라운드3 env(DR·ADR·지각노이즈·충돌신호)에서 달성, 영상 게이트 ep800 pass"
  },
  "started": 1789610340.793285,
  "success_ticks": 0,
- "restart": "09.13 nesting hacking \uc218\uc815 \ud6c4 \uac19\uc740 iter_00 \ubcf4\uc0c1\uc73c\ub85c \uc7ac\ud559\uc2b5",
+ "restart": "09.13 nesting hacking 수정 후 같은 iter_00 보상으로 재학습",
  "prev": {
   "iter": 6,
   "label": "t2r_i06",
   "epoch": 250,
   "episode_success": 0.0,
-  "note": "\uc0ac\uc6a9\uc790 \uc9c0\uc2dc \uc870\uae30 advance(epoch 208~250): \ub9ac\uc2dc\ubc84 \ud30c\uc9c0 0 \u2014 \ud56d\uc0c1 \ucf1c\uc9c4 upright_rcv \uac00 \ucd08\ubc18 \uc811\ucd09\uc744 \ubc8c\ud574 \ub9ac\uc2dc\ubc84 \ud68c\ud53c"
+  "note": "사용자 지시 조기 advance(epoch 208~250): 리시버 파지 0 — 항상 켜진 upright_rcv 가 초반 접촉을 벌해 리시버 회피"
  },
- "round3_note": "env \ubcc0\uacbd(hand_qd \uc81c\uac70\u00b7\uc9c0\uac01 \uc9c0\uc5f0/\ub178\uc774\uc988\u00b7\ubb3c\ub9ac DR+ADR\u00b7\ucda9\ub3cc \uc2e0\ud638) \ud6c4 iter_02 (notes_round3.md)",
- "round4_note": "iter_03: pouring-lip \uae30\ud558 aim/tilt \uc7ac\uc815\uc758 (notes_round4.md)",
+ "round3_note": "env 변경(hand_qd 제거·지각 지연/노이즈·물리 DR+ADR·충돌 신호) 후 iter_02 (notes_round3.md)",
+ "round4_note": "iter_03: pouring-lip 기하 aim/tilt 재정의 (notes_round4.md)",
  "success_tick_log": [],
- "round5_note": "iter_04: wrap \ud488\uc9c8\u00b7\uc190 \uc774\ubb3c \uac8c\uc774\ud2b8\u00b7\uc911\uc559\uc120 \ubc8c\uc810 (notes_round5.md)",
- "round6_note": "iter_05: tilt \ubc29\ud5a5\u00b7\ubd93\uae30 \uc790\uc138 \ubcf4\ub108\uc2a4\u00b7closure \ub7a8\ud504 \uc815\uc815 (notes_round6.md)",
+ "round5_note": "iter_04: wrap 품질·손 이물 게이트·중앙선 벌점 (notes_round5.md)",
+ "round6_note": "iter_05: tilt 방향·붓기 자세 보너스·closure 램프 정정 (notes_round6.md)",
  "video_check": {
   "label": "t2r_i05",
   "ckpt": "last_open-short_b_pour_fab_ep_800_rew_19825.951.pth",
@@ -80,11 +80,11 @@
   "time": 1789411895.0980866,
   "result": "pass",
   "findings": [
-   "\ub07c\uc6cc\ub123\uae30 \uc544\ub2d8: \uc18c\uc2a4 \ucef5 \ubab8\ud1b5\uc740 \ub9ac\uc2dc\ubc84 \ubc16, \uc785\uad6c \ub05d\ub9cc \ub9ac\uc2dc\ubc84 \uc785\uad6c \uc704(\uc67c\ucabd \uc704 \uc2dc\uc810 step 210~500)",
-   "\uc591\uc190 \uc778\ubca8\ub86d \uc720\uc9c0: \uc624\ub978\uc190 \ub124 \uc190\uac00\ub77d\uc774 \uc18c\uc2a4 \ucef5 \ubab8\ud1b5\uc744 \uac10\uc2fc \ucc44 \ud2f8\ud2b8, \uc67c\uc190\uc740 \ub9ac\uc2dc\ubc84 \uc9c1\ub9bd \ud30c\uc9c0",
-   "\uc190-\uc190 \uc811\ucd09 \uc548 \ubcf4\uc784(\uc624\ub978\uc190 \uc5c4\uc9c0\uac00 \ub9ac\uc2dc\ubc84 \ub9bc \uadfc\ucc98\uae4c\uc9c0 \uc634)",
-   "\uc8fc\uc758: \uc18c\uc2a4 \uc785\uad6c \ub05d\uc774 \ub9ac\uc2dc\ubc84 \ub9bc\uc5d0 \uc57d 1 cm \uc774\ud558\ub85c \uadfc\uc811 \u2014 cup_collision 0.6% \ub294 \uac00\ubcbc\uc6b4 \ub9bc \uc811\ucd09\uc73c\ub85c \ud574\uc11d",
-   "\ud14c\uc774\ube14 \ube44\ub4dc 2~3\uac1c(spill 4%)"
+   "끼워넣기 아님: 소스 컵 몸통은 리시버 밖, 입구 끝만 리시버 입구 위(왼쪽 위 시점 step 210~500)",
+   "양손 인벨롭 유지: 오른손 네 손가락이 소스 컵 몸통을 감싼 채 틸트, 왼손은 리시버 직립 파지",
+   "손-손 접촉 안 보임(오른손 엄지가 리시버 림 근처까지 옴)",
+   "주의: 소스 입구 끝이 리시버 림에 약 1 cm 이하로 근접 — cup_collision 0.6% 는 가벼운 림 접촉으로 해석",
+   "테이블 비드 2~3개(spill 4%)"
   ],
   "files": {
    "left_top": "/home/user/rl_ws/our_source/pour_t2r_i05_ep800_0915_0344_left_top.mp4",
@@ -106,19 +106,19 @@
  "termination_met": {
   "time": 1789421707.536861,
   "epoch": 1194,
-  "detail": "success \u22650.5 \ub450 \ud2f1 \uc5f0\uc18d(ep810 0.66, ep1194 0.75) \u2227 nested 0 \u2227 cup_coll 0.8% \u2227 \uc601\uc0c1 pass(ep800)",
-  "action": "hold \uc0c1\ud0dc \u2014 \uc0ac\uc6a9\uc790 \uc9c0\uc2dc\ub85c \uc885\ub8cc\ud558\uc9c0 \uc54a\uace0 \uacc4\uc18d \ud559\uc2b5\u00b7\ubcf4\uace0\ub9cc"
+  "detail": "success ≥0.5 두 틱 연속(ep810 0.66, ep1194 0.75) ∧ nested 0 ∧ cup_coll 0.8% ∧ 영상 pass(ep800)",
+  "action": "hold 상태 — 사용자 지시로 종료하지 않고 계속 학습·보고만"
  },
  "hold_released": {
   "label": "t2r_i05",
   "since_epoch": 282,
   "time": 1789397582.073141,
-  "reason": "\uc0ac\uc6a9\uc790 \ud310\ub2e8(09.15): \ud559\uc2b5 \uc9c0\ud45c\uae4c\uc9c0 \uc218\ub834 \u2192 \ud559\uc2b5 \uc885\ub8cc. \ubb38\uc81c \ubd80\ubd84 \uc218\uc815 \ud6c4 \uc7ac\ud559\uc2b5 \uc608\uc815",
+  "reason": "사용자 판단(09.15): 학습 지표까지 수렴 → 학습 종료. 문제 부분 수정 후 재학습 예정",
   "updated": 1789432849.7253928,
-  "reason2": "\uc0ac\uc6a9\uc790 \uc9c0\uc2dc(09.15): \ud604\uc7ac \ud559\uc2b5 \uc218\ub834\ud560 \ub54c\uae4c\uc9c0 \uc9c4\ud589. \uc5d0\ud53c\uc18c\ub4dc\ub2f9 \ube44\ub4dc \uac1c\uc218 eval \uc740 \uc218\ub834 \ub4a4\ub85c \ubcf4\ub958",
+  "reason2": "사용자 지시(09.15): 현재 학습 수렴할 때까지 진행. 에피소드당 비드 개수 eval 은 수렴 뒤로 보류",
   "convergence": {
-   "rule": "adr/progress == 1.0 \uc774\ud6c4 \ub450 \ud2f1 \uc5f0\uc18d episode_success recent10 \ubcc0\ud654 |\u0394| \u2264 0.02",
-   "on_converged": "\ubcf4\uace0\ub9cc \ud558\uace0 \ub7f0 \uc720\uc9c0 \u2014 \uc911\ub2e8 \uc5ec\ubd80\ub294 \uc0ac\uc6a9\uc790 \uacb0\uc815",
+   "rule": "adr/progress == 1.0 이후 두 틱 연속 episode_success recent10 변화 |Δ| ≤ 0.02",
+   "on_converged": "보고만 하고 런 유지 — 중단 여부는 사용자 결정",
    "history": [
     {
      "epoch": 1590,
@@ -129,7 +129,7 @@
      "epoch": 1983,
      "recent10": 0.7912,
      "adr": 1.0,
-     "note": "adr 1.0 \ucd5c\ucd08 \ub3c4\ub2ec \u2014 \uc218\ub834 \ud310\uc815 \uae30\uc900\uc810(\u0394 \uce74\uc6b4\ud2b8 0)"
+     "note": "adr 1.0 최초 도달 — 수렴 판정 기준점(Δ 카운트 0)"
     },
     {
      "epoch": 2374,
@@ -167,27 +167,27 @@
    3826010
   ],
   "cron_deleted": "31e22bfe",
-  "reason": "\uc131\uacf5\ub960\u00b7\ucd1d\ubcf4\uc0c1 \ud3c9\ud0c4(\uc218\ub834) + \uc190 \uc720\ud6a8 \uc561\uc158 \ub178\uc774\uc988 \uc99d\uac00(null 22/42 \ucc28\uc6d0) \u2014 \uc218\uc815 \ud6c4 \uc7ac\ud559\uc2b5",
-  "next": "\uc601\uc0c1 \ucd94\ucd9c(ADR \ucd5c\ub300) \u2192 null \uc561\uc158 \ucc28\uc6d0 \ub4f1 \uc218\uc815 \u2192 \uc7ac\ud559\uc2b5"
+  "reason": "성공률·총보상 평탄(수렴) + 손 유효 액션 노이즈 증가(null 22/42 차원) — 수정 후 재학습",
+  "next": "영상 추출(ADR 최대) → null 액션 차원 등 수정 → 재학습"
  },
- "round7_note": "env: grip3(\uc561\uc158 18)\u00b7palm EMA 0.25\u00b7\ub9ac\uc2dc\ubc84 \u226420\u00b0 \uc131\uacf5 \uc870\uac74(ccb09a6d) \u00b7 \ubcf4\uc0c1 iter_06(4858b307) \u00b7 \ucc98\uc74c\ubd80\ud130 \ud559\uc2b5",
+ "round7_note": "env: grip3(액션 18)·palm EMA 0.25·리시버 ≤20° 성공 조건(ccb09a6d) · 보상 iter_06(4858b307) · 처음부터 학습",
  "cron": "6b037cb5 (30m, :07/:37)",
- "round8_note": "iter_07: upright_rcv\u00b7\uc9c1\ub9bd \ubc30\uc728\uc744 \ub9ac\uc2dc\ubc84 \ud30c\uc9c0\u00b7\ub4e4\uae30 \uc774\ud6c4(rcv_carry)\ub85c \ud55c\uc815(\uc6b4\uc601\uc790 \uc694\uad6c, notes_round8) \u00b7 env \ub294 \ub77c\uc6b4\ub4dc 7 \uacfc \ub3d9\uc77c \u00b7 \ub8e8\ud504 \uc0c1\ud55c \ub77c\uc6b4\ub4dc 8",
+ "round8_note": "iter_07: upright_rcv·직립 배율을 리시버 파지·들기 이후(rcv_carry)로 한정(운영자 요구, notes_round8) · env 는 라운드 7 과 동일 · 루프 상한 라운드 8",
  "trace_i07_ep350": {
   "time": 1789492964.1760862,
   "file": "log/server_mirror/pour-fab/t2r_i07/trace_i07_latest_adr0.npz",
   "facts": [
-   "step 200~890 \uc591\ud314 palm y \uc561\uc158\uc774 \ubc14\uae65\ucabd \ub05d\uc5d0 \uace0\uc815(\uc18c\uc2a4 \u22121.00, \ub9ac\uc2dc\ubc84 +1.00, \ubd80\ud638 \uad50\ub300 0), palm y \u00b10.334(\ub378\ud0c0 \ud55c\uacc4)",
-   "\ub450 \ucef5 \uac70\ub9ac 0.66~0.68 m(8 env \ubaa8\ub450), \uc18c\uc2a4 \uc57d 40 cm\u00b7\ub9ac\uc2dc\ubc84 \uc57d 23 cm \ub4e4\uae30, \uc18c\uc2a4 \uae30\uc6b8\uae30 80~85\u00b0, \ube44\ub4dc \uc774\ub3d9 0",
-   "\ubc8c\uc810 \ubb34\uad00: closing_speed \u22120.0003\u00b7meet 0\u00b7cup_contact \u22120.0005 \u00b7 \ub4e4\uae30 \ubcf4\uc0c1 \uc57d 3.1, tilt+tilt_dir \uc57d 0.7(\ub5a8\uc5b4\uc838\ub3c4 \uc9c0\uae09), bring_together 0.12(exp(\u22123\u00b7\uac70\ub9ac) \ud3c9\ud0c4)",
-   "\ub9ac\uc2dc\ubc84 \ud314 \uad00\uc808\uc18d\ub3c4 RMS 0.4~0.56 rad/s(\uc18c\uc2a4 \uc57d 5\ubc30), \ub9ac\uc2dc\ubc84 \ud68c\uc804 \ub450 \uce78 17~23 % \ubd80\ud638 \uad50\ub300",
-   "\uc791\uc5c5\uacf5\uac04 \ud55c\uacc4 \uc544\ub2d8: \uc18c\uc2a4 palm y \ucd5c\ub300 +0.166, \ub9ac\uc2dc\ubc84 \ucd5c\uc18c \u22120.166 \uae4c\uc9c0 \ub3c4\ub2ec \uac00\ub2a5"
+   "step 200~890 양팔 palm y 액션이 바깥쪽 끝에 고정(소스 −1.00, 리시버 +1.00, 부호 교대 0), palm y ±0.334(델타 한계)",
+   "두 컵 거리 0.66~0.68 m(8 env 모두), 소스 약 40 cm·리시버 약 23 cm 들기, 소스 기울기 80~85°, 비드 이동 0",
+   "벌점 무관: closing_speed −0.0003·meet 0·cup_contact −0.0005 · 들기 보상 약 3.1, tilt+tilt_dir 약 0.7(떨어져도 지급), bring_together 0.12(exp(−3·거리) 평탄)",
+   "리시버 팔 관절속도 RMS 0.4~0.56 rad/s(소스 약 5배), 리시버 회전 두 칸 17~23 % 부호 교대",
+   "작업공간 한계 아님: 소스 palm y 최대 +0.166, 리시버 최소 −0.166 까지 도달 가능"
   ],
-  "note": "\ub77c\uc6b4\ub4dc 8 \uc0c1\ud55c \u2014 \uc790\ub3d9 advance \uc5c6\uc74c, \ub2e4\uc74c \uacb0\uc815\uc740 \uc0ac\uc6a9\uc790"
+  "note": "라운드 8 상한 — 자동 advance 없음, 다음 결정은 사용자"
  },
  "loop_ended": {
   "time": 1789497825.996861,
-  "reason": "round \u2265 8 (MAX_ROUNDS) \uc5d0\uc11c advance \ud310\uc815 \u2014 LOOP_PROMPT \uc885\ub8cc \uc870\uac74",
+  "reason": "round ≥ 8 (MAX_ROUNDS) 에서 advance 판정 — LOOP_PROMPT 종료 조건",
   "last_tick": {
    "label": "t2r_i07",
    "epoch": 558,
@@ -207,20 +207,20 @@
     0.028
    ]
   },
-  "best": "t2r_i05 (\uc131\uacf5 max 0.823, \uc561\uc158 42 \u00b7 \uc61b \uc131\uacf5 \uc815\uc758)",
-  "server_run": "t2r_i07 PID 1051431/1051438 GPU1 \uacc4\uc18d \ud559\uc2b5 \uc911 \u2014 \uc911\ub2e8 \uc5ec\ubd80 \uc0ac\uc6a9\uc790 \uacb0\uc815",
+  "best": "t2r_i05 (성공 max 0.823, 액션 42 · 옛 성공 정의)",
+  "server_run": "t2r_i07 PID 1051431/1051438 GPU1 계속 학습 중 — 중단 여부 사용자 결정",
   "cron_deleted": "6b037cb5",
   "next_options": [
-   "\ub77c\uc6b4\ub4dc \uc0c1\ud55c \uc62c\ub9ac\uace0 iter_08 (trace_i07_ep350 \uc0ac\uc2e4 + \ud758\ub9bc \uc99d\uac00 notes)",
-   "t2r_i07 \uacc4\uc18d",
-   "\ud559\uc2b5 \uc885\ub8cc"
+   "라운드 상한 올리고 iter_08 (trace_i07_ep350 사실 + 흘림 증가 notes)",
+   "t2r_i07 계속",
+   "학습 종료"
   ]
  },
  "monitoring": {
   "since": 1789515587.02707,
   "interval": "2h (:23)",
   "label": "t2r_i07",
-  "scope": "\uc9c0\ud45c \ubcf4\uace0\ub9cc \u2014 \ub77c\uc6b4\ub4dc \uc0c1\ud55c 8 \uc774\ub77c \ubcf4\uc0c1 \uc7ac\uc0dd\uc131\u00b7\uc7ac\uae30\ub3d9\u00b7\uc885\ub8cc\ub294 \uc0ac\uc6a9\uc790 \uc2b9\uc778 \ud6c4",
+  "scope": "지표 보고만 — 라운드 상한 8 이라 보상 재생성·재기동·종료는 사용자 승인 후",
   "state_at_resume": {
    "epoch": 1071,
    "hours": 8.39,
@@ -238,9 +238,9 @@
    "adr": 0.2,
    "reward_total": 23.8
   },
-  "breakout": "epoch 720 \uc5d0 \ucef5 \uac70\ub9ac 0.30 m \uc544\ub798 \u2192 799 \uccab \uc131\uacf5 \u2192 836 \uc131\uacf5\ub960 0.5 (loop_ended \uae30\ub85d\uc740 epoch 558 \uc2dc\uc810\uc774\ub77c \ub0a1\uc74c)",
+  "breakout": "epoch 720 에 컵 거리 0.30 m 아래 → 799 첫 성공 → 836 성공률 0.5 (loop_ended 기록은 epoch 558 시점이라 낡음)",
   "ended": {
-   "time_note": "09.16 \uc0ac\uc6a9\uc790 \uc9c0\uc2dc '\ub9ac\uc2dc\ubc84 \uac1c\uc120 \uc644\ub8cc. \ud559\uc2b5\uc885\ub8cc'",
+   "time_note": "09.16 사용자 지시 '리시버 개선 완료. 학습종료'",
    "label": "t2r_i07",
    "epoch_last_ckpt": 2800,
    "hours": 21.6,
@@ -249,9 +249,9 @@
     1051431,
     1051438
    ],
-   "kill": "SIGTERM \ub9cc\uc73c\ub85c 10 \ucd08 \ub0b4 \uc885\ub8cc \u2014 kill -9 \ubd88\ud544\uc694",
-   "cron_deleted": "6da64236 (2h \ubaa8\ub2c8\ud130\ub9c1)",
-   "reason": "\uc218\ub834(adr 1.0 \ud6c4 \ub450 \ud2f1 |\u0394| \u2264 0.02, epoch 2767) + \uada4\uc801 \uacc4\uce21\uc73c\ub85c i05 \ubb38\uc81c 3\uc885 \ud574\uc18c \ud655\uc778",
+   "kill": "SIGTERM 만으로 10 초 내 종료 — kill -9 불필요",
+   "cron_deleted": "6da64236 (2h 모니터링)",
+   "reason": "수렴(adr 1.0 후 두 틱 |Δ| ≤ 0.02, epoch 2767) + 궤적 계측으로 i05 문제 3종 해소 확인",
    "converged_metrics": {
     "episode_success": 0.7689,
     "in_target": 0.7371,
@@ -266,9 +266,9 @@
     "in_target": 0.963,
     "spill": 0.038
    },
-   "note": "GPU0 \uc758 fj_stage_i07 \uc740 \ub2e4\ub978 \ud2b8\ub799\uc774\ub77c \uac74\ub4dc\ub9ac\uc9c0 \uc54a\uc74c"
+   "note": "GPU0 의 fj_stage_i07 은 다른 트랙이라 건드리지 않음"
   },
-  "cron": "6da64236 (2h, :23) \u2014 09.16 i07 \uc885\ub8cc \uc2dc \uc0ad\uc81c \u00b7 \ub77c\uc6b4\ub4dc 9 \ub8e8\ud504 \ud2f1 3c90783d (2h, :23, LOOP_PROMPT \uc804\uccb4 \uc808\ucc28)",
+  "cron": "6da64236 (2h, :23) — 09.16 i07 종료 시 삭제 · 라운드 9 루프 틱 3c90783d (2h, :23, LOOP_PROMPT 전체 절차)",
   "video_i07_adr0": {
    "ckpt": "last_open-short_b_pour_fab_ep_2750_rew_23410.004.pth",
    "epoch": 2750,
@@ -280,28 +280,28 @@
     "right": "/home/user/rl_ws/our_source/pour_t2r_i07_ep2750_adr0_right.mp4"
    },
    "findings": [
-    "\ub9ac\uc2dc\ubc84 \uc790\uc138 \uac1c\uc120 \ud655\uc778: step 245~817 \ub9ac\uc2dc\ubc84 \ucef5\uc774 \uac70\uc758 \uc9c1\ub9bd\ud55c \ucc44 \uc18c\uc2a4\ub97c \ubc1b\uc74c(\uacc4\uce21 rcv_tilt 5.4\u00b0, i05 \ub294 46\u00b0)",
-    "\ub450 \ucef5\uc774 \ub9cc\ub098\ub294 \ub192\uc774\uac00 i05 \ubcf4\ub2e4 \ub192\uc74c",
-    "\uc624\ub978\uc190 \uc190\uac00\ub77d \ub9d0\ub9bc\u00b7\ud314 \uc9c4\ub3d9\uc740 \uc601\uc0c1\uc73c\ub85c \ud310\uc815 \ubd88\uac00 \u2014 \ubd93\uae30 \uad6c\uac04 \ub0b4\ub0b4 \ub85c\ubd07 \ubab8\ud1b5\u00b7\ud314\uc774 \uc190\uc744 \uac00\ub9ac\uace0, \uc9c4\ub3d9 4~5 Hz \ub294 \ud504\ub808\uc784 \uac04\uaca9 \ubc16",
-    "\ud14c\uc774\ube14 \ube44\ub4dc 1~2\uac1c(\uacc4\uce21 \ud758\ub9bc 5.9 %)"
+    "리시버 자세 개선 확인: step 245~817 리시버 컵이 거의 직립한 채 소스를 받음(계측 rcv_tilt 5.4°, i05 는 46°)",
+    "두 컵이 만나는 높이가 i05 보다 높음",
+    "오른손 손가락 말림·팔 진동은 영상으로 판정 불가 — 붓기 구간 내내 로봇 몸통·팔이 손을 가리고, 진동 4~5 Hz 는 프레임 간격 밖",
+    "테이블 비드 1~2개(계측 흘림 5.9 %)"
    ],
-   "note": "\ud559\uc2b5\uc740 \uc911\ub2e8\ud558\uc9c0 \uc54a\uace0 \uacc4\uc18d(\uc0ac\uc6a9\uc790 \uc9c0\uc2dc 09.16 '\ub354 \ud559\uc2b5\ud558\uba74\uc11c, \ub09c\uc774\ub3c4 0 \uc601\uc0c1 \ucd94\ucd9c')"
+   "note": "학습은 중단하지 않고 계속(사용자 지시 09.16 '더 학습하면서, 난이도 0 영상 추출')"
   },
   "trace_i07_converged": {
    "ckpt": "last_open-short_b_pour_fab_ep_2800_rew_22890.537.pth",
    "epoch": 2800,
    "out": "log/rl_games/open-short/both/pour-fab/t2r_i07/trace_ep2750_adr0.npz",
-   "note": "\u2605\ud30c\uc77c\uba85\uc740 trace_ep2750 \uc774\uc9c0\ub9cc \uc2e4\uc81c \uacc4\uce21 \uccb4\ud06c\ud3ec\uc778\ud2b8\ub294 ep_2800 \u2014 \ub7f0\ucc98\uac00 \uae30\ub3d9 \uc2dc\uc810 \ucd5c\uc2e0 last_*.pth \ub97c \uace0\ub974\ub294\ub370 \uadf8 \uc0ac\uc774 \ud559\uc2b5\uc774 ep_2800 \uc744 \uc800\uc7a5\ud588\ub2e4. \uc601\uc0c1(ep_2750)\uacfc \ud55c epoch \uad6c\uac04 \ucc28\uc774.",
+   "note": "★파일명은 trace_ep2750 이지만 실제 계측 체크포인트는 ep_2800 — 런처가 기동 시점 최신 last_*.pth 를 고르는데 그 사이 학습이 ep_2800 을 저장했다. 영상(ep_2750)과 한 epoch 구간 차이.",
    "local": "log/server_mirror/pour-fab/t2r_i07/trace_i07_ep2800_adr0.npz",
-   "result": "i05 \ubb38\uc81c 3\uc885 \ubaa8\ub450 \ud574\uc18c (step 300~880, 8 env \ud3c9\uade0)",
+   "result": "i05 문제 3종 모두 해소 (step 300~880, 8 env 평균)",
    "facts": [
-    "\uc624\ub978\uc190 \ud30c\uc9c0 \ubd95\uad34 \ud574\uc18c: 4\uc9c0 \ud3c9\uade0 \ubaa9\ud45c _2 0.688\u21920.734 \u00b7 _3 0.860\u21920.923 \u00b7 _4 0.818\u21920.852 \ub85c \uc138 \uad00\uc808\uc774 \uac19\uc740 \ubc29\ud5a5(\ub354 \uac10\uae40). i05 \uc758 \uc5ed\ud328\ud134(_2 1.07\u21920.49 \ud3b4\uace0 _3 1.26\u21921.48 \uad7d\ud798)\uc774 \uc0ac\ub77c\uc84c\ub2e4 \u2014 grip3 \uc5d0\uc11c 4\uc9c0 _2/_3/_4 \uac00 \uac19\uc740 \uba85\ub839\uc744 \ubc1b\uc544 \uad6c\uc870\uc801\uc73c\ub85c \ubd88\uac00\ub2a5",
-    "\uc190\ubc14\ub2e5 \uc811\ucd09\ub825 7.59\u21928.97 N \ub85c \uc0c1\uc2b9(i05 \ub294 7.0\u21922.2 N \ub85c \uc774\ud0c8), \ub05d\ub9c8\ub514 f_dist 2.22\u21922.13 N \uc720\uc9c0 \u00b7 f_tip 0.64\u21921.02 N",
-    "\ud314 \uc9c4\ub3d9 \ud574\uc18c: \uc18c\uc2a4 palm \ud68c\uc804 3\uce78 \ubd80\ud638 \uad50\ub300\uc728 0.000 (i05 \ub294 84 %\u00b781 %). palm \ubaa9\ud45c \ubcc0\ud654 1.57 mm\u00b70.66\u00b0/step (i05 65 mm\u00b768\u00b0), \uc18c\uc2a4 \ud314 \uad00\uc808\uc18d\ub3c4 RMS 0.047 rad/s (i05 0.10~0.18)",
-    "\ub9ac\uc2dc\ubc84 \uc790\uc138 \ud574\uc18c: \uc18c\uc2a4>80\u00b0 \uc778 \ub3d9\uc548 \ub9ac\uc2dc\ubc84 \uae30\uc6b8\uae30 \uc911\uc559\uac12 3.5\u00b0 \u00b7 p90 6.2\u00b0 \u00b7 \ucd5c\ub300 22.4\u00b0 (i05 45.9/51.0/54.7\u00b0)",
-    "\ub09c\uc774\ub3c4 0 \uc7ac\uc0dd \uacb0\uacfc: \uc131\uacf5 8/8 \u00b7 in_target 96.3 % \u00b7 spill 3.8 % \u00b7 \uc18c\uc2a4 \uae30\uc6b8\uae30 \uad6c\uac04\ud3c9\uade0 118.6\u00b0(\ucd5c\ub300 134\u00b0)",
-    "\uc794\uc5ec \uad00\ucc30: \uc18c\uc2a4 4\uc9c0 \ub2eb\ud798 \uc561\uc158(src_4f) \ubd80\ud638 \uad50\ub300\uc728 0.441 \u2014 palm EMA \ub294 \uc190 \uba85\ub839\uc5d0 \uac78\ub9ac\uc9c0 \uc54a\ub294\ub2e4. \uc811\ucd09 \ub3d9\uacb0\ub85c \uad00\uc808 \uc2e4\uce21\uc740 \uc548\uc815(\uc704 _2/_3/_4 \ucd94\uc774)\uc774\ub77c \ud604 \uc2dc\uc810 \uc2e4\u5bb3\ub294 \ud655\uc778\ub418\uc9c0 \uc54a\uc74c",
-    "\ub9ac\uc2dc\ubc84 \ud314 \uad00\uc808\uc18d\ub3c4 RMS 0.105 rad/s \ub85c \uc18c\uc2a4\uc758 2.2\ubc30 \u00b7 palm \ubaa9\ud45c 3.45 mm/step (\uc18c\uc2a4 1.57)"
+    "오른손 파지 붕괴 해소: 4지 평균 목표 _2 0.688→0.734 · _3 0.860→0.923 · _4 0.818→0.852 로 세 관절이 같은 방향(더 감김). i05 의 역패턴(_2 1.07→0.49 펴고 _3 1.26→1.48 굽힘)이 사라졌다 — grip3 에서 4지 _2/_3/_4 가 같은 명령을 받아 구조적으로 불가능",
+    "손바닥 접촉력 7.59→8.97 N 로 상승(i05 는 7.0→2.2 N 로 이탈), 끝마디 f_dist 2.22→2.13 N 유지 · f_tip 0.64→1.02 N",
+    "팔 진동 해소: 소스 palm 회전 3칸 부호 교대율 0.000 (i05 는 84 %·81 %). palm 목표 변화 1.57 mm·0.66°/step (i05 65 mm·68°), 소스 팔 관절속도 RMS 0.047 rad/s (i05 0.10~0.18)",
+    "리시버 자세 해소: 소스>80° 인 동안 리시버 기울기 중앙값 3.5° · p90 6.2° · 최대 22.4° (i05 45.9/51.0/54.7°)",
+    "난이도 0 재생 결과: 성공 8/8 · in_target 96.3 % · spill 3.8 % · 소스 기울기 구간평균 118.6°(최대 134°)",
+    "잔여 관찰: 소스 4지 닫힘 액션(src_4f) 부호 교대율 0.441 — palm EMA 는 손 명령에 걸리지 않는다. 접촉 동결로 관절 실측은 안정(위 _2/_3/_4 추이)이라 현 시점 실害는 확인되지 않음",
+    "리시버 팔 관절속도 RMS 0.105 rad/s 로 소스의 2.2배 · palm 목표 3.45 mm/step (소스 1.57)"
    ]
   },
   "ticks": [
@@ -322,7 +322,7 @@
     ],
     "adr": 0.5,
     "reward_total": 25.07,
-    "note": "adr 0.20\u21920.50 \uc0c1\uc2b9 \uc911\uc5d0\ub3c4 \uc131\uacf5 0.70\u21920.73\u00b7\ud758\ub9bc 0.075\u21920.062\u00b7\ub9ac\uc2dc\ubc84 \uae30\uc6b8\uae30 8\u21925\u00b0 \u2014 \ub09c\uc774\ub3c4 \uc0c1\uc2b9 \ud558\uc5d0\uc11c \uac1c\uc120. \uc131\uacf5 \u22650.5 \ub450 \ud2f1 \uc5f0\uc18d \u2227 nested 0 \u2227 cup_collision 0.6 % \u2192 play \uc601\uc0c1 \ud655\uc778 \uc81c\uc548(\uc2b9\uc778 \ub300\uae30)"
+    "note": "adr 0.20→0.50 상승 중에도 성공 0.70→0.73·흘림 0.075→0.062·리시버 기울기 8→5° — 난이도 상승 하에서 개선. 성공 ≥0.5 두 틱 연속 ∧ nested 0 ∧ cup_collision 0.6 % → play 영상 확인 제안(승인 대기)"
    },
    {
     "epoch": 1739,
@@ -341,7 +341,7 @@
     ],
     "adr": 0.6667,
     "reward_total": 25.36,
-    "note": "adr 0.50\u21920.67 \uc5d0\uc11c\ub3c4 \uc131\uacf5 0.728\u21920.748\u00b7\ub9ac\uc2dc\ubc84 \ube44\ub4dc 69\u219271 % \uc0c1\uc2b9. \uc190 \uc774\ubb3c \ub9ac\uc2dc\ubc84 3.7\u21925.2 %\u00b7\ucef5 \ucda9\ub3cc 0.55\u21920.94 % \ub294 \uc18c\ud3ed \uc99d\uac00(\ub09c\uc774\ub3c4 \uc0c1\uc2b9\uacfc \ub3d9\ubc18). play \uc601\uc0c1 \ud655\uc778 \uc81c\uc548\uc740 \uc720\uc9c0 \u2014 \uc2b9\uc778 \ub300\uae30"
+    "note": "adr 0.50→0.67 에서도 성공 0.728→0.748·리시버 비드 69→71 % 상승. 손 이물 리시버 3.7→5.2 %·컵 충돌 0.55→0.94 % 는 소폭 증가(난이도 상승과 동반). play 영상 확인 제안은 유지 — 승인 대기"
    },
    {
     "epoch": 1999,
@@ -360,7 +360,7 @@
     ],
     "adr": 0.8667,
     "reward_total": 25.36,
-    "note": "adr 0.67\u21920.87 \uc5d0\uc11c \uc131\uacf5 0.748\u21920.761\u00b7\ub9ac\uc2dc\ubc84 \ube44\ub4dc 71\u219273 %\u00b7\ud758\ub9bc 6.7\u21926.3 %. \uc9c0\ub09c \ud2f1\uc5d0 \uc62c\ub790\ub358 \ucef5 \ucda9\ub3cc\uc740 0.94\u21920.73 % \ub85c \ubcf5\uadc0, \uc18c\uc2a4 \uc190 \uc774\ubb3c\ub9cc 1.6\u21922.2 % \uc18c\ud3ed \uc0c1\uc2b9. adr 1.0 \uc784\ubc15 \u2192 \uc218\ub834 \ud310\uc815(adr 1.0 \ud6c4 \ub450 \ud2f1 |\u0394|\u22640.02) \uc2dc\uc791\uc810 \uace7 \ub3c4\ub2ec"
+    "note": "adr 0.67→0.87 에서 성공 0.748→0.761·리시버 비드 71→73 %·흘림 6.7→6.3 %. 지난 틱에 올랐던 컵 충돌은 0.94→0.73 % 로 복귀, 소스 손 이물만 1.6→2.2 % 소폭 상승. adr 1.0 임박 → 수렴 판정(adr 1.0 후 두 틱 |Δ|≤0.02) 시작점 곧 도달"
    },
    {
     "epoch": 2260,
@@ -379,7 +379,7 @@
     ],
     "adr": 1.0,
     "reward_total": 25.77,
-    "note": "adr 1.0 \ub3c4\ub2ec(\ucd5c\ucd08 epoch 2169) \u2014 \uc218\ub834 \ud310\uc815 \uae30\uc900\uc810(\u0394 \uce74\uc6b4\ud2b8 0). \uc131\uacf5 0.761\u21920.766\u00b7\ub9ac\uc2dc\ubc84 \ube44\ub4dc 73 %\u00b7\ud758\ub9bc 6.2 %\u00b7\ucd1d\ubcf4\uc0c1 25.4\u219225.8 \ub85c \uacc4\uc18d \uac1c\uc120. \uc18c\uc2a4 \uc190 \uc774\ubb3c 2.2\u21922.9 % \uc0c1\uc2b9\uc740 \uad00\ucc30 \uc9c0\uc18d"
+    "note": "adr 1.0 도달(최초 epoch 2169) — 수렴 판정 기준점(Δ 카운트 0). 성공 0.761→0.766·리시버 비드 73 %·흘림 6.2 %·총보상 25.4→25.8 로 계속 개선. 소스 손 이물 2.2→2.9 % 상승은 관찰 지속"
    },
    {
     "epoch": 2508,
@@ -398,7 +398,7 @@
     ],
     "adr": 1.0,
     "reward_total": 25.73,
-    "note": "adr 1.0 \uc720\uc9c0 \uccab \ud2f1 \u2014 \uc131\uacf5 0.7663\u21920.7658(\u0394 \u22120.0005) \ub85c \ud3c9\ud0c4, \uc218\ub834 \uc548\uc815 1/2. \ub9ac\uc2dc\ubc84 \ube44\ub4dc 73.2\u219272.2 %\u00b7\ud758\ub9bc 6.2\u21927.3 % \ub294 \uc18c\ud3ed \uc5ed\ud589, \ucef5 \ucda9\ub3cc 0.67\u21920.50 %\u00b7\uc18c\uc2a4 \uc190 \uc774\ubb3c 2.9\u21922.5 % \ub294 \uac1c\uc120"
+    "note": "adr 1.0 유지 첫 틱 — 성공 0.7663→0.7658(Δ −0.0005) 로 평탄, 수렴 안정 1/2. 리시버 비드 73.2→72.2 %·흘림 6.2→7.3 % 는 소폭 역행, 컵 충돌 0.67→0.50 %·소스 손 이물 2.9→2.5 % 는 개선"
    },
    {
     "epoch": 2767,
@@ -417,12 +417,12 @@
     ],
     "adr": 1.0,
     "reward_total": 25.88,
-    "note": "\uc131\uacf5 0.7658\u21920.7689(\u0394 +0.0031) \u2014 \uc548\uc815 2/2 \ub85c \uc218\ub834 \uc131\ub9bd. \uc9c0\ub09c \ud2f1 \uc5ed\ud589\ud588\ub358 \ub9ac\uc2dc\ubc84 \ube44\ub4dc 72.2\u219273.7 %\u00b7\ud758\ub9bc 7.3\u21925.9 % \uac00 \ub418\ub3cc\uc544\uc640 \ud2f1 \uac04 \ud754\ub4e4\ub9bc\uc774\uc5c8\uc74c\uc774 \ud655\uc778\ub428. i05 \ub294 epoch 2765\u00b721.25 h \uc5d0 \uc218\ub834(\uc131\uacf5 0.807) \u2014 i07 \uc740 epoch 2767\u00b721.52 h \ub85c \uac70\uc758 \uac19\uc740 \uc9c0\uc810, \uc131\uacf5\ub960 \ucc28 0.04 \ub294 \ub9ac\uc2dc\ubc84 20\u00b0 \uc131\uacf5 \uc870\uac74 \ucd94\uac00\ubd84 \ud3ec\ud568"
+    "note": "성공 0.7658→0.7689(Δ +0.0031) — 안정 2/2 로 수렴 성립. 지난 틱 역행했던 리시버 비드 72.2→73.7 %·흘림 7.3→5.9 % 가 되돌아와 틱 간 흔들림이었음이 확인됨. i05 는 epoch 2765·21.25 h 에 수렴(성공 0.807) — i07 은 epoch 2767·21.52 h 로 거의 같은 지점, 성공률 차 0.04 는 리시버 20° 성공 조건 추가분 포함"
    }
   ],
   "convergence": {
-   "rule": "adr/progress == 1.0 \uc774\ud6c4 \ub450 \ud2f1 \uc5f0\uc18d episode_success recent10 \ubcc0\ud654 |\u0394| \u2264 0.02",
-   "on_converged": "\ubcf4\uace0\ub9cc \ud558\uace0 \ub7f0 \uc720\uc9c0 \u2014 \uc911\ub2e8 \uc5ec\ubd80\ub294 \uc0ac\uc6a9\uc790 \uacb0\uc815",
+   "rule": "adr/progress == 1.0 이후 두 틱 연속 episode_success recent10 변화 |Δ| ≤ 0.02",
+   "on_converged": "보고만 하고 런 유지 — 중단 여부는 사용자 결정",
    "adr_full_epoch": 2169,
    "stable_ticks": 2,
    "converged": true,
@@ -435,7 +435,7 @@
      "epoch": 2260,
      "recent10": 0.7663,
      "adr": 1.0,
-     "note": "adr 1.0 \ucd5c\ucd08 \uad00\uce21 \ud2f1 \u2014 \uae30\uc900\uc810"
+     "note": "adr 1.0 최초 관측 틱 — 기준점"
     },
     {
      "epoch": 2508,
@@ -450,7 +450,7 @@
      "adr": 1.0,
      "delta": 0.0031,
      "stable": true,
-     "note": "\uc218\ub834 \uc131\ub9bd \u2014 \ub7f0\uc740 \uc720\uc9c0, \uc911\ub2e8\u00b7eval\u00b7\uc601\uc0c1\uc740 \uc0ac\uc6a9\uc790 \uacb0\uc815 \ub300\uae30"
+     "note": "수렴 성립 — 런은 유지, 중단·eval·영상은 사용자 결정 대기"
     }
    ]
   }
@@ -458,7 +458,7 @@
  "ended_i09": {
   "epoch": 546,
   "hours": 4.42,
-  "reason": "\ub8e8\ud504 \uaddc\uce59 advance(4 h, \uc131\uacf5 0). \uc18c\uc2a4 \ud30c\uc9c0 0.002(e177)\u21920.20(e292)\u21920.86(e546) \ub2a6\uac8c \ud68c\ubcf5, \ub4e4\uae30 S/R 0.056/0.098 m \uc800\uc870, \ub9ac\uc2dc\ubc84 \uc774\ubb3c 19 %. \uacc4\uce21(ep150): \uc18c\uc2a4 \ud314 \ubc14\uae65 \ud3ec\ud654(py \u22120.99, palm\u2013cup 0.25 > \uac8c\uc774\ud2b8 0.22), \ub9ac\uc2dc\ubc84 \ucef5\u2013\ucef5 144 N",
+  "reason": "루프 규칙 advance(4 h, 성공 0). 소스 파지 0.002(e177)→0.20(e292)→0.86(e546) 늦게 회복, 들기 S/R 0.056/0.098 m 저조, 리시버 이물 19 %. 계측(ep150): 소스 팔 바깥 포화(py −0.99, palm–cup 0.25 > 게이트 0.22), 리시버 컵–컵 144 N",
   "server_pids_killed": [
    1931511,
    1931518
@@ -476,13 +476,14 @@
   ],
   "started": 1789588904.0,
   "started_local": "2026-09-17 04:55",
-  "cron": "b60ea453 (2h, :23) \u2014 \ud504\ub86c\ud504\ud2b8 \ub77c\ubca8\uc740 i10 \uc73c\ub85c \uac31\uc2e0",
-  "reward": "iter_10 41\ud56d(reach_src/rcv\u00b7palm_sat_src/rcv \ucd94\uac00)"
+  "cron": "b60ea453 (2h, :23) — 프롬프트 라벨은 i10 으로 갱신",
+  "reward": "iter_10 41항(reach_src/rcv·palm_sat_src/rcv 추가)"
  },
  "server_pids": [
   2274151,
   2274158
  ],
  "commit": "5767f0d6",
- "note": "iter_11 42 terms; i10 killed at epoch 723 (success 0, advanced by rule)"
+ "note": "iter_11 42 terms; i10 killed at epoch 723 (success 0, advanced by rule)",
+ "round13_note": "iter_12 42항(ingest PASS), t2r_i11 ep_550 체크포인트 웜스타트, 4096 env GPU1, MAX_ROUNDS 20"
 }
