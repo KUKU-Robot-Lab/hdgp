@@ -35,6 +35,10 @@ parser.add_argument("--v_max", type=float, default=0.10,
                     help="포켓 목표 이동 속도 상한 [m/s]. 0 이면 무제한(09.17 cup_trace: 무제한은 ~1.3 m/s 로 날아가 u=10 에 손가락이 컵을 친다)")
 parser.add_argument("--ref", default="rest", choices=["rest", "live"],
                     help="파지점 기준 컵 위치. rest=정지 위치 고정, live=매 스텝 현재 위치(넘어진 컵을 쫓아간다)")
+parser.add_argument("--plans", default="full",
+                    help="쉼표 구분. full=above->down->enter->close->lift->hold, direct=홈에서 바로 enter(홈이 이미 컵 옆이면 우회가 컵을 친다)")
+parser.add_argument("--side_sign", default="auto", choices=["auto", "pos", "neg"],
+                    help="옆 대기점 부호. auto=정지 자세에서 포켓이 컵의 n 어느 쪽에 있는지 재서 그쪽으로 물러난다")
 parser.add_argument("--above_steps", type=int, default=200)
 parser.add_argument("--down_steps", type=int, default=90)
 parser.add_argument("--enter_steps", type=int, default=110)
@@ -107,7 +111,7 @@ def fmt(v, nd=3):
     return [round(float(x), nd) for x in v]
 
 
-def run_trial(side: str, freeze_thr: float) -> list[dict]:
+def run_trial(side: str, freeze_thr: float, plan_name: str = "full") -> list[dict]:
     env.cfg.contact_freeze_threshold = float(freeze_thr)
     SI = 0 if side == "src" else 1
     rig = env.src if SI == 0 else env.rcv
@@ -163,10 +167,35 @@ def run_trial(side: str, freeze_thr: float) -> list[dict]:
     max_step = args.v_max * step_dt if args.v_max > 0 else float("inf")
     plan = [("above", args.above_steps), ("down", args.down_steps), ("enter", args.enter_steps),
             ("close", args.close_steps), ("lift", 100), ("hold", 90)]
+    if plan_name == "direct":
+        plan = [p for p in plan if p[0] not in ("above", "down")]
+    # 09.17 정지 자세 기하. 컵이 포켓에서 본 n 의 어느 쪽인가(=옆 대기점 부호)와 열린 손끝-컵 간격.
+    pk0, n0 = hand_frame()
+    f0 = n_sign * torch.stack([n0[:, 1], -n0[:, 0]], dim=1)
+    def _nfz(v):
+        return torch.stack([(v[..., :2] * n0.view(N, *([1] * (v.dim() - 2)), 2)).sum(-1),
+                            (v[..., :2] * f0.view(N, *([1] * (v.dim() - 2)), 2)).sum(-1), v[..., 2]], dim=-1)
+    pk_rel = _nfz(pk0 - rest)
+    palm_rel = _nfz(rig.palm_pos() - rest)
+    tips_rel = _nfz(rig.tips_pos() - rest.unsqueeze(1))
+    if args.side_sign == "auto":
+        sgn = torch.sign(pk_rel[:, 0])
+        sgn = torch.where(sgn == 0, torch.ones_like(sgn), sgn)
+    else:
+        sgn = torch.full((N,), 1.0 if args.side_sign == "pos" else -1.0, device=dev)
+    gtag = f"{side} {plan_name}"
+    print(f"[{gtag}] 정지 기하(컵 기준 n,f,z mm): 포켓 {[round(float(x) * 1000, 1) for x in pk_rel.mean(0)]} "
+          f"손바닥 {[round(float(x) * 1000, 1) for x in palm_rel.mean(0)]} · 옆 대기점 부호 +{int((sgn > 0).sum())}/-{int((sgn < 0).sum())}", flush=True)
+    for fi, fname in enumerate(fingers):
+        t = tips_rel[:, fi]
+        print(f"[{gtag}]   손끝 {fname}: n,f,z {[round(float(x) * 1000, 1) for x in t.mean(0)]} mm · 컵 축까지 수평 "
+              f"{float(t[:, :2].norm(dim=-1).mean()) * 1000:.1f} (최소 {float(t[:, :2].norm(dim=-1).min()) * 1000:.1f}) mm", flush=True)
+    pre_rel = torch.zeros(N, 3, device=dev)
+    pre_fid = torch.full((N,), -1, device=dev, dtype=torch.long)
     n_total = hold + sum(k for _, k in plan)
     if n_total >= int(env.max_episode_length):
         raise SystemExit(f"대본 {n_total} 스텝 >= 에피소드 {int(env.max_episode_length)} 스텝 - time_out 리셋이 끼어든다")
-    t_enter = state["step"] + args.above_steps + args.down_steps
+    t_enter = state["step"] + sum(k for nm, k in plan if nm in ("above", "down"))
     g_cmd = hand_frame()[0].clone()
     pre_step = torch.full((N,), -1, device=dev, dtype=torch.long)
     pre_phase = torch.full((N,), -1, device=dev, dtype=torch.long)
@@ -187,9 +216,9 @@ def run_trial(side: str, freeze_thr: float) -> list[dict]:
             grip = torch.cat([c[:, :2], (c[:, 2] + p_dz).unsqueeze(1)], dim=1) + p_dn.unsqueeze(1) * n3
             ez = 0.0
             if name == "above":
-                goal, hand_cmd, ez = grip + args.side_m * n3, -1.0, args.safe_dz
+                goal, hand_cmd, ez = grip + args.side_m * sgn.unsqueeze(1) * n3, -1.0, args.safe_dz
             elif name == "down":
-                goal, hand_cmd = grip + args.side_m * n3, -1.0
+                goal, hand_cmd = grip + args.side_m * sgn.unsqueeze(1) * n3, -1.0
             elif name == "enter":
                 goal, hand_cmd = grip, -1.0
             elif name == "close":
@@ -207,7 +236,7 @@ def run_trial(side: str, freeze_thr: float) -> list[dict]:
             prev_pocket = pocket_now.clone()
             env.step(a)
             state["step"] += 1
-            if pi < 3:
+            if name in ("above", "down", "enter"):
                 # 오므리기 전에 컵이 이미 교란됐는가(손이 지나가며 침). 첫 교란 시점의 단계·손가락 힘·손 속도를 남긴다.
                 cl = cup_local()
                 hit = (pre_step < 0) & ((cup_tilt_deg() > args.pre_tilt_deg)
@@ -218,6 +247,8 @@ def run_trial(side: str, freeze_thr: float) -> list[dict]:
                     pre_finger[hit] = rig.finger_forces().max(dim=1).values[hit]
                     pre_palm[hit] = rig.palm_force()[hit]
                     pre_speed[hit] = ((hand_frame()[0] - prev_pocket).norm(dim=-1) / step_dt)[hit]
+                    pre_rel[hit] = _nfz(hand_frame()[0] - rest)[hit]
+                    pre_fid[hit] = rig.finger_forces().argmax(dim=1)[hit]
             if name in ("lift", "hold"):
                 grasp_sum += rig.grasped(rig.finger_forces()).float()
                 grasp_n += 1
@@ -252,7 +283,9 @@ def run_trial(side: str, freeze_thr: float) -> list[dict]:
     for i in range(N):
         zi, ni, ri = COMBOS[int(combo_id[i])]
         rows.append(dict(
-            side=side, freeze=freeze_thr, env=i, dz=DZ[zi], dn=DN[ni], rot=list(ROT[ri]),
+            side=side, freeze=freeze_thr, plan=plan_name, env=i, dz=DZ[zi], dn=DN[ni], rot=list(ROT[ri]),
+            pre_rel_mm=[round(float(x) * 1000, 1) for x in pre_rel[i]],
+            pre_fid=(fingers[int(pre_fid[i])] if int(pre_fid[i]) >= 0 else ""),
             phys=bool(phys[i]), strict=bool(strict[i]), grasp=round(float(grasp[i]), 3),
             lift_min=round(float(lift_min_hold[i]), 4), lift_end=round(float(lift_end[i]), 4),
             tilt_max=round(float(tilt_max[i]), 1), slip=round(float(slip[i]), 4),
@@ -301,6 +334,14 @@ def report(rows, side, thr):
     print(f"[{tag}] 오므리기 전 컵 교란(기울기>{args.pre_tilt_deg:g}° 또는 밀림>{args.pre_shift_m*1000:g}mm): {len(dirty)}/{n} 단계별 {pre}"
           + (f" · 교란 시점 손가락 힘 평균 {mean(dirty, lambda r: r['pre_finger']):.2f}N 손 속도 평균 {mean(dirty, lambda r: r['pre_speed']):.3f}m/s"
              if dirty else ""), flush=True)
+    if dirty:
+        fid = {}
+        for r in dirty:
+            fid[r["pre_fid"]] = fid.get(r["pre_fid"], 0) + 1
+        zero_f = sum(1 for r in dirty if r["pre_finger"] < 0.05 and r["pre_palm"] < 0.05)
+        print(f"[{tag}]   교란 시점 최대 힘 손가락 {fid} · 손 힘 0(손가락·손바닥 <0.05N) {zero_f}/{len(dirty)} · "
+              f"그때 포켓 위치(컵 기준 n,f,z mm) 평균 {[round(mean(dirty, lambda r, k=k: r['pre_rel_mm'][k]), 1) for k in range(3)]} · "
+              f"교란 스텝 중앙 {sorted(r['pre_step'] for r in dirty)[len(dirty) // 2]}", flush=True)
     print(f"[{tag}] 교란 없는 env {len(clean)}: phys {rate(clean, 'phys'):.2f} strict {rate(clean, 'strict'):.2f} "
           f"grasp {mean(clean, lambda r: r['grasp']):.2f} lift_min {mean(clean, lambda r: r['lift_min'])*100:.1f}cm "
           f"tilt_max {mean(clean, lambda r: r['tilt_max']):.1f}° slip {mean(clean, lambda r: r['slip'])*1000:.1f}mm", flush=True)
@@ -340,9 +381,10 @@ print(f"[cfg] N={N} combos={len(COMBOS)} dz={DZ} dn={DN} rot={ROT} close_steps={
       f"grasp_thr={env.cfg.contact_force_threshold} close_speed={env.cfg.synergy_close_speed}", flush=True)
 for side in [s.strip() for s in args.sides.split(",") if s.strip()]:
     for thr in [float(x) for x in args.freeze.split(",")]:
-        rows = run_trial(side, thr)
-        report(rows, side, thr)
-        all_rows += rows
+        for plan_name in [x.strip() for x in args.plans.split(",") if x.strip()]:
+            rows = run_trial(side, thr, plan_name)
+            report(rows, f"{side} {plan_name}", thr)
+            all_rows += rows
 if args.out_json:
     os.makedirs(os.path.dirname(args.out_json) or ".", exist_ok=True)
     with open(args.out_json, "w") as fh:
