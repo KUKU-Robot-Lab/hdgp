@@ -1,0 +1,872 @@
+{
+ "track": "grasp_fj_rand",
+ "label": "fj_rand_i01",
+ "verdict": "dead",
+ "epoch": 8849,
+ "successes": 2.4539,
+ "tol": 0.015,
+ "curriculum_moving": false,
+ "stage_moving": true,
+ "stage_stuck": null,
+ "envelope_ok": true,
+ "checkpoint": null,
+ "alive": false,
+ "procs": [],
+ "crashed_log": false,
+ "hours": 14.0,
+ "mirror": "/home/user/rl_ws/hdgp/log/server_mirror/grasp-fj-t2r-rand/fj_rand_i01",
+ "funnel": {
+  "reach": [
+   0.9946,
+   0.9895
+  ],
+  "grasp": [
+   0.9946,
+   0.9745
+  ],
+  "envelope": [
+   0.9886,
+   0.9229
+  ],
+  "lift": [
+   0.9905,
+   0.9376
+  ],
+  "success": [
+   0.5633,
+   0.6965
+  ]
+ },
+ "policy": {
+  "ROUND_EPOCHS": 3000,
+  "ROUND_HOURS": 4.0,
+  "KEEP_SUCCESSES": 2.0,
+  "TOL_WINDOW": 600,
+  "TOL_EPS": 0.0001,
+  "DONE_SUCCESSES": 4.0,
+  "DONE_TOL": 0.03,
+  "DONE_FINGERS": 4.0,
+  "DONE_PALM": 0.5,
+  "STAGE_EPS": 0.02,
+  "STUCK_PREV": 0.9,
+  "STUCK_NEXT": 0.02,
+  "MAX_ROUNDS": 8,
+  "LAST_N": 150,
+  "CHECK_APPROACH_EPOCH": 1000000000,
+  "CHECK_APPROACH_MIN": 0.3,
+  "CHECK_ENVELOPE_EPOCH": 1000000000,
+  "CHECK_ENVELOPE_MIN": 0.05,
+  "STUCK_STOP": false,
+  "STAGE_EXTEND": false
+ },
+ "metrics": {
+  "stage/lifted": {
+   "n": 8849,
+   "last": 0.9808,
+   "now": 1.0,
+   "ago": 0.8,
+   "max": 1.0,
+   "first": 0.0
+  },
+  "stage/goal1": {
+   "n": 8849,
+   "last": 0.6041,
+   "now": 0.75,
+   "ago": 0.6,
+   "max": 1.0,
+   "first": 0.0
+  },
+  "stage/goal2": {
+   "n": 8849,
+   "last": 0.5157,
+   "now": 0.5,
+   "ago": 0.6,
+   "max": 1.0,
+   "first": 0.0
+  },
+  "stage/goal3": {
+   "n": 8849,
+   "last": 0.4335,
+   "now": 0.5,
+   "ago": 0.6,
+   "max": 1.0,
+   "first": 0.0
+  },
+  "done/out_xy": {
+   "n": 8849,
+   "last": 0.0,
+   "now": 0.0,
+   "ago": 0.0,
+   "max": 0.0027,
+   "first": 0.0
+  },
+  "done/fell": {
+   "n": 8849,
+   "last": 0.0,
+   "now": 0.0,
+   "ago": 0.0,
+   "max": 0.0002,
+   "first": 0.0
+  },
+  "done/tipped": {
+   "n": 8849,
+   "last": 0.0001,
+   "now": 0.0,
+   "ago": 0.0002,
+   "max": 0.002,
+   "first": 0.0
+  },
+  "done/abnormal": {
+   "n": 8849,
+   "last": 0.0,
+   "now": 0.0,
+   "ago": 0.0,
+   "max": 0.0049,
+   "first": 0.0
+  },
+  "done/hand_floor": {
+   "n": 8849,
+   "last": 0.0,
+   "now": 0.0,
+   "ago": 0.0,
+   "max": 0.0007,
+   "first": 0.0
+  },
+  "done/max_goals": {
+   "n": 8849,
+   "last": 0.0003,
+   "now": 0.0002,
+   "ago": 0.0002,
+   "max": 0.0051,
+   "first": 0.0
+  },
+  "reward/approach_travel": {
+   "n": 8849,
+   "last": 0.0087,
+   "now": 0.0079,
+   "ago": 0.0075,
+   "max": 0.0717,
+   "first": 0.0689
+  },
+  "reward/approach_form": {
+   "n": 8849,
+   "last": 0.0134,
+   "now": 0.013,
+   "ago": 0.0116,
+   "max": 0.0578,
+   "first": 0.0333
+  },
+  "reward/approach_lock": {
+   "n": 8849,
+   "last": 0.0007,
+   "now": 0.0005,
+   "ago": 0.0007,
+   "max": 0.0091,
+   "first": 0.0
+  },
+  "reward/approach_keep": {
+   "n": 8849,
+   "last": 0.0017,
+   "now": 0.0014,
+   "ago": 0.0014,
+   "max": 0.0188,
+   "first": 0.015
+  },
+  "reward/pregrasp_shape": {
+   "n": 8849,
+   "last": 0.0002,
+   "now": 0.0003,
+   "ago": 0.0002,
+   "max": 0.0126,
+   "first": 0.0
+  },
+  "reward/early_contact_pen": {
+   "n": 8849,
+   "last": -0.0163,
+   "now": -0.02,
+   "ago": -0.0189,
+   "max": -0.0001,
+   "first": -0.0001
+  },
+  "reward/grasp_pose": {
+   "n": 8849,
+   "last": 0.0089,
+   "now": 0.0069,
+   "ago": 0.0065,
+   "max": 0.3388,
+   "first": 0.0
+  },
+  "reward/palm_reach": {
+   "n": 8849,
+   "last": 0.0044,
+   "now": 0.0032,
+   "ago": 0.0031,
+   "max": 0.1882,
+   "first": 0.0
+  },
+  "reward/palm_contact": {
+   "n": 8849,
+   "last": 0.0007,
+   "now": 0.0007,
+   "ago": 0.0006,
+   "max": 0.0059,
+   "first": 0.0
+  },
+  "reward/finger_curl": {
+   "n": 8849,
+   "last": 0.0011,
+   "now": 0.001,
+   "ago": 0.0007,
+   "max": 0.0149,
+   "first": 0.0
+  },
+  "reward/thumb_curl": {
+   "n": 8849,
+   "last": 0.0005,
+   "now": 0.0005,
+   "ago": 0.0003,
+   "max": 0.0048,
+   "first": 0.0
+  },
+  "reward/light_contact": {
+   "n": 8849,
+   "last": 0.0004,
+   "now": 0.0004,
+   "ago": 0.0003,
+   "max": 0.0046,
+   "first": 0.0
+  },
+  "reward/grasp_wrap": {
+   "n": 8849,
+   "last": 0.0011,
+   "now": 0.0011,
+   "ago": 0.0009,
+   "max": 0.0126,
+   "first": 0.0
+  },
+  "reward/grasp_thumb": {
+   "n": 8849,
+   "last": 0.001,
+   "now": 0.0011,
+   "ago": 0.0008,
+   "max": 0.0094,
+   "first": 0.0
+  },
+  "reward/grasp_fingers": {
+   "n": 8849,
+   "last": 0.0009,
+   "now": 0.0009,
+   "ago": 0.0007,
+   "max": 0.0091,
+   "first": 0.0
+  },
+  "reward/grip_squeeze": {
+   "n": 8849,
+   "last": 0.0004,
+   "now": 0.0004,
+   "ago": 0.0003,
+   "max": 0.0029,
+   "first": 0.0
+  },
+  "reward/pinky_join": {
+   "n": 8849,
+   "last": 0.0002,
+   "now": 0.0002,
+   "ago": 0.0002,
+   "max": 0.0022,
+   "first": 0.0
+  },
+  "reward/envelope_quality": {
+   "n": 8849,
+   "last": 0.0008,
+   "now": 0.0007,
+   "ago": 0.0006,
+   "max": 0.0034,
+   "first": 0.0
+  },
+  "reward/grasp_hold": {
+   "n": 8849,
+   "last": 0.9839,
+   "now": 0.9731,
+   "ago": 1.0011,
+   "max": 1.0695,
+   "first": 0.0
+  },
+  "reward/lift_start": {
+   "n": 8849,
+   "last": 0.6863,
+   "now": 0.7016,
+   "ago": 0.7086,
+   "max": 0.7447,
+   "first": 0.0
+  },
+  "reward/lift_height": {
+   "n": 8849,
+   "last": 1.6353,
+   "now": 1.691,
+   "ago": 1.6667,
+   "max": 1.8003,
+   "first": 0.0
+  },
+  "reward/lift_vel": {
+   "n": 8849,
+   "last": 0.0135,
+   "now": 0.0105,
+   "ago": 0.0173,
+   "max": 0.0466,
+   "first": 0.0
+  },
+  "reward/goal_close": {
+   "n": 8849,
+   "last": 0.7419,
+   "now": 0.7602,
+   "ago": 0.7568,
+   "max": 0.8183,
+   "first": 0.0
+  },
+  "reward/goal_near": {
+   "n": 8849,
+   "last": 1.2415,
+   "now": 1.2773,
+   "ago": 1.263,
+   "max": 1.3692,
+   "first": 0.0
+  },
+  "reward/goal_in_tol": {
+   "n": 8849,
+   "last": 0.0343,
+   "now": 0.0264,
+   "ago": 0.0471,
+   "max": 0.1466,
+   "first": 0.0
+  },
+  "reward/hold_still": {
+   "n": 8849,
+   "last": 0.3079,
+   "now": 0.3241,
+   "ago": 0.3047,
+   "max": 0.3584,
+   "first": 0.0
+  },
+  "reward/success_bonus": {
+   "n": 8849,
+   "last": 0.0303,
+   "now": 0.0256,
+   "ago": 0.033,
+   "max": 0.293,
+   "first": 0.0
+  },
+  "reward/hand_sink_pen": {
+   "n": 8849,
+   "last": -0.0,
+   "now": 0.0,
+   "ago": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/carry_arm_pen": {
+   "n": 8849,
+   "last": -0.0006,
+   "now": -0.0004,
+   "ago": -0.0006,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/carry_cup_pen": {
+   "n": 8849,
+   "last": -0.0017,
+   "now": -0.0012,
+   "ago": -0.0016,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/cup_disturb_pen": {
+   "n": 8849,
+   "last": -0.003,
+   "now": -0.0029,
+   "ago": -0.0037,
+   "max": 0.0,
+   "first": -0.0
+  },
+  "reward/cup_tilt_pen": {
+   "n": 8849,
+   "last": -0.0035,
+   "now": -0.003,
+   "ago": -0.0036,
+   "max": -0.0,
+   "first": -0.0006
+  },
+  "reward/table_pen": {
+   "n": 8849,
+   "last": -0.0037,
+   "now": -0.0032,
+   "ago": -0.0011,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/palm_table_pen": {
+   "n": 8849,
+   "last": 0.0,
+   "now": 0.0,
+   "ago": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  },
+  "reward/action_rate_pen": {
+   "n": 8849,
+   "last": -0.0005,
+   "now": -0.0005,
+   "ago": -0.0005,
+   "max": -0.0003,
+   "first": -0.0007
+  },
+  "reward/arm_vel_pen": {
+   "n": 8849,
+   "last": -0.0002,
+   "now": -0.0002,
+   "ago": -0.0002,
+   "max": -0.0,
+   "first": -0.0
+  },
+  "reward/total": {
+   "n": 8849,
+   "last": 5.6902,
+   "now": 5.7985,
+   "ago": 5.8046,
+   "max": 6.2159,
+   "first": 0.1158
+  },
+  "task/lifted_frac": {
+   "n": 8849,
+   "last": 0.7944,
+   "now": 0.8257,
+   "ago": 0.8293,
+   "max": 0.8638,
+   "first": 0.0
+  },
+  "task/successes_mean": {
+   "n": 8849,
+   "last": 0.953,
+   "now": 0.9324,
+   "ago": 0.8677,
+   "max": 1.1279,
+   "first": 0.0
+  },
+  "task/tol": {
+   "n": 8849,
+   "last": 0.015,
+   "now": 0.015,
+   "ago": 0.015,
+   "max": 0.1125,
+   "first": 0.1125
+  },
+  "task/tilt_deg": {
+   "n": 8849,
+   "last": 4.1761,
+   "now": 4.8664,
+   "ago": 4.4084,
+   "max": 10.6966,
+   "first": 0.1431
+  },
+  "task/grasp_q_at_success": {
+   "n": 8849,
+   "last": 0.6074,
+   "now": 0.6381,
+   "ago": 0.6582,
+   "max": 0.7919,
+   "first": -1.0
+  },
+  "ctrl/prev_ep_successes_mean": {
+   "n": 8849,
+   "last": 2.4539,
+   "now": 1.863,
+   "ago": 2.8071,
+   "max": 4.7129,
+   "first": 0.0
+  },
+  "contact/links_touching": {
+   "n": 8849,
+   "last": 4.675,
+   "now": 4.8242,
+   "ago": 4.8462,
+   "max": 4.989,
+   "first": 0.0002
+  },
+  "contact/fingers_touching": {
+   "n": 8849,
+   "last": 3.9975,
+   "now": 4.1487,
+   "ago": 4.1531,
+   "max": 4.2473,
+   "first": 0.0002
+  },
+  "contact/palm_touching": {
+   "n": 8849,
+   "last": 0.7507,
+   "now": 0.7756,
+   "ago": 0.7722,
+   "max": 0.8066,
+   "first": 0.0
+  },
+  "contact/link_force_mean": {
+   "n": 8849,
+   "last": 0.9852,
+   "now": 0.9512,
+   "ago": 0.9825,
+   "max": 4.6207,
+   "first": 0.0001
+  },
+  "contact/finger_thumb": {
+   "n": 8849,
+   "last": 0.8283,
+   "now": 0.8564,
+   "ago": 0.8599,
+   "max": 0.8845,
+   "first": 0.0
+  },
+  "contact/finger_index": {
+   "n": 8849,
+   "last": 0.778,
+   "now": 0.8186,
+   "ago": 0.804,
+   "max": 0.8276,
+   "first": 0.0
+  },
+  "contact/finger_middle": {
+   "n": 8849,
+   "last": 0.8042,
+   "now": 0.8296,
+   "ago": 0.8381,
+   "max": 0.8621,
+   "first": 0.0
+  },
+  "contact/finger_ring": {
+   "n": 8849,
+   "last": 0.7831,
+   "now": 0.8115,
+   "ago": 0.8115,
+   "max": 0.8452,
+   "first": 0.0
+  },
+  "contact/finger_pinky": {
+   "n": 8849,
+   "last": 0.8038,
+   "now": 0.8325,
+   "ago": 0.8396,
+   "max": 0.8513,
+   "first": 0.0002
+  },
+  "contact/fingers_touching_at_success": {
+   "n": 8849,
+   "last": 4.8941,
+   "now": 4.9116,
+   "ago": 4.8689,
+   "max": 5.0,
+   "first": -1.0
+  },
+  "contact/links_touching_at_success": {
+   "n": 8849,
+   "last": 5.6738,
+   "now": 5.7274,
+   "ago": 5.6477,
+   "max": 6.1475,
+   "first": -1.0
+  },
+  "contact/palm_touching_at_success": {
+   "n": 8849,
+   "last": 0.9441,
+   "now": 0.9556,
+   "ago": 0.9265,
+   "max": 0.9976,
+   "first": -1.0
+  },
+  "contact/finger_thumb_at_success": {
+   "n": 8849,
+   "last": 0.9999,
+   "now": 1.0,
+   "ago": 0.9989,
+   "max": 1.0,
+   "first": -1.0
+  },
+  "contact/finger_index_at_success": {
+   "n": 8849,
+   "last": 0.9652,
+   "now": 0.9622,
+   "ago": 0.9585,
+   "max": 1.0,
+   "first": -1.0
+  },
+  "contact/finger_middle_at_success": {
+   "n": 8849,
+   "last": 0.9792,
+   "now": 0.9855,
+   "ago": 0.9771,
+   "max": 1.0,
+   "first": -1.0
+  },
+  "contact/finger_ring_at_success": {
+   "n": 8849,
+   "last": 0.9604,
+   "now": 0.9641,
+   "ago": 0.9633,
+   "max": 1.0,
+   "first": -1.0
+  },
+  "contact/finger_pinky_at_success": {
+   "n": 8849,
+   "last": 0.9894,
+   "now": 0.9998,
+   "ago": 0.971,
+   "max": 1.0,
+   "first": -1.0
+  },
+  "stage/palm_cup_gap": {
+   "n": 8849,
+   "last": 0.028,
+   "now": 0.0246,
+   "ago": 0.0241,
+   "max": 0.207,
+   "first": 0.207
+  },
+  "stage/reach_ep": {
+   "n": 8849,
+   "last": 0.9905,
+   "now": 0.9946,
+   "ago": 0.9895,
+   "max": 1.0,
+   "first": -1.0
+  },
+  "stage/grasp_ep": {
+   "n": 8849,
+   "last": 0.9848,
+   "now": 0.9946,
+   "ago": 0.9745,
+   "max": 1.0,
+   "first": -1.0
+  },
+  "stage/envelope_ep": {
+   "n": 8849,
+   "last": 0.973,
+   "now": 0.9886,
+   "ago": 0.9229,
+   "max": 0.9994,
+   "first": -1.0
+  },
+  "stage/lift_ep": {
+   "n": 8849,
+   "last": 0.9797,
+   "now": 0.9905,
+   "ago": 0.9376,
+   "max": 1.0,
+   "first": -1.0
+  },
+  "stage/success_ep": {
+   "n": 8849,
+   "last": 0.5794,
+   "now": 0.5633,
+   "ago": 0.6965,
+   "max": 0.9839,
+   "first": -1.0
+  },
+  "stage/approach_gate_ep": {
+   "n": 8849,
+   "last": 0.9024,
+   "now": 0.9702,
+   "ago": 0.8723,
+   "max": 0.9972,
+   "first": -1.0
+  },
+  "stage/envelope_gate_ep": {
+   "n": 8849,
+   "last": 0.8852,
+   "now": 0.9636,
+   "ago": 0.8304,
+   "max": 0.9887,
+   "first": -1.0
+  },
+  "stage/approach_gate_now": {
+   "n": 8849,
+   "last": 0.7908,
+   "now": 0.7961,
+   "ago": 0.8066,
+   "max": 0.9529,
+   "first": 0.0
+  },
+  "stage/envelope_gate_now": {
+   "n": 8849,
+   "last": 0.7489,
+   "now": 0.7603,
+   "ago": 0.7742,
+   "max": 0.8,
+   "first": 0.0
+  },
+  "stage/approach_ok_gap_now": {
+   "n": 8849,
+   "last": 0.1363,
+   "now": 0.1316,
+   "ago": 0.1294,
+   "max": 0.4182,
+   "first": 0.0852
+  },
+  "stage/approach_ok_along_now": {
+   "n": 8849,
+   "last": 0.0275,
+   "now": 0.0232,
+   "ago": 0.0217,
+   "max": 0.6699,
+   "first": 0.0476
+  },
+  "stage/approach_ok_height_now": {
+   "n": 8849,
+   "last": 0.7658,
+   "now": 0.8098,
+   "ago": 0.7341,
+   "max": 0.9658,
+   "first": 0.0
+  },
+  "stage/approach_ok_orient_now": {
+   "n": 8849,
+   "last": 0.9823,
+   "now": 0.988,
+   "ago": 0.9685,
+   "max": 1.0,
+   "first": 1.0
+  },
+  "stage/approach_ok_pose_now": {
+   "n": 8849,
+   "last": 0.1585,
+   "now": 0.1345,
+   "ago": 0.1206,
+   "max": 1.0,
+   "first": 1.0
+  },
+  "stage/approach_ok_no_touch_now": {
+   "n": 8849,
+   "last": 0.1683,
+   "now": 0.1406,
+   "ago": 0.1372,
+   "max": 0.9998,
+   "first": 0.9998
+  },
+  "stage/far_approach_gate_ep": {
+   "n": 8849,
+   "last": 0.9024,
+   "now": 0.9702,
+   "ago": 0.8723,
+   "max": 0.9972,
+   "first": -1.0
+  },
+  "stage/far_envelope_gate_ep": {
+   "n": 8849,
+   "last": 0.8852,
+   "now": 0.9636,
+   "ago": 0.8304,
+   "max": 0.9887,
+   "first": -1.0
+  },
+  "stage/far_reach_ep": {
+   "n": 8849,
+   "last": 0.9905,
+   "now": 0.9946,
+   "ago": 0.9895,
+   "max": 1.0,
+   "first": -1.0
+  },
+  "stage/far_grasp_ep": {
+   "n": 8849,
+   "last": 0.9848,
+   "now": 0.9946,
+   "ago": 0.9745,
+   "max": 1.0,
+   "first": -1.0
+  },
+  "stage/far_envelope_ep": {
+   "n": 8849,
+   "last": 0.973,
+   "now": 0.9886,
+   "ago": 0.9229,
+   "max": 0.9994,
+   "first": -1.0
+  },
+  "stage/far_lift_ep": {
+   "n": 8849,
+   "last": 0.9797,
+   "now": 0.9905,
+   "ago": 0.9376,
+   "max": 1.0,
+   "first": -1.0
+  },
+  "stage/far_success_ep": {
+   "n": 8849,
+   "last": 0.5794,
+   "now": 0.5633,
+   "ago": 0.6965,
+   "max": 0.9839,
+   "first": -1.0
+  },
+  "stage/near_approach_gate_ep": {
+   "n": 8849,
+   "last": -1.0,
+   "now": -1.0,
+   "ago": -1.0,
+   "max": -1.0,
+   "first": -1.0
+  },
+  "stage/near_envelope_gate_ep": {
+   "n": 8849,
+   "last": -1.0,
+   "now": -1.0,
+   "ago": -1.0,
+   "max": -1.0,
+   "first": -1.0
+  },
+  "stage/near_reach_ep": {
+   "n": 8849,
+   "last": -1.0,
+   "now": -1.0,
+   "ago": -1.0,
+   "max": -1.0,
+   "first": -1.0
+  },
+  "stage/near_grasp_ep": {
+   "n": 8849,
+   "last": -1.0,
+   "now": -1.0,
+   "ago": -1.0,
+   "max": -1.0,
+   "first": -1.0
+  },
+  "stage/near_envelope_ep": {
+   "n": 8849,
+   "last": -1.0,
+   "now": -1.0,
+   "ago": -1.0,
+   "max": -1.0,
+   "first": -1.0
+  },
+  "stage/near_lift_ep": {
+   "n": 8849,
+   "last": -1.0,
+   "now": -1.0,
+   "ago": -1.0,
+   "max": -1.0,
+   "first": -1.0
+  },
+  "stage/near_success_ep": {
+   "n": 8849,
+   "last": -1.0,
+   "now": -1.0,
+   "ago": -1.0,
+   "max": -1.0,
+   "first": -1.0
+  },
+  "stage/near_start_frac_now": {
+   "n": 8849,
+   "last": 0.0,
+   "now": 0.0,
+   "ago": 0.0,
+   "max": 0.0,
+   "first": 0.0
+  }
+ }
+}

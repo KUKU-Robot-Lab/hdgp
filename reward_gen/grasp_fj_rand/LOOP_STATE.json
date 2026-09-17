@@ -1,18 +1,29 @@
 {
  "track": "grasp_fj_rand",
- "iter": 0,
- "label": "fj_rand_i00",
+ "iter": 1,
+ "label": "fj_rand_i01",
  "label_prefix": "fj_rand_i",
- "round": 1,
- "status": "round_end",
- "awaiting": "approval_iter_00",
- "best": null,
+ "round": 2,
+ "status": "closed",
+ "awaiting": null,
+ "best": {
+  "label": "fj_rand_i01",
+  "checkpoint": "/home/oem/rl_ws/our_source/fj_t2r_init/fj_rand_i01_best_ep5000.pth",
+  "epoch": 5000,
+  "tol": 0.0188,
+  "far_success_ep": 0.849,
+  "far_approach_gate_ep": 0.938,
+  "far_envelope_gate_ep": 0.92,
+  "lift_ep": 0.987,
+  "tilt_deg": 4.28
+ },
  "success_ticks": 0,
- "started": 1789614625,
- "pid": 2362040,
- "commit": "8ad5a1ae",
+ "started": 1789633604,
+ "pid": 2764401,
+ "commit": "9aa65abb",
  "algo": {
-  "from_iter_00": "PPO-LSTM 4096 (open-short_r_grasp_fj_t2r_rand-lstm)"
+  "from_iter_00": "PPO-LSTM 4096 (open-short_r_grasp_fj_t2r_rand-lstm)",
+  "from_iter_01": "PPO-LSTM 4096 · 가중치 이어받기 fj_rand_i00 ep800 (/home/oem/rl_ws/our_source/fj_t2r_init/fj_rand_i00_ep800.pth, epoch 0 부터)"
  },
  "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY + TRACKS.grasp_fj_rand.early_stop False",
  "env_frozen_from": "09.17 rand leaf GraspFJT2RRandEnvCfg — spawn_range 0.15 · object_spawn_center_override (0.25, -0.15) · near_start_frac 0 · start_palm_dist_band_m (0.25, 0.38). reach leaf 의 나머지(시작 자세·팔 속도·15 s·cup_family·관통 5 mm·감쌈 0.15/0.35)는 상속. · 09.17 소환 거부(8ad5a1ae): 시작 손 그림자 (0.0,0.27,-0.34,-0.26, 윗면>0.385) + 상판 구멍 3개 (r 0.0305, 컵 grasp 반경 + 0.01).",
@@ -21,7 +32,11 @@
   "i00 첫 기동(5c73ea09)은 cfg 검증에서 즉시 종료 — spawn_range 0.15 + goal_first_xy_range 0.05 > goal_box_xy_halfwidth 0.08. 목표는 컵 소환점 기준(+xy ±0.05, 들기 높이)이고 박스로 클램프되므로, rand leaf 에서 박스 중심을 소환 중심 덮어쓰기에 맞추고 반폭 0.20 (e05513c5). 재기동 PID 2301212.",
   "i00 두 번째 기동(e05513c5)은 부모 ADR 축 검사에서 종료 — adr_spawn_range_max 0.05 < spawn_range 0.15(enable_adr 무관하게 검사). rand leaf 에서 max = base = 0.15 (1f8efa57). 세 번째 기동 PID 2307664 부팅 통과: 목표 박스 [0.05,-0.35,0.405]~[0.45,0.05,0.605] · 소환 x [0.10,0.40] y [-0.30,0.00] · 보상 iter_00 · 가까운 출발 끔 · 시작 거리 가드 311.1 mm(대역 250~380).",
   "i00 재기동(8ad5a1ae, PID 2362040): 소환 점검 프로브(4096 표본) 결과로 앞 런(1f8efa57)을 SIGKILL(사용자 승인, SIGTERM 무응답) 후 폐기, 로그는 _discarded_0917_spawn_bug 로 이동. 거부 전 겹침 10.4 % · 상판 이상 4.8 % (새끼·약지 마디 z 0.401-0.427 아래 큰 컵, 컵 속도 최대 29 m/s, 5 스텝 내 종료 35건; 상판 카운터보어 구멍) → 거부 후 겹침 0.44 %(밀림 ≤ 6.8 mm, 접촉력 0, 조기 종료 0) · 상판 이상 0.15 %. 리셋 중 다시 뽑는 비율 ~42 %(오프라인). 대가: x < 0.35 · y < -0.20 구역은 큰 컵이 거의 소환되지 않고, (0.135, 0) 주변도 비었다. 부팅: 시작 거리 가드 340.8 mm.",
-  "i00 라운드 끝(09.17, e2378 · 4.18 h · verdict advance): 먼 출발 접근 0.94(e750) → ~0.6 · 인벨롭 0.76(e900) → ~0.57 · 리프트 ep 0.07 · 들린 비율 0.021 · 성공 0.0025 · tol 0.1125 고정. 영상 fj_rand_i00_0917_1621 — 접근·인벨롭 후 쥔 채 머묾. 쥐기 수입 ~0.70/step vs 들기 추가 ~0.05. 초안 observation/improvement 작성, 승인 대기."
+  "i00 라운드 끝(09.17, e2378 · 4.18 h · verdict advance): 먼 출발 접근 0.94(e750) → ~0.6 · 인벨롭 0.76(e900) → ~0.57 · 리프트 ep 0.07 · 들린 비율 0.021 · 성공 0.0025 · tol 0.1125 고정. 영상 fj_rand_i00_0917_1621 — 접근·인벨롭 후 쥔 채 머묾. 쥐기 수입 ~0.70/step vs 들기 추가 ~0.05. 초안 observation/improvement 작성, 승인 대기.",
+  "i01 (09.17 사용자 승인 — 관찰 수정: 파지 후 손이 테이블 쪽으로 내려가기만 하고 올리지 않음 · '체크포인트로 시작해서 접근 완료 뒤 리프트를 빠르게'): 생성 보상 ingest PASS(lift_start/lift_height/lift_vel·hand_sink_pen·carry 벌점·grasp_hold). 런처에 --checkpoint 추가(08904060) · ep800 선택 = 접근 0.94 · 내려누르는 습관 전(손 최저점 0.262 vs 끝 0.249, palm_table_pen −0.0003 vs −0.0029). 기동 9aa65abb PID 2764401, i00 PID 2362040 종료.",
+  "i01 라운드 끝 제안(09.18, e5577 · 9.02 h): 공차 바닥 0.015 도달 후 성공 3.67-3.84 < 4.0 으로 done_candidate 해제(판정 교착). 최근 200 epoch 먼 출발 접근 0.91 · 인벨롭 0.89 · 리프트 0.98 · 성공 0.79(공차 0.026 까지 0.90) · 들기 높이 0.174 m · 기울기 4.3° · 넘어짐 0.0001. 영상 fj_rand_i01_0918_0228 — 접근→감싸 쥐기→높이 들어 똑바로 유지. 초안 = 종료 제안, 승인 대기. 런 PID 2764401 는 계속 돌고 있음(종료는 사용자 결정).",
+  "i01 종료(09.18 사용자 '학습 수렴했다는거지? 종료'): PID 2764401 SIGTERM 종료(e8849 · 14.0 h). ★공차 바닥 0.015 이후 후반 열화 — 먼 출발 성공 e4900-5000 0.849 → e6000 0.784 → e7200 0.724 → e8700 0.614(접근 0.94→0.91 · 인벨롭 0.92→0.89 · 리프트 0.98 유지 · 기울기 4.1-4.3° 유지). 최종 가중치보다 e5000 이 낫다 → 채택 체크포인트 fj_rand_i01_best_ep5000.pth, 참고용 마지막 가중치 fj_rand_i01_final.pth. 영상 fj_rand_i01_0918_0228 은 e5577 스냅."
  ],
- "note": "09.17 사용자: s2r 에서 컵 위치를 랜덤하게 둘 것 — 알아서 찾아가 파지하는 정책. 3단계(기본 자세 접근 → 인벨롭 파지 → 리프트)는 유지. far/near 그룹 로그는 near 가 항상 비어 있다."
+ "note": "09.17 사용자: s2r 에서 컵 위치를 랜덤하게 둘 것 — 알아서 찾아가 파지하는 정책. 3단계(기본 자세 접근 → 인벨롭 파지 → 리프트)는 유지. far/near 그룹 로그는 near 가 항상 비어 있다.",
+ "alive": false
 }
