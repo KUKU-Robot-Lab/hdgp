@@ -529,6 +529,18 @@
  "hold": {
   "label": "t2r_i16",
   "reason": "사용자 09.18: 라운드 시간 제한으로 끊지 말고 계속 학습. 해제는 사용자 요청으로만.",
-  "set": 1789689405
+  "set": 1789689405,
+  "convergence": {
+   "history": [
+    {
+     "epoch": 274,
+     "episode_success": 0.0,
+     "src_tilt_deg": 48.5,
+     "in_target": 0.0,
+     "reward_tilt": 4.59,
+     "pour_pose": 0.007
+    }
+   ]
+  }
  }
 }
