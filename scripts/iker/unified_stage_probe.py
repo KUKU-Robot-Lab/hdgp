@@ -87,6 +87,10 @@ class Recorder:
         self.max_close = torch.zeros(n, device=dev)           # how far the fingers closed from their open pose
         self.min_kp = torch.full((n,), float("inf"), device=dev)
         self.ever_placed = torch.zeros(n, dtype=torch.bool, device=dev)
+        # the scripted return needs placed & resting & still & open_frac >= retract_open_min on ONE step; on the steps
+        # where `placed` holds, record which of the other three fail
+        self.gate_rows: list[torch.Tensor] = []
+        self.ever_retract = torch.zeros(n, dtype=torch.bool, device=dev)
         self.slip_at_hold: list[float] = []
         self._get_rewards, self._log_episode_end = u._get_rewards, u._log_episode_end
         u._get_rewards, u._log_episode_end = self.get_rewards, self.log_episode_end
@@ -119,7 +123,13 @@ class Recorder:
         self.max_close = torch.where(live, torch.maximum(self.max_close, closed), self.max_close)
         kp = u._unified_last["keypoint_dist"]
         self.min_kp = torch.where(live, torch.minimum(self.min_kp, kp), self.min_kp)
-        self.ever_placed |= u._unified_last["placed"] & live
+        last = u._unified_last
+        self.ever_placed |= last["placed"] & live
+        self.ever_retract |= last["retracting"] & live
+        on = last["placed"] & live
+        if bool(on.any()):
+            self.gate_rows.append(torch.stack([last["resting"][on].float(), last["still"][on].float(),
+                                               last["open_frac"][on], last["released"][on].float()], dim=-1))
         self.steps += live.float()
         return out
 
@@ -163,6 +173,18 @@ def classify(rec: Recorder, touch_gap: float, deadband: float) -> dict:
             "ever_placed_frac": round(float(rec.ever_placed[mask].float().mean()), 4) if bool(mask.any()) else None,
             "steps_mean": round(float(rec.steps[mask].mean()), 1) if bool(mask.any()) else None,
         }
+    gates = torch.cat(rec.gate_rows) if rec.gate_rows else None
+    open_min = float(rec.u.cfg.place.retract_open_min)
+    out["placed_steps"] = {
+        "count": 0 if gates is None else int(gates.shape[0]),
+        "resting_frac": None if gates is None else round(float(gates[:, 0].mean()), 4),
+        "still_frac": None if gates is None else round(float(gates[:, 1].mean()), 4),
+        "open_frac_q10_50_90": None if gates is None else q(gates[:, 2]),
+        "open_enough_frac": None if gates is None else round(float((gates[:, 2] >= open_min).float().mean()), 4),
+        "released_frac": None if gates is None else round(float(gates[:, 3].mean()), 4),
+        "retract_open_min": open_min,
+    }
+    out["ever_retract_frac"] = round(float(rec.ever_retract.float().mean()), 4)
     return out
 
 
