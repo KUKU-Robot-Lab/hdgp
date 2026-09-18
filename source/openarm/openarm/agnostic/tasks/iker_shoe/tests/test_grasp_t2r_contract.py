@@ -50,4 +50,5 @@ def test_reset_zeroes_the_previous_actions_after_the_parent_reset():
 def test_cfg_defaults_to_zero_reward_and_registration_uses_the_grasp_agent():
     assert 'reward_code_path: str = ""' in CFG and "(IkerShoeGraspEnvCfg)" in CFG
     assert "openarm.agnostic.tasks.iker_shoe.iker_shoe_grasp_t2r_env:IkerShoeGraspT2rEnv" in REG
-    assert 'f"open-sens_l_iker_shoe_grasp_t2r{_suffix}"' in REG and REG.count("rl_games_grasp_ppo_cfg.yaml") == 2
+    # 3 uses since 2026-09-18: the stage-1 grasp ids, the stage-1 t2r ids and the unified ids (same 26/78 spaces)
+    assert 'f"open-sens_l_iker_shoe_grasp_t2r{_suffix}"' in REG and REG.count("rl_games_grasp_ppo_cfg.yaml") == 3

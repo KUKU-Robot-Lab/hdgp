@@ -69,3 +69,19 @@ for _suffix, _cfg_name in (("", "IkerShoeT2rEnvCfg"), ("-play", "IkerShoeT2rPlay
             "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
         },
     )
+
+# Unified task: one policy picks the shoe up and places it (2026-09-18). 26 actions / 78 observations like stage 1, so
+# the stage-1 agent cfg applies; the reward comes from the t2r3 fork.
+_UNIFIED_ENTRY = "openarm.agnostic.tasks.iker_shoe.iker_shoe_unified_env:IkerShoeUnifiedEnv"
+_UNIFIED_CFG_MODULE = "openarm.agnostic.tasks.iker_shoe.iker_shoe_unified_env_cfg"
+
+for _suffix, _cfg_name in (("", "IkerShoeUnifiedEnvCfg"), ("-play", "IkerShoeUnifiedPlayEnvCfg")):
+    gym.register(
+        id=f"open-sens_l_iker_shoe_unified{_suffix}",
+        entry_point=_UNIFIED_ENTRY,
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{_UNIFIED_CFG_MODULE}:{_cfg_name}",
+            "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_grasp_ppo_cfg.yaml",
+        },
+    )
