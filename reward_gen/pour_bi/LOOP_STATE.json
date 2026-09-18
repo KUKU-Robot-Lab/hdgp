@@ -575,6 +575,17 @@
      "premature_tilt_rate": 0.101,
      "cup_collision_rate": 0.106,
      "adr": 0.167
+    },
+    {
+     "epoch": 1382,
+     "episode_success": 0.352,
+     "src_tilt_deg": 68.0,
+     "in_target": 0.392,
+     "spill": 0.051,
+     "premature_tilt_rate": 0.12,
+     "cup_collision_rate": 0.131,
+     "adr": 0.367,
+     "bead_active_hi": 14.9
     }
    ]
   }
