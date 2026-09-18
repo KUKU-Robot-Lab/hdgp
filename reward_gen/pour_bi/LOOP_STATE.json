@@ -555,6 +555,16 @@
      "in_target": 0.15,
      "spill": 0.028,
      "premature_tilt_rate": 0.041
+    },
+    {
+     "epoch": 1093,
+     "episode_success": 0.433,
+     "src_tilt_deg": 71.2,
+     "in_target": 0.453,
+     "spill": 0.052,
+     "premature_tilt_rate": 0.099,
+     "cup_collision_rate": 0.099,
+     "adr": 0.167
     }
    ]
   }
