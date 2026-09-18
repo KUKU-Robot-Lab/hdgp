@@ -65,6 +65,7 @@ class RewardContext:
     palm_home_dist: torch.Tensor   # (N,) distance from palm_pos to home_palm_pos [m]
     arm_home_err: torch.Tensor     # (N,) largest absolute difference between arm_q and the rest-posture joint angles [rad]
     retracting: torch.Tensor       # (N,) bool, the environment has taken over the arm and is returning it to the rest posture (policy actions ignored)
+    open_frac: torch.Tensor        # (N,) how far the filtered finger targets have moved from the grip pose towards the open hand of a reset, averaged over the joints whose two poses differ, clamped [0,1]; EXACTLY the quantity the takeover compares with retract_open_min
 
     # ---- shoe: the shoe to pick up and place ------------------------------------------------
     shoe_pos: torch.Tensor         # (N,3) shoe reference point (its body origin)

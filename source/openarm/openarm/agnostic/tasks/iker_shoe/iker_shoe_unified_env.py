@@ -236,7 +236,7 @@ class IkerShoeUnifiedEnv(IkerShoeGraspT2rEnv):
             arm_q=last["arm_q"], arm_qd=last["arm_qd"],
             home_palm_pos=self._home_palm_pos.expand(n, 3),
             palm_home_dist=(last["palm_pos"] - self._home_palm_pos).norm(dim=-1),
-            arm_home_err=last["arm_home_err"], retracting=last["retracting"],
+            arm_home_err=last["arm_home_err"], retracting=last["retracting"], open_frac=last["open_frac"],
             shoe_pos=last["shoe_pos"], shoe_quat=last["shoe_quat"], shoe_lin_vel=last["shoe_lin_vel"],
             shoe_ang_vel=last["shoe_ang_vel"], shoe_start_xy=self._start_xy, shoe_surface=surface,
             shoe_bottom_z=last["shoe_bottom_z"],

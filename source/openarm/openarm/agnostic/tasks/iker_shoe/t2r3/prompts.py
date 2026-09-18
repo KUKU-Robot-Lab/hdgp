@@ -122,7 +122,8 @@ all five of these hold: `ctx.keypoint_dist <= {place_tol}` m (`ctx.placed`), `ct
 had all five true — one bad step costs one count and does NOT reset it — and `ctx.success` is True on the step \
 `ctx.stable_count` reaches {stable_steps}.
    THE RETURN TO THE REST POSTURE IS NOT THE POLICY'S JOB. The first step the shoe is placed, resting and still while \
-the hand has opened at least {retract_open_min} of the way to its open pose, the environment takes over the arm: it \
+`ctx.open_frac >= {retract_open_min}` (the hand has opened that far towards the open hand of a reset — this exact field, \
+not any other measure of openness built from the finger joints), the environment takes over the arm: it \
 opens the hand fully and moves the arm joints to the rest posture over {retract_steps} steps, and from then on the \
 policy's actions have no effect (`ctx.retracting` is True). Any reward paid while `ctx.retracting` is True cannot be \
 influenced by the policy.

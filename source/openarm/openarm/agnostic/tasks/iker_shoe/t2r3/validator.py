@@ -141,7 +141,7 @@ def make_fake_context(n: int = 16, *, device: str = "cpu", seed: int = 0) -> Rew
         hand_z_min=r(n, lo=0.1, hi=0.6),
         arm_q=r(n, NUM_ARM), arm_qd=r(n, NUM_ARM),
         home_palm_pos=r(n, 3, lo=0.0, hi=0.6), palm_home_dist=r(n, lo=0.0, hi=0.5),
-        arm_home_err=r(n, lo=0.0, hi=1.5), retracting=r(n) > 0.5,
+        arm_home_err=r(n, lo=0.0, hi=1.5), retracting=r(n) > 0.5, open_frac=r(n, lo=0.0, hi=1.0),
         shoe_pos=r(n, 3, lo=0.0, hi=0.6), shoe_quat=unit(n, 4), shoe_lin_vel=r(n, 3), shoe_ang_vel=r(n, 3),
         shoe_start_xy=r(n, 2, lo=0.0, hi=0.6), shoe_surface=r(n, NUM_SURFACE, 3, lo=0.0, hi=0.6),
         shoe_bottom_z=r(n, lo=0.1, hi=0.4), dz_free=r(n, lo=0.0, hi=0.2), shoe_shift_xy=r(n, lo=0.0, hi=0.3),
