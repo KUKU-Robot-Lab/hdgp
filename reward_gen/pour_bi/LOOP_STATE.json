@@ -1,7 +1,7 @@
 {
- "iter": 15,
- "label": "t2r_i15",
- "round": 16,
+ "iter": 16,
+ "label": "t2r_i16",
+ "round": 17,
  "round10_note": "env 수정 b3a07d0e(래치를 접촉 기반 소스 파지 성립 시에만) 뒤 재학습. 보상 iter_09(37항, raise_src 추가). 그 외 env 는 라운드 9 와 동일. 틱 예약 은 아래 launch_i09.cron",
  "launch_i09": {
   "label": "t2r_i09",
@@ -480,10 +480,10 @@
   "reward": "iter_10 41항(reach_src/rcv·palm_sat_src/rcv 추가)"
  },
  "server_pids": [
-  3492629,
-  3492636
+  3958122,
+  3958129
  ],
- "commit": "83d201a9",
+ "commit": "8c9c350b",
  "note": "iter_13 42 terms; i12 stopped by user at epoch 332 (env tilt-latch change)",
  "round13_note": "iter_12 42항(ingest PASS), t2r_i11 ep_550 체크포인트 웜스타트, 4096 env GPU1, MAX_ROUNDS 20",
  "ended_i12": {
@@ -515,5 +515,20 @@
   "pour_lip_dist": 0.053,
   "cup_collision_rate": 0.064
  },
- "round16_note": "env 048c5669 unchanged. iter_15 reward: pretilt+tilt merged into one continuous tilt income (w 10), new safe gate (lip < 0.045 m full, 0 at 0.07), grasp-dependent income uses held=max(grasp flag, carry phase). warm start i14 ep_550. tick 2h."
+ "round16_note": "env 048c5669 unchanged. iter_15 reward: pretilt+tilt merged into one continuous tilt income (w 10), new safe gate (lip < 0.045 m full, 0 at 0.07), grasp-dependent income uses held=max(grasp flag, carry phase). warm start i14 ep_550. tick 2h.",
+ "ended_i15": {
+  "epoch": 812,
+  "ckpt": "log/rl_games/open-short/both/pour-fab/t2r_i15/nn/last_open-short_b_pour_fab_ep_800_rew_18987.973.pth",
+  "episode_success": 0.0,
+  "in_target": 0.0,
+  "src_tilt_deg": 45.2,
+  "pour_lip_dist": 0.052,
+  "reward_tilt": 3.75
+ },
+ "round17_note": "env 048c5669 unchanged. iter_16 reward: height allowance grows with lip drop r*sin(theta), lip_above soft (floor 0.35), tilt income split 6 up to theta_pre / 20 to release / 2 overshoot, carry plateau halved, pour_pose 3->8, transferred level term 5, pour_delta 120, success 20, latch 1.0, safe 5.0/7.5 cm. warm start i15 ep_800. tick 2h.",
+ "hold": {
+  "label": "t2r_i16",
+  "reason": "사용자 09.18: 라운드 시간 제한으로 끊지 말고 계속 학습. 해제는 사용자 요청으로만.",
+  "set": 1789689405
+ }
 }
