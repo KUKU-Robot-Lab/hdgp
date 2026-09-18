@@ -28,6 +28,9 @@ OBSERVATION_NOISE, ACTION_NOISE, QUAT_NOISE_RAD = 0.02, 0.05, 0.2
 MASS_SCALE_RANGE, FRICTION_RANGE, COM_OFFSET_M = (0.3, 2.0), (0.3, 1.8), 0.025
 WRENCH_PROB_RANGE, WRENCH_FORCE_PER_KG, WRENCH_TORQUE_PER_KG = (0.006, 0.6), 2.7, 0.27
 DROP_Z_M = 0.10
+#: mirrors iker_shoe_unified_env_cfg.UNIFIED_EPISODE_STEPS (pinned by a test); kept here so the CLI can render the
+#: prompt without importing isaaclab
+DEFAULT_EPISODE_STEPS = 360
 LOCKED_SPAN_RAD = 0.05
 #: commandable range [rad] of each hand joint in TESOLLO_LEFT_SHORT.hand_joint_names order (boot log of iker_grasp_c00_r8_a)
 HAND_ACTION_RANGES: tuple[tuple[float, float], ...] = (
@@ -194,7 +197,7 @@ def task_text() -> str:
 
 
 def render_prompt(spec: PromptSpec, cfg: PlaceRewardCfg | None = None, grasp_cfg: gs.Stage1RewardCfg | None = None,
-                  episode_steps: int = 360) -> str:
+                  episode_steps: int = DEFAULT_EPISODE_STEPS) -> str:
     cfg = cfg if cfg is not None else PlaceRewardCfg()
     grasp_cfg = grasp_cfg if grasp_cfg is not None else gs.Stage1RewardCfg()
     robot_text = ROBOT_DESCRIPTION.format(

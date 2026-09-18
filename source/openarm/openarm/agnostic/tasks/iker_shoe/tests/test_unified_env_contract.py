@@ -19,6 +19,7 @@ def test_the_unified_env_extends_the_stage1_t2r_env_and_keeps_its_action_space()
 
 def test_the_episode_is_long_enough_for_both_halves():
     assert "UNIFIED_EPISODE_STEPS = 360" in CFG
+    assert P.DEFAULT_EPISODE_STEPS == 360, "the prompt's episode length must equal the cfg's"
     assert "episode_length_s = UNIFIED_EPISODE_STEPS * CONTROL_DT" in CFG
 
 
