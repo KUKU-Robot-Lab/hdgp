@@ -539,6 +539,14 @@
      "in_target": 0.0,
      "reward_tilt": 4.59,
      "pour_pose": 0.007
+    },
+    {
+     "epoch": 557,
+     "episode_success": 0.002,
+     "src_tilt_deg": 56.4,
+     "in_target": 0.018,
+     "reward_tilt": 5.59,
+     "pour_pose": 0.306
     }
    ]
   }
