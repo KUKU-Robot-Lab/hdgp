@@ -609,6 +609,12 @@
      "cup_collision_rate": 0.05,
      "adr": 1.0,
      "converge_streak": 1
+    },
+    {
+     "epoch": 5711,
+     "episode_success": 0.608,
+     "src_tilt_deg": 76.0,
+     "in_target": 0.606
     }
    ]
   },
