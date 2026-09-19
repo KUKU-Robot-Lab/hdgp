@@ -37,6 +37,8 @@ parser.add_argument("--touch-gap", type=float, default=0.02, help="이 거리 �
 parser.add_argument("--reward-code-path", required=True)
 parser.add_argument("--grasp-bank", default="")
 parser.add_argument("--held-start-frac", type=float, default=0.0)
+parser.add_argument("--force-open-when-placed", action="store_true",
+                    help="대조 실험: 신발이 placed·resting 인 스텝에서 손 명령을 리셋 때의 편 손으로 덮어쓴다")
 parser.add_argument("--out", required=True)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -202,6 +204,21 @@ def main() -> int:
     env = gym.make(TASK, cfg=cfg)
     u = env.unwrapped
     rec = Recorder(u)
+    if args.force_open_when_placed:
+        # counterfactual: is opening the hand the ONLY missing step? replace the policy's finger commands with the
+        # command that holds the reset's open hand, on the steps the shoe is placed and resting
+        open_cmd = ((u._hand_reset - u._hand_lo) / (u._hand_hi - u._hand_lo) * 2.0 - 1.0).clamp(-1.0, 1.0)
+        original = u._pre_physics_step
+
+        def forced(actions):
+            last = u._unified_last
+            if last is not None:
+                mask = last["placed"] & last["resting"]
+                actions = actions.clone()
+                actions[mask, 6:] = open_cmd
+            return original(actions)
+
+        u._pre_physics_step = forced
     wrapped, agent = load_player(env, TASK, Path(args.checkpoint))
     with torch.inference_mode():
         obs = reset_player(wrapped, agent)
@@ -211,7 +228,7 @@ def main() -> int:
             steps += 1
     summary = {
         "checkpoint": str(Path(args.checkpoint).resolve()),
-        "num_envs": u.num_envs, "noise": False, "steps": steps,
+        "num_envs": u.num_envs, "noise": False, "steps": steps, "force_open_when_placed": args.force_open_when_placed,
         "breakdown": classify(rec, args.touch_gap, float(u.cfg.grasp_reward.lift_deadband_m)),
     }
     run_files.write_json(Path(args.out), {"schema": run_files.SCHEMA_VERSION, "summary": summary})
