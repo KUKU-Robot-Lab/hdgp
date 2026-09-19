@@ -659,6 +659,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    # --adr_level: TaskADR(env.adr) 를 가진 태스크(pour_fabric 등)는 학습 종료 난이도로 재생한다.
+    # play 는 ADR 0 에서 시작하므로(메모리 pour-play-adr-level-resets) 최종 정책 평가에는 레벨 고정이 필요하다.
+    # 첫 play reset 이전에 걸어 비드 개수·지각 노이즈가 이 레벨로 샘플된다.
+    _adr_env = env.unwrapped
+    if args_cli.adr_level is not None and hasattr(getattr(_adr_env, "adr", None), "set_increment"):
+        _adr_env.adr.set_increment(int(args_cli.adr_level))
+        print(f"[PLAY] env.adr increment 고정: {_adr_env.adr.increment_counter}/{_adr_env.adr.num_increments} "
+              f"(progress {_adr_env.adr.progress:.2f})", flush=True)
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
@@ -828,10 +836,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 if not hasattr(_te, "trace_snapshot"):
                     raise SystemExit(f"[TRACE] {type(_te).__name__} 에 trace_snapshot() 이 없다")
                 _tr = globals().setdefault("_TRACE_ROWS", [])
-                _tr.append(_te.trace_snapshot())
+                _row = _te.trace_snapshot()
+                # s2r 골든: 이 스텝 **뒤**의 정책 입력(= 다음 행 actions 의 입력). 클립 전 env 출력.
+                _ob = obs["obs"] if isinstance(obs, dict) else obs
+                _row["obs_next"] = _ob.detach().float().cpu().numpy()
+                _tr.append(_row)
                 if len(_tr) >= args_cli.trace_steps:
                     import numpy as _npt
                     _out_t = args_cli.trace_out or os.path.join(log_dir, "trace.npz")
+                    if hasattr(_te, "trace_meta"):
+                        import json as _jst
+                        with open(os.path.splitext(_out_t)[0] + "_meta.json", "w") as _fm:
+                            _jst.dump(_te.trace_meta(), _fm, indent=1)
                     _npt.savez_compressed(_out_t, **{k: _npt.stack([r[k] for r in _tr]) for k in _tr[0]})
                     print(f"[TRACE] {len(_tr)} 스텝 저장: {_out_t}", flush=True)
                     os._exit(0)
