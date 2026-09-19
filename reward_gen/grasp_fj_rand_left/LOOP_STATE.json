@@ -1,0 +1,20 @@
+{
+ "track": "grasp_fj_rand_left",
+ "iter": 0,
+ "label": "fj_randL_i00",
+ "label_prefix": "fj_randL_i",
+ "round": 1,
+ "status": "ready",
+ "awaiting": "launch_gpu0_busy",
+ "best": null,
+ "success_ticks": 0,
+ "algo": {
+  "from_iter_00": "PPO-LSTM 4096 (open-short_l_grasp_fj_t2r_rand-lstm) · 처음부터(가중치 이어받기 없음)"
+ },
+ "policy_source": "scripts/reward_gen/t2r_fj_round.py ROUND_POLICY + TRACKS.grasp_fj_rand_left.early_stop False",
+ "env_frozen_from": "09.20 좌팔 leaf GraspFJT2RRandLeftEnvCfg — 우 GraspFJT2RRandEnvCfg 의 y 반전: 프로필 tesollo_left_short_tl(19관절, thumb_2 잠금 +1.57, 유휴 우팔 = 우판 유휴 좌팔 부호 미러) · 시작 자세 = 우 × _ARM_SIGN_L(FK palm_ee (0.090, +0.272, 0.450), 법선 −y, 손가락 +x) · 소환 x 0.10–0.40 · y 0.00–+0.30 · 손 그림자 (0,0.27,0.26,0.34,0.385) · 상판 구멍 y +0.30 ×2 + (0.135,0).",
+ "history": [
+  "i00: 사용자 결정(09.20) '왼팔로도 학습' — 컵 범위 좌우 대칭 · 처음부터 i01 보상 · 유휴 우팔 접기. 시드 = grasp_fj_rand/iter_01 보상에서 시작 방향 한 줄(n[:,1] → −n[:,1])만 바꾼 것(생성 아님). ctx 는 좌손에서도 hand_q_norm '0 곧음 · 1 굽힘'(음의 각으로 조이는 관절 1−x), 접근 방향 조건 법선 −y. ingest PASS · 로컬 부팅 스모크(64 env random 200 스텝) GATE PASS — 관절표 = 부팅 실측(오차 0.0002) · NaN 0 · 방향 조건 통과 1.0 · 시작 거리 343.6 mm."
+ ],
+ "note": "기동 대기: 서버 GPU0 에 다른 세션의 IKER 학습(iker_uni_c00_i01, PID 1263829)이 돈다 — 런처가 GPU0 의 남의 런을 보면 기동을 거부한다."
+}

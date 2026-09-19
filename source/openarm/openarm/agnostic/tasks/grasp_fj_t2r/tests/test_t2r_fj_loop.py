@@ -433,3 +433,15 @@ def test_launch_command_resumes_weights_from_a_server_checkpoint():
         with pytest.raises(ValueError):
             R.launch_command("x", "reward_gen/grasp_fj_rand/iter_01", rand["num_envs"], 42,
                              task=rand["task"], sapg=False, checkpoint=bad)
+
+
+def test_left_rand_track_logs_under_left_and_mirrors_to_its_own_folder():
+    # ★09.20 좌팔판 — 서버 로그는 train.py run_naming 이 `_l_` 을 left 로 가른다 · 로컬 미러가 우판과 섞이면 status 가 남의 로그를 읽는다
+    left, right = R.track("grasp_fj_rand_left"), R.track("grasp_fj_rand")
+    assert left["task"] == "open-short_l_grasp_fj_t2r_rand-lstm" and left["play"] == "open-short_l_grasp_fj_t2r_rand-play-lstm"
+    assert left["server_logdir"].endswith("/open-short/left/grasp-fj-t2r-rand")
+    assert right["server_logdir"].endswith("/open-short/right/grasp-fj-t2r-rand")
+    assert left["local_mirror"] != right["local_mirror"]
+    assert (left["sapg"], left["num_envs"], left["early_stop"]) == (right["sapg"], right["num_envs"], right["early_stop"])
+    cmd = R.video_command("/x", "l", 0.1, "t", task=left["task"], play_task=left["play"], cam=left["video_cam"])
+    assert "--cam_eye 1.10,0.80,0.78 --cam_lookat 0.36,0.16,0.44" in cmd

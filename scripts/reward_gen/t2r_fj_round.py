@@ -93,6 +93,13 @@ TRACKS: dict[str, dict] = {
     "grasp_fj_rand": {"task": "open-short_r_grasp_fj_t2r_rand-lstm",
                       "play": "open-short_r_grasp_fj_t2r_rand-play-lstm", "logdir": "grasp-fj-t2r-rand",
                       "sapg": False, "num_envs": 4096, "video_length": 900, "early_stop": False},
+    # ★09.20 사용자 "왼팔로도 학습" — rand 의 좌팔 거울상. 서버 로그는 `.../open-short/left/grasp-fj-t2r-rand/`,
+    #   로컬 미러는 우판과 섞이지 않게 `grasp-fj-t2r-rand-left`. 영상 카메라도 y 반전.
+    "grasp_fj_rand_left": {"task": "open-short_l_grasp_fj_t2r_rand-lstm",
+                           "play": "open-short_l_grasp_fj_t2r_rand-play-lstm", "logdir": "grasp-fj-t2r-rand",
+                           "side": "left", "mirror": "grasp-fj-t2r-rand-left",
+                           "video_cam": ("1.10,0.80,0.78", "0.36,0.16,0.44"),
+                           "sapg": False, "num_envs": 4096, "video_length": 900, "early_stop": False},
 }
 SUCCESS_TAG = "ctrl/prev_ep_successes_mean"
 KEY_TAGS = (SUCCESS_TAG, "task/successes_mean", "task/lifted_frac", "task/tol", "task/tilt_deg",
@@ -108,8 +115,8 @@ def track(name: str) -> dict:
     if name not in TRACKS:
         raise SystemExit(f"[round_fj] 모르는 트랙: {name} (있는 것: {sorted(TRACKS)})")
     t = dict(TRACKS[name])
-    t["server_logdir"] = f"{SERVER_HDGP}/log/rl_games/open-short/right/{t['logdir']}"
-    t["local_mirror"] = _HDGP / "log" / "server_mirror" / t["logdir"]
+    t["server_logdir"] = f"{SERVER_HDGP}/log/rl_games/open-short/{t.get('side', 'right')}/{t['logdir']}"
+    t["local_mirror"] = _HDGP / "log" / "server_mirror" / t.get("mirror", t["logdir"])
     return t
 
 
@@ -355,7 +362,7 @@ LOCAL_VIDEOS = _HDGP.parent / "our_source" / "fj_t2r_videos"
 
 def video_command(run_dir: str, label: str, tol_eval: float, ts: str, num_envs: int = 12, view_env: int = 11,
                   length: int = 700, task: str = TRACKS["grasp_fj_envelope"]["task"],
-                  play_task: str = TRACKS["grasp_fj_envelope"]["play"]) -> str:
+                  play_task: str = TRACKS["grasp_fj_envelope"]["play"], cam: tuple = VIDEO_CAM) -> str:
     """서버에서 최신 체크포인트를 스냅샷해 play 영상을 찍는 한 줄(동기).
 
     ★옛 `run_fj_video_srv.sh` 는 task 가 `open-sens_r_grasp_fj` 로 박혀 있어 못 쓴다 — t2r play id 로 직접 부른다.
@@ -372,7 +379,7 @@ def video_command(run_dir: str, label: str, tol_eval: float, ts: str, num_envs: 
             f"SNAP={run_dir}/nn/snap_{ts}.pth; cp \"$SRC\" \"$SNAP\" && echo \"SNAP $SNAP <- $SRC\" && "
             f"timeout 1500 python scripts/reinforcement_learning/rl_games/play.py --task {play_task} "
             f"--checkpoint \"$SNAP\" --num_envs {num_envs} --headless --view_env_index {view_env} --video "
-            f"--video_length {length} --cam_eye {VIDEO_CAM[0]} --cam_lookat {VIDEO_CAM[1]} env.tol_eval={tol_eval} "
+            f"--video_length {length} --cam_eye {cam[0]} --cam_lookat {cam[1]} env.tol_eval={tol_eval} "
             f"> {SERVER_CONSOLE}/video_{label}_{ts}.out 2>&1; echo \"PLAY EXIT $?\"; "
             f"V=$(find {run_dir} -name '*.mp4' -newer \"$SNAP\" 2>/dev/null | head -1); mkdir -p {SERVER_VIDEOS}; "
             f"[ -n \"$V\" ] && cp \"$V\" {out} && echo \"VIDEO {out}\"")
@@ -493,7 +500,8 @@ def cmd_video(a) -> int:
     play = task.replace("-lstm", "-play-lstm", 1)
     ts = time.strftime("%m%d_%H%M")
     out = _ssh(video_command(run_dir_for(a.label, t["server_logdir"]), a.label, float(tol), ts,
-                             length=getattr(a, "length", None) or t["video_length"], task=task, play_task=play),
+                             length=getattr(a, "length", None) or t["video_length"], task=task, play_task=play,
+                             cam=tuple(t.get("video_cam", VIDEO_CAM))),
                timeout=1800)
     print(out.strip()[-600:])
     remote = next((ln.split(" ", 1)[1].strip() for ln in out.splitlines() if ln.startswith("VIDEO ")), None)

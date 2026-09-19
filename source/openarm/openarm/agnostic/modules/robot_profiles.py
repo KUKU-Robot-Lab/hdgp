@@ -793,6 +793,45 @@ TESOLLO_LEFT_SHORT = _dc_replace(
 
 
 # =============================================================================
+# tesollo_left_short_tl — `tesollo_right_short_tl`(thumb_1 용접)의 **좌팔·좌손** 판.
+#
+# ★09.20 사용자 "왼팔로도 학습" — grasp_fj_rand(우 i01 e5000 성공 0.85)를 좌팔로 옮긴다.
+#   자산은 우 tl 과 같은 `openarm_dg5f-m-short-tl_bi_rl`(좌손 `l_hj_thumb_1` 도 용접, 19관절).
+#   `TESOLLO_LEFT_SHORT`(non-tl 자산, 20관절) 위에 우 tl 이 한 일(thumb_1 제거 · thumb_2/pinky_2 잠금)을 거울상으로 얹는다.
+# ★잠금은 우 tl 의 미러: `thumb_2` 우 (−1.5808, −1.5608) → 좌 (1.5608, 1.5808) · `pinky_2` ±0.01 은 대칭이라 그대로.
+# ★유휴 우팔 = 우 tl 과제의 유휴 좌팔 자세를 **부호 미러**한 접힌 자세(09.20 FK: palm (0.328, −0.363, 0.407),
+#   좌 유휴의 y 반전과 일치). 좌 홈의 우팔(`TESOLLO_LEFT_SHORT` 는 우 활성 홈 = 테이블 위로 뻗은 자세)을 쓰면
+#   좌손 작업 공간과 겹친다(사용자 결정 "접어 두기"). 우손은 자기 open 자세.
+# =============================================================================
+_R_TL_IDLE_LEFT_ARM = tuple(TESOLLO_RIGHT_SHORT.init_joint_pos[f"l_aj_{i}"] for i in range(1, 8))
+
+TESOLLO_LEFT_SHORT_TL = _dc_replace(
+    TESOLLO_LEFT_SHORT,
+    name="tesollo_left_short_tl",
+    usd_relpath=TESOLLO_RIGHT_SHORT_TL.usd_relpath,
+    num_hand_joints=19,
+    hand_action_limit_override={
+        r"l_hj_(index|middle|ring|pinky)_[34]$": (0.0, None),
+        r"l_hj_thumb_[34]$": (None, 0.0),
+        r"l_hj_(index|middle|ring|pinky)_1$": (-0.01, 0.01),
+        r"l_hj_thumb_2$": (1.5608, 1.5808),
+        r"l_hj_pinky_2$": (-0.01, 0.01),
+    },
+    hand_open_pose=tuple(v for n, v in zip(TESOLLO_LEFT_SHORT.hand_joint_names, TESOLLO_LEFT_SHORT.hand_open_pose)
+                         if n != "l_hj_thumb_1"),
+    hand_grip_pose=tuple(v for n, v in zip(TESOLLO_LEFT_SHORT.hand_joint_names, TESOLLO_LEFT_SHORT.hand_grip_pose)
+                         if n != "l_hj_thumb_1"),
+    hand_joint_names=tuple(n for n in TESOLLO_LEFT_SHORT.hand_joint_names if n != "l_hj_thumb_1"),
+    fabric_joint_order=tuple(n for n in TESOLLO_LEFT_SHORT.fabric_joint_order if n != "l_hj_thumb_1"),
+    init_joint_pos={
+        **{k: v for k, v in TESOLLO_LEFT_SHORT.init_joint_pos.items()
+           if k not in ("r_hj_thumb_1", "l_hj_thumb_1")},
+        **{f"r_aj_{i + 1}": v for i, v in enumerate(_mirror_arm(_R_TL_IDLE_LEFT_ARM))},
+    },
+)
+
+
+# =============================================================================
 # rh56f1_right — Inspire RH56F1 우손. **물리 12관절 중 구동 6**(언더액추에이션).
 #
 # ★이 프로필은 **Track B(`grasp_fj_rh`) 전용**이다. fabric 을 쓰는 트랙
@@ -994,7 +1033,7 @@ RH56F1_RIGHT_ONLY = _drop_left(
 
 PROFILES: dict[str, RobotProfile] = {
     p.name: p for p in (TESOLLO_RIGHT, TESOLLO_RIGHT_ONLY, TESOLLO_RIGHT_SHORT,
-                    TESOLLO_RIGHT_SHORT_TL, TESOLLO_LEFT_SHORT,
+                    TESOLLO_RIGHT_SHORT_TL, TESOLLO_LEFT_SHORT, TESOLLO_LEFT_SHORT_TL,
                         RH56F1_RIGHT, RH56F1_RIGHT_ONLY)
 }
 

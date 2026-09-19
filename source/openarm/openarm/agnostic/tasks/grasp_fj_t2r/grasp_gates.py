@@ -30,6 +30,8 @@ APPROACH_ALONG_MAX_OFFSET_M = 0.02
 #:   z(손가락) = +x 와 같다 — `tests/test_grasp_gates.py` 가 시작 자세 FK 와 대조한다.
 APPROACH_PALM_NORMAL_DIR = (0.0, 1.0, 0.0)
 APPROACH_FINGER_DIR = (1.0, 0.0, 0.0)
+#: 좌팔판(09.20) 시작 자세의 법선 — 우 시작 자세의 y 반전(`hand_orientation` 주석 참조)
+APPROACH_PALM_NORMAL_DIR_LEFT = (0.0, -1.0, 0.0)
 #: 위 두 방향 각각의 cos 하한(≈ 45°)
 APPROACH_ORIENT_MIN = 0.7
 #: 접근 완료 — 움직이는 손 관절의 정규화 각(0 = 하한, 1 = 상한)이 기본 자세에서 벗어난 최대치.
@@ -63,12 +65,17 @@ def c_pregrasp_geometry(palm_pos: torch.Tensor, palm_normal: torch.Tensor, finge
     return plane_gap, along_offset, -axial
 
 
-def hand_orientation(palm_normal: torch.Tensor, finger_dir: torch.Tensor) -> torch.Tensor:
-    """min(법선·+y, 손가락·+x) (N,). 1 = 시작 자세 방향 그대로."""
+def hand_orientation(palm_normal: torch.Tensor, finger_dir: torch.Tensor,
+                     normal_dir: tuple[float, float, float] = APPROACH_PALM_NORMAL_DIR) -> torch.Tensor:
+    """min(법선·normal_dir, 손가락·+x) (N,). 1 = 시작 자세 방향 그대로.
+
+    ★09.20 좌팔판: 시작 자세가 우 시작 자세의 y 반전이라 palm_ee x(법선)는 −y, z(손가락)는 +x 그대로다(short-tl URDF FK,
+      위치 미러 오차 0.0003 mm) — env 가 `APPROACH_PALM_NORMAL_DIR_LEFT` 를 넘긴다.
+    """
     def _dir(d: tuple[float, float, float]) -> torch.Tensor:
         return torch.tensor(d, dtype=palm_normal.dtype, device=palm_normal.device)
 
-    normal = (palm_normal * _dir(APPROACH_PALM_NORMAL_DIR)).sum(-1)
+    normal = (palm_normal * _dir(normal_dir)).sum(-1)
     finger = (finger_dir * _dir(APPROACH_FINGER_DIR)).sum(-1)
     return torch.minimum(normal, finger)
 

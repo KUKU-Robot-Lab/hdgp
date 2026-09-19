@@ -20,6 +20,8 @@ class GraspFJT2RRightShortEnvCfg(GraspFJTesolloRightShortEnvCfg):
     #: 생성 보상 코드(`compute_reward(ctx)`) 절대경로. 비면 **영 보상** — 부팅·무작위 롤아웃 전용.
     #:   env 가 `__init__` 에서 읽는다(런타임) — hydra override 가 `__post_init__` 에 구워지는 함정이 없다.
     reward_code_path: str = ""
+    #: 정책이 모는 팔 — "r" | "l"(09.20 좌팔판). env 가 법선 방향·손 정규화 방향·손바닥 bbox 를 여기서 고른다.
+    hand_side: str = "r"
     #: ★09.15 사용자 "시작 상태 커리큘럼 + env 고정" — 리셋 중 이 비율을 컵 옆 IK 자세에서 시작한다(0 = 끔). reach leaf 만 켠다.
     near_start_frac: float = 0.0
     #: 공통 스텝이 이 값 이하일 때는 가까운 출발을 쓰지 않는다 — B 부팅 시작 거리 가드(`common_step_counter <= 4`)가 먼 출발만 본다.
@@ -154,3 +156,27 @@ class GraspFJT2RRandEnvCfg(GraspFJT2RReachEnvCfg):
         z0 = float(self.table_surface_z) + float(self.object_origin_offset_z)
         self.goal_box_min = (cx - h, cy - h, z0 + float(self.goal_box_z_range[0]))
         self.goal_box_max = (cx + h, cy + h, z0 + float(self.goal_box_z_range[1]))
+
+
+#: 우 → 좌 팔 관절 부호(y 반전 미러, `modules/robot_profiles._ARM_SIGN_L` 과 같은 값 — 테스트가 대조한다)
+_ARM_SIGN_L = (-1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0)
+
+
+@configclass
+class GraspFJT2RRandLeftEnvCfg(GraspFJT2RRandEnvCfg):
+    """★09.20 사용자 "왼팔로도 학습" — `GraspFJT2RRandEnvCfg`(우 grasp_fj_rand, i01 e5000 성공 0.85)의 **좌팔 거울상**.
+
+    전부 XZ 평면 반사(y → −y)다. 사용자 결정(09.20): 컵 범위 좌우 대칭 · 처음부터 학습 · 유휴 우팔은 접은 자세.
+      · 프로필 `tesollo_left_short_tl` — 같은 short-tl 자산의 좌팔·좌손(19관절), 유휴 우팔 = 우판 유휴 좌팔의 부호 미러.
+      · 시작 자세 = 우 시작 자세 × `_ARM_SIGN_L`. FK(short-tl URDF): palm_ee (0.090, +0.272, 0.450) = 우 (0.090, −0.272, 0.450)
+        의 y 반전(0.0003 mm) · 법선(palm_ee x) −y · 손가락(z) +x.
+      · 컵 소환 x 0.10–0.40 · y 0.00–+0.30 · 손 그림자·상판 구멍(env_v1 은 y ±0.30 에 구멍이 있다) 모두 y 반전.
+    """
+
+    profile_name: str = "tesollo_left_short_tl"
+    hand_side: str = "l"
+    arm_reset_joint_pos_override: tuple = tuple(
+        s * v for s, v in zip(_ARM_SIGN_L, (-1.1974, 0.6707, 0.1866, 1.7310, 0.6920, 0.0416, 0.9460)))
+    object_spawn_center_override: tuple = (0.25, 0.15)
+    spawn_reject_hand_box: tuple = (0.0, 0.27, 0.26, 0.34, 0.385)
+    spawn_reject_holes: tuple = ((0.135, 0.30, 0.0305), (0.27, 0.30, 0.0305), (0.135, 0.0, 0.0305))

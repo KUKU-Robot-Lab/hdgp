@@ -9,7 +9,8 @@
 import gymnasium as gym
 
 from ...grasp_fj.config import agents
-from ..grasp_fj_t2r_env_cfg import GraspFJT2RRandEnvCfg, GraspFJT2RReachEnvCfg, GraspFJT2RRightShortEnvCfg
+from ..grasp_fj_t2r_env_cfg import (GraspFJT2RRandEnvCfg, GraspFJT2RRandLeftEnvCfg, GraspFJT2RReachEnvCfg,
+                                     GraspFJT2RRightShortEnvCfg)
 
 _ENTRY = "openarm.agnostic.tasks.grasp_fj_t2r.grasp_fj_t2r_env:GraspFJT2REnv"
 
@@ -31,6 +32,8 @@ _CFGS = {
     ("short_r", "grasp_fj_t2r_reach"): GraspFJT2RReachEnvCfg,
     # ★09.17 컵 소환 위치 랜덤화(x 0.10–0.40 · y −0.30–0.00) · 가까운 출발 끔 → .../grasp-fj-t2r-rand/<label>/
     ("short_r", "grasp_fj_t2r_rand"): GraspFJT2RRandEnvCfg,
+    # ★09.20 사용자 "왼팔로도 학습" — 우 rand 의 좌팔 거울상(컵 y 0.00–+0.30) → .../open-short/left/grasp-fj-t2r-rand/<label>/
+    ("short_l", "grasp_fj_t2r_rand"): GraspFJT2RRandLeftEnvCfg,
 }
 
 SKIPPED: dict[str, str] = {}

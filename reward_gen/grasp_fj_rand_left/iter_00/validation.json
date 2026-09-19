@@ -1,0 +1,187 @@
+{
+ "ok": true,
+ "errors": [],
+ "warnings": [],
+ "term_stats": {
+  "approach_travel": {
+   "mean": 0.002647397108376026,
+   "abs_max": 0.022138644009828568
+  },
+  "approach_form": {
+   "mean": 0.00205564615316689,
+   "abs_max": 0.06291811913251877
+  },
+  "approach_lock": {
+   "mean": 0.0,
+   "abs_max": 0.0
+  },
+  "approach_keep": {
+   "mean": 1.2706839432515455e-06,
+   "abs_max": 9.468177449889481e-05
+  },
+  "pregrasp_shape": {
+   "mean": 4.187448220388411e-25,
+   "abs_max": 8.039900583145749e-23
+  },
+  "early_contact_pen": {
+   "mean": -0.08924693365891774,
+   "abs_max": 0.25
+  },
+  "grasp_pose": {
+   "mean": 2.5927091492257876e-11,
+   "abs_max": 4.9780015665135124e-09
+  },
+  "palm_reach": {
+   "mean": 1.5556254201465336e-11,
+   "abs_max": 2.9868008066813445e-09
+  },
+  "palm_contact": {
+   "mean": 0.00018165621925921488,
+   "abs_max": 0.019969066604971886
+  },
+  "finger_curl": {
+   "mean": 6.562530611523935e-12,
+   "abs_max": 1.2600058774125955e-09
+  },
+  "thumb_curl": {
+   "mean": 2.5031605839035778e-12,
+   "abs_max": 4.80606832109487e-10
+  },
+  "light_contact": {
+   "mean": 8.650295785628259e-05,
+   "abs_max": 0.009509078226983547
+  },
+  "grasp_wrap": {
+   "mean": 0.00022624891911012432,
+   "abs_max": 0.028645476326346397
+  },
+  "grasp_thumb": {
+   "mean": 0.00019979872013209388,
+   "abs_max": 0.028527235612273216
+  },
+  "grasp_fingers": {
+   "mean": 0.0002595088735688478,
+   "abs_max": 0.028527235612273216
+  },
+  "grip_squeeze": {
+   "mean": 3.5633969673654065e-05,
+   "abs_max": 0.0038342231418937445
+  },
+  "pinky_join": {
+   "mean": 3.6237283590404935e-05,
+   "abs_max": 0.005705447401851416
+  },
+  "envelope_quality": {
+   "mean": 0.0005190177471376956,
+   "abs_max": 0.05705447122454643
+  },
+  "grasp_hold": {
+   "mean": 0.00024771121873830754,
+   "abs_max": 0.04756055399775505
+  },
+  "lift_start": {
+   "mean": 4.7355709673069235e-08,
+   "abs_max": 9.062718163477257e-06
+  },
+  "lift_height": {
+   "mean": 1.1820300927292693e-07,
+   "abs_max": 2.265679358970374e-05
+  },
+  "lift_vel": {
+   "mean": -3.4835030982468167e-09,
+   "abs_max": 6.379663659572543e-07
+  },
+  "goal_close": {
+   "mean": 1.5947435292457124e-08,
+   "abs_max": 3.0032158520043595e-06
+  },
+  "goal_near": {
+   "mean": 9.191720767188816e-09,
+   "abs_max": 1.7635535414228798e-06
+  },
+  "goal_in_tol": {
+   "mean": 1.829026930649573e-38,
+   "abs_max": 3.511731617164078e-36
+  },
+  "hold_still": {
+   "mean": 8.726991521340651e-13,
+   "abs_max": 1.6631726551530335e-10
+  },
+  "success_bonus": {
+   "mean": 0.390625,
+   "abs_max": 15.0
+  },
+  "hand_sink_pen": {
+   "mean": -0.053672297547260925,
+   "abs_max": 0.30000001192092896
+  },
+  "carry_arm_pen": {
+   "mean": 0.0,
+   "abs_max": 0.0
+  },
+  "carry_cup_pen": {
+   "mean": -0.007935739122331142,
+   "abs_max": 0.15000000596046448
+  },
+  "cup_disturb_pen": {
+   "mean": -0.11153306066989899,
+   "abs_max": 0.15000000596046448
+  },
+  "cup_tilt_pen": {
+   "mean": -0.3651094237963358,
+   "abs_max": 0.4000000059604645
+  },
+  "table_pen": {
+   "mean": -0.35021559397379554,
+   "abs_max": 1.899999976158142
+  },
+  "palm_table_pen": {
+   "mean": -0.06645220269759496,
+   "abs_max": 2.261324644088745
+  },
+  "action_rate_pen": {
+   "mean": -0.0017352654443432885,
+   "abs_max": 0.0028142756782472134
+  },
+  "arm_vel_pen": {
+   "mean": -0.00030094607306333876,
+   "abs_max": 0.0007555616903118789
+  }
+ },
+ "total_stats": {
+  "mean": -0.6490796605745951,
+  "abs_max": 14.598316192626953
+ },
+ "fields_used": [
+  "actions",
+  "approach_done",
+  "arm_qd",
+  "cup_ang_vel",
+  "cup_axis",
+  "cup_half_height",
+  "cup_lin_vel",
+  "cup_pos",
+  "cup_radius",
+  "cup_spawn_pos",
+  "cup_tilt",
+  "envelope_done",
+  "episode_progress",
+  "goal_dist",
+  "goal_pos",
+  "hand_default_q_norm",
+  "hand_q_norm",
+  "hand_target_norm",
+  "hand_z_min",
+  "link_cup_force",
+  "link_pos",
+  "palm_clearance",
+  "palm_cup_force",
+  "palm_finger_dir",
+  "palm_normal",
+  "palm_pos",
+  "prev_actions",
+  "success",
+  "success_tol",
+  "table_z"
+ ]
+}

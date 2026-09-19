@@ -37,9 +37,26 @@ HAND_JOINT_NAMES: tuple[str, ...] = tuple(n for n, _, _ in HAND_JOINT_RANGES)
 LOCKED_SPAN_RAD = 0.05
 
 
-def _joint_table() -> str:
+#: ★09.20 좌손 — 우손의 y 반전 미러에서 부호가 −1 인 관절(`modules/robot_profiles._HAND_SIGN_L`, 테스트가 대조한다).
+#:   이름은 r_→l_, 범위는 (lo, hi) → (−hi, −lo). 부팅 로그 대조는 좌판 첫 기동에서 한다.
+LEFT_FLIP_JOINTS = frozenset({"thumb_2", "thumb_3", "thumb_4", "index_1", "middle_1", "ring_1", "pinky_1", "pinky_2"})
+
+
+def hand_joint_ranges(side: str = "r") -> tuple[tuple[str, float, float], ...]:
+    if side == "r":
+        return HAND_JOINT_RANGES
+    if side != "l":
+        raise ValueError(f"side 는 'r' | 'l' — got {side!r}")
+    out = []
+    for name, lo, hi in HAND_JOINT_RANGES:
+        sfx = name.split("_hj_", 1)[1]
+        out.append((f"l_hj_{sfx}",) + ((-hi + 0.0, -lo + 0.0) if sfx in LEFT_FLIP_JOINTS else (lo, hi)))
+    return tuple(out)
+
+
+def _joint_table(side: str = "r") -> str:
     rows = []
-    for i, (name, lo, hi) in enumerate(HAND_JOINT_RANGES):
+    for i, (name, lo, hi) in enumerate(hand_joint_ranges(side)):
         tag = "locked" if hi - lo <= LOCKED_SPAN_RAD else "movable"
         rows.append(f"    actions[{7 + i:2d}] = hand index {i:2d}: {name:14s} range [{lo:+.3f}, {hi:+.3f}] rad  {tag}")
     return "\n".join(rows)
@@ -54,6 +71,7 @@ class EnvFacts:
     arm_slew: float
     episode_steps: int
     episode_s: float
+    side: str = "r"            # ★09.20 정책이 모는 팔("r" | "l") — 로봇 설명·관절 표·ctx 스텁 문구가 따른다
 
 
 VARIANTS: dict[str, EnvFacts] = {
@@ -99,11 +117,27 @@ VARIANTS: dict[str, EnvFacts] = {
                "environments and are given per environment. There is only this one start pose: approach_done is "
                "never set when an episode starts."),
         k_arm=0.05, arm_slew=0.3, episode_steps=900, episode_s=15.0),
+    # ★09.20 사용자 "왼팔로도 학습" — rand 의 좌팔 거울상(y 반전): 소환 y 0.00–+0.30 · 시작 palm_ee (0.090, +0.272, 0.450) ·
+    #   법선 −y · 손가락 +x(short-tl URDF FK). 거리 분포·손 방향 회전은 거울상이라 우판과 같다.
+    "rand_left": EnvFacts(
+        scene=("+x points from the robot toward the table. Every episode starts with the arm raised beside the "
+               "robot: the palm is just outside the table edge nearest the robot, about 0.25 m above the table "
+               "top, turned sideways, with the fingers pointing forward over the table edge. A cup stands upright on "
+               "the table at a position drawn uniformly at random for every episode, with x between 0.10 m and "
+               "0.40 m and y between 0.00 m and 0.30 m, so at the start the palm is anywhere from about 0.15 m to "
+               "0.49 m from the cup (0.31 m on average) and the hand has to go to wherever the cup is; ctx.cup_pos "
+               "gives its position. Near the far corners of that region (y close to 0.30 m, or x close to 0.40 m) "
+               "the arm may need the hand turned by up to about 40 degrees from its start orientation to reach the "
+               "cup's +y side. Parallel environments use different cups (open cups of several sizes and a closed "
+               "shaker), so the graspable radius (44 mm to 81 mm) and half height (42 mm to 65 mm) differ between "
+               "environments and are given per environment. There is only this one start pose: approach_done is "
+               "never set when an episode starts."),
+        k_arm=0.05, arm_slew=0.3, episode_steps=900, episode_s=15.0, side="l"),
 }
 
 
 ROBOT_DESCRIPTION = """\
-We control one 7-DOF OpenArm robot arm (the right arm) carrying a five-finger Tesollo DG-5F hand, \
+We control one 7-DOF OpenArm robot arm (the {arm} arm) carrying a five-finger Tesollo DG-5F hand, \
 standing at a table. {scene} Positions are in metres in each environment's local \
 frame, with +z pointing up; the table top is at z = table_z.
 
@@ -120,10 +154,19 @@ joint is welded in this hand; `thumb_2`, which rotates the thumb into opposition
 opposed angle, and the thumb flexes with `thumb_3` and `thumb_4`. On the index, middle and ring fingers \
 `_1` spreads the finger sideways (locked), `_2` flexes the knuckle, and `_3` and `_4` flex the two outer \
 joints. On the pinky, `pinky_1` and `pinky_2` are locked and the finger flexes with `pinky_3` and \
-`pinky_4`. For every movable joint a larger angle means a more flexed (more closed) finger. The finger \
+`pinky_4`. {flex_rule} The finger \
 joints are position-controlled (PD), so a finger that meets the cup stops there and presses with a force \
 that grows with the gap between its target angle and its actual angle. One control step is 1/60 s.
 """
+
+#: 관절 각 방향 규칙 — 좌손은 엄지 _3/_4 가 음의 각으로 조인다(ctx 정규화는 env 가 방향을 맞춘다).
+FLEX_RULE = {
+    "r": "For every movable joint a larger angle means a more flexed (more closed) finger.",
+    "l": ("On this left hand, `thumb_3` and `thumb_4` flex towards negative angles (a more negative angle is a more "
+          "flexed thumb); for every other movable joint a larger angle means a more flexed (more closed) finger. "
+          "ctx.hand_q_norm, hand_target_norm and hand_default_q_norm are nevertheless oriented the same way for "
+          "every joint: 0 = straight, 1 = most flexed."),
+}
 
 REWARD_STRUCTURE = """\
 Typically, the reward function of a manipulation task consists of these parts (some are optional — \
@@ -270,13 +313,14 @@ def render_prompt(spec: PromptSpec) -> str:
     facts = VARIANTS[spec.variant]
     parts = [
         "You are an expert in robotics, reinforcement learning and code generation.",
-        ROBOT_DESCRIPTION.format(joint_table=_joint_table(), scene=facts.scene, k_arm=facts.k_arm,
-                                 arm_slew=facts.arm_slew),
+        ROBOT_DESCRIPTION.format(joint_table=_joint_table(facts.side), scene=facts.scene, k_arm=facts.k_arm,
+                                 arm_slew=facts.arm_slew, arm="left" if facts.side == "l" else "right",
+                                 flex_rule=FLEX_RULE[facts.side]),
         "Now I want you to help me write a reward function for reinforcement learning.",
         REWARD_STRUCTURE,
         "The reward function receives a single argument `ctx`, an instance of this class "
         "(all positions env-local, metres; angles rad; forces N):",
-        "```python\n" + context_stub_source() + "```",
+        "```python\n" + context_stub_source(facts.side) + "```",
         ADDITIONAL_KNOWLEDGE.format(episode_steps=facts.episode_steps, episode_s=facts.episode_s),
         OUTPUT_RULES.format(task=spec.task, entry=ENTRY_NAME),
     ]

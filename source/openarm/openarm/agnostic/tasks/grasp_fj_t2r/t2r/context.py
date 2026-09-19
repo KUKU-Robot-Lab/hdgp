@@ -90,9 +90,31 @@ SCALAR_FIELDS: tuple[str, ...] = tuple(
     f.name for f in fields(RewardContext) if f.type in ("float", "int"))
 
 
-def context_stub_source() -> str:
-    """`class RewardContext` 본문(필드+주석) — 프롬프트 재료. 헬퍼 속성 구간은 뺀다."""
+#: ★09.20 좌팔판 — 스텁 주석 중 손 방향에 묶인 문장만 좌손용으로 바꾼다(env 가 같은 규약으로 ctx 를 만든다:
+#:   법선 −y · 손 정규화는 모든 관절 "0 = 곧음 · 1 = 가장 굽힘", `grasp_fj_t2r_env._hand_norm`). 원문이 바뀌면 치환이 조용히
+#:   빠지지 않게 `context_stub_source` 가 각 원문이 정확히 한 번 있는지 확인한다.
+LEFT_STUB_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    ("# ---- hand: right Tesollo DG-5F", "# ---- hand: left Tesollo DG-5F"),
+    ("In the start pose palm_normal points along +y and palm_finger_dir along +x",
+     "In the start pose palm_normal points along -y and palm_finger_dir along +x"),
+    ("0 = lower limit (straight), 1 = upper limit (most flexed)",
+     "0 = straight, 1 = most flexed, for every joint (on this left hand thumb_3 and thumb_4 flex towards negative "
+     "angles, so for them 0 is the upper limit and 1 the lower limit)"),
+    ("palm_normal within about 45 degrees of +y", "palm_normal within about 45 degrees of -y"),
+)
+
+
+def context_stub_source(side: str = "r") -> str:
+    """`class RewardContext` 본문(필드+주석) — 프롬프트 재료. 헬퍼 속성 구간은 뺀다. side "l" = 좌손 문구."""
     import inspect
     src = inspect.getsource(RewardContext)
     cut = src.find("    # ----------")
-    return src[:cut].rstrip() + "\n"
+    src = src[:cut].rstrip() + "\n"
+    if side == "l":
+        for old, new in LEFT_STUB_REPLACEMENTS:
+            if src.count(old) != 1:
+                raise ValueError(f"좌손 스텁 치환 원문이 {src.count(old)}번 있다(1번이어야): {old!r}")
+            src = src.replace(old, new)
+    elif side != "r":
+        raise ValueError(f"side 는 'r' | 'l' — got {side!r}")
+    return src

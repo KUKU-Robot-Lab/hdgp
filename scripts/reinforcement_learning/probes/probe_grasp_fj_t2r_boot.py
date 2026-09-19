@@ -101,8 +101,11 @@ def action(t: int) -> torch.Tensor:
 # 프롬프트가 생성기에게 보여준 손 관절표(이름·순서·범위)가 부팅 실측과 같은가 — 표는 손으로 옮긴 값이다.
 from openarm.agnostic.tasks.grasp_fj_t2r.t2r import prompts as P   # noqa: E402
 
-_tbl = {nm: (a, b) for nm, a, b in P.HAND_JOINT_RANGES}
-joint_table = {"order_ok": tuple(names) == tuple(P.HAND_JOINT_NAMES),
+# ★09.20 좌팔판 — 표는 env cfg 의 측(hand_side)으로 고른다(좌 = 이름 l_ · 음의 각으로 조이는 관절은 범위 반전).
+_side = str(getattr(env.cfg, "hand_side", "r"))
+_rng = P.hand_joint_ranges(_side)
+_tbl = {nm: (a, b) for nm, a, b in _rng}
+joint_table = {"side": _side, "order_ok": tuple(names) == tuple(nm for nm, _, _ in _rng),
                "range_max_abs_err": (max(max(abs(float(lo[j]) - _tbl[nm][0]), abs(float(hi[j]) - _tbl[nm][1]))
                                          for j, nm in enumerate(names)) if set(names) == set(_tbl) else None)}
 summary: dict = {"mode": args.mode, "reward_code_path": args.reward_code_path or "(zero)",

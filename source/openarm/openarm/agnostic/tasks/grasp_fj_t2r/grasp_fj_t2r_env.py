@@ -27,9 +27,19 @@ from ..grasp_fj.grasp_fj_env import GraspFJEnv
 from ..grasp_fj.robot_profiles import PROFILES
 from .grasp_fj_t2r_env_cfg import GraspFJT2RRightShortEnvCfg
 from .grasp_gates import TOUCH_N as _GATE_TOUCH_N
+from .grasp_gates import APPROACH_PALM_NORMAL_DIR, APPROACH_PALM_NORMAL_DIR_LEFT
 from .grasp_gates import (APPROACH_CONDITIONS, approach_conditions, c_pregrasp_geometry, hand_orientation,
                           pose_deviation, update_gates)
 from .palm_frame import palm_center_offset
+from ...modules.robot_profiles import _FINGERS, _HAND_SIGN_L
+
+#: 손가락 관절 접미사(`thumb_2` …) → 좌손 미러 부호(`_HAND_SIGN_L`, 20관절 순서 = _FINGERS × 1..4). −1 = 좌손이 음의 각으로 조인다.
+_HAND_SIGN_BY_JOINT = {f"{f}_{j}": s for (f, j), s in zip(((f, j) for f in _FINGERS for j in range(1, 5)), _HAND_SIGN_L)}
+
+
+def _hand_norm(flip: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    """액션한계 정규화 손 각 → "0 = 곧음 · 1 = 가장 굽힘" 방향(좌손의 음의 각으로 조이는 관절만 1 − x). 새 텐서."""
+    return torch.where(flip, 1.0 - x, x)
 
 #: 손바닥 collision 메시(`rl_dg_palm_c.STL`)의 바운딩박스 — `r_hl_palm` 링크 프레임 [m], collision origin = 0.
 #:   ★09.16 사용자 "핸드를 테이블에 부딪히면서 접근 — PALM_EE 접근이 아님". 부모의 `hand_z_min` 은 `"palm" not in nm`
@@ -97,7 +107,21 @@ class GraspFJT2REnv(GraspFJEnv):
         self._t2r_gate_env_count = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self._t2r_gate_envelope = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._t2r_gate_ema = torch.full((len(GATE_NAMES),), -1.0, device=self.device)
-        self._t2r_default_q_norm = ((self._hand_reset_q - self._act_lo) / self._act_span).clamp(0.0, 1.0)
+        # ★09.20 좌팔판 — 좌손은 우손의 y 반전이라 부호 −1 관절(엄지 _2/_3/_4 · 전 _1 · pinky_2)은 **음의 각**으로 조인다
+        #   (프로필 액션한계: 좌 thumb_3/4 (−π/2, 0)). 액션한계 정규화를 그대로 쓰면 좌 엄지는 곧음 = 1 · 굽힘 = 0 으로 뒤집혀
+        #   "0 = 곧음 · 1 = 가장 굽힘" 계약(ctx 문서·생성 보상의 flex = norm − default)이 깨진다. 그 관절만 1 − x 로 뒤집어
+        #   모든 손 정규화 ctx(hand_q_norm·hand_target_norm·hand_default_q_norm)를 우손과 같은 방향으로 맞춘다. 관측·액션은 그대로.
+        self._t2r_side = str(getattr(self.cfg, "hand_side", "r"))
+        if self._t2r_side not in ("r", "l"):
+            raise RuntimeError(f"[grasp_fj_t2r] hand_side 는 'r' | 'l' — got {self._t2r_side!r}")
+        _prof_side = PROFILES[self.cfg.profile_name].palm_body.split("_", 1)[0]
+        if _prof_side != self._t2r_side:
+            raise RuntimeError(f"[grasp_fj_t2r] hand_side {self._t2r_side!r} ≠ 프로필 {self.cfg.profile_name} 의 손 {_prof_side!r}")
+        self._t2r_norm_flip = torch.tensor(
+            [self._t2r_side == "l" and _HAND_SIGN_BY_JOINT[nm.split("_hj_", 1)[1]] < 0
+             for nm in PROFILES[self.cfg.profile_name].hand_joint_names], device=self.device, dtype=torch.bool)
+        self._t2r_normal_dir = APPROACH_PALM_NORMAL_DIR_LEFT if self._t2r_side == "l" else APPROACH_PALM_NORMAL_DIR
+        self._t2r_default_q_norm = _hand_norm(self._t2r_norm_flip, ((self._hand_reset_q - self._act_lo) / self._act_span).clamp(0.0, 1.0))
         self._t2r_movable = (self._act_hi - self._act_lo) > LOCKED_SPAN_RAD
         self._t2r_approach_ok = torch.zeros(len(APPROACH_CONDITIONS), device=self.device)
         # ★09.15 사용자 "시작 상태 커리큘럼 + env 고정" — 이번 에피소드의 출발 그룹(가까운 출발 = True)과 그룹별 래치·퍼널 EMA,
@@ -218,6 +242,8 @@ class GraspFJT2REnv(GraspFJEnv):
         corners = getattr(self, "_t2r_palm_corners", None)
         if corners is None:
             _lo, _hi = _PALM_BBOX_LO, _PALM_BBOX_HI
+            if self._t2r_side == "l":   # 좌 손바닥 STL = 우 STL 의 y 반전(09.20 URDF 대조: y −0.0429 ~ +0.0394)
+                _lo, _hi = (_lo[0], -_hi[1], _lo[2]), (_hi[0], -_lo[1], _hi[2])
             corners = torch.tensor([[x, y, z] for x in (_lo[0], _hi[0]) for y in (_lo[1], _hi[1])
                                     for z in (_lo[2], _hi[2])], device=self.device, dtype=torch.float32)   # (8,3)
             self._t2r_palm_corners = corners
@@ -226,7 +252,7 @@ class GraspFJT2REnv(GraspFJEnv):
                     - self.scene.env_origins[:, None, :]).view(n, len(self._finger_names), -1, 3)
         q = self.robot.data.joint_pos[:, self._syn_ids]
         lo, span = self._act_lo.unsqueeze(0), self._act_span.unsqueeze(0)
-        q_norm = ((q - lo) / span).clamp(0.0, 1.0)
+        q_norm = _hand_norm(self._t2r_norm_flip, ((q - lo) / span).clamp(0.0, 1.0))
         cup_quat = self.object.data.root_quat_w
         cup_local = self._env_local(self.object.data.root_pos_w)
         axis = quat_apply(cup_quat, torch.tensor([0.0, 0.0, 1.0], device=self.device).expand(n, 3))
@@ -239,7 +265,7 @@ class GraspFJT2REnv(GraspFJEnv):
         plane_gap, along_offset, height = c_pregrasp_geometry(palm_center, R[:, :, 0], R[:, :, 2], cup_local, axis, self._obj_grasp_r)
         cond = approach_conditions(
             plane_gap=plane_gap, along_offset=along_offset, height=height, half_height=self._obj_grasp_h,
-            orient=hand_orientation(R[:, :, 0], R[:, :, 2]),
+            orient=hand_orientation(R[:, :, 0], R[:, :, 2], self._t2r_normal_dir),
             pose_dev=pose_deviation(q_norm, self._t2r_default_q_norm, self._t2r_movable),
             digit_touch=finger_touch.any(dim=1))
         self._t2r_approach_ok = cond.float().mean(dim=0)
@@ -256,7 +282,7 @@ class GraspFJT2REnv(GraspFJEnv):
             link_pos=link_pos, link_cup_force=links_f, palm_cup_force=palm_f,
             hand_q=q,
             hand_q_norm=q_norm,
-            hand_target_norm=((self._syn_target - lo) / span).clamp(0.0, 1.0),
+            hand_target_norm=_hand_norm(self._t2r_norm_flip, ((self._syn_target - lo) / span).clamp(0.0, 1.0)),
             hand_default_q_norm=self._t2r_default_q_norm.unsqueeze(0).expand(n, -1),
             hand_qd=self.robot.data.joint_vel[:, self._syn_ids],
             hand_z_min=self._hand_z_min,

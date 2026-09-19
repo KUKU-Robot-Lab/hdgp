@@ -13,6 +13,10 @@ text2reward 방식으로 생성한다: 환경 설명(RewardContext 소스)+과�
 | `grasp_fj_envelope` (정지 — iter_01 미기동) | `open-short_r_grasp_fj_t2r-lstm-sapg` | B 홈 · 손바닥↔컵 0.16 m | shaker_sweep 반경 29–44 mm | 0.15 rad/s | 10 s |
 | `grasp_fj_reach` (최종 목표) | 루프 `open-short_r_grasp_fj_t2r_reach-lstm`(PPO-LSTM 4096) · 최종 정책 `-lstm-sapg`(12,288) | 테이블 앞 가장자리 밖 · 0.38 m (cfg `arm_reset_joint_pos_override`) | cup_family 반경 44–81 mm | 0.3 rad/s | 15 s |
 
+★09.20 좌팔판 `grasp_fj_rand_left`(gym `open-short_l_grasp_fj_t2r_rand-lstm`, cfg `GraspFJT2RRandLeftEnvCfg`, 프로필 `tesollo_left_short_tl`)
+= 우 `grasp_fj_rand` 의 y 반전 미러. env 는 `cfg.hand_side` 로 법선 방향(−y)·손 정규화 방향(음의 각으로 조이는 관절 1−x)·손바닥 bbox 를 고르고,
+프롬프트는 변종 `rand_left`(관절표·ctx 스텁 문구 좌손판). 계약 `tests/test_left_mirror.py`.
+
 ★09.14 사용자 "보상 구조가 확실하지 않은데 SAPG·env 수를 너무 늘린 게 아닌지" → 보상 설계 루프는 PPO-LSTM 4096 env
 (`grasp_fj/config/agents/rl_games_ppo_lstm_cfg.yaml` — SimToolReal 값 · horizon 16 · 미니배치 16,384), 파지·리프트가 되는 보상이
 나온 뒤 최종 정책만 SAPG 12,288. reach i00 은 SAPG 12,288 로 돌았다(부팅 ~15분 · e571 에서 라운드 끝). i00↔i01 은 알고리즘도 달라 1:1 비교 금지.

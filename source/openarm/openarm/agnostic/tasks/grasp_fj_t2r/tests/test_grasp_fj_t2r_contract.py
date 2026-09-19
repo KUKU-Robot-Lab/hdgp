@@ -123,7 +123,7 @@ def test_reward_gate_latches_follow_the_user_three_stages_of_0915():
     # ★09.15 사용자 "컵에 다가가는 palm_ee_x · 손가락 방향(palm_ee_z)" — 접근 래치는 시작 자세의 손 방향(palm_ee 프레임 x·z)을 본다.
     # ★09.15 23:2x 사용자 "C자 사전파지로 재정의" — 손바닥면·손가락 방향 오프셋·띠 높이는 palm_ee 프레임(법선 x · 손가락 z)으로 잰다.
     _ordered(bc, ["c_pregrasp_geometry(palm_center, R[:, :, 0], R[:, :, 2], cup_local, axis, self._obj_grasp_r)",
-                  "approach_conditions(", "orient=hand_orientation(R[:, :, 0], R[:, :, 2])", "update_gates(",
+                  "approach_conditions(", "orient=hand_orientation(R[:, :, 0], R[:, :, 2], self._t2r_normal_dir)", "update_gates(",
                   "vals = dict(", "palm_finger_dir=R[:, :, 2]", "hand_default_q_norm=",
                   "approach_done=self._t2r_gate_approach", "envelope_done=self._t2r_gate_envelope",
                   "v.clone() if isinstance(v, torch.Tensor) else v"])
