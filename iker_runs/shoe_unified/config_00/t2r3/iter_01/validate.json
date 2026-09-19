@@ -1,0 +1,119 @@
+{
+ "ok": true,
+ "errors": [],
+ "warnings": [
+  "보상 크기가 크다(|max| 4187.3) — 스케일 확인"
+ ],
+ "term_stats": {
+  "approach": {
+   "mean": 0.10707807789246242,
+   "abs_max": 0.6539326906204224
+  },
+  "grasp": {
+   "mean": 0.3007557938496272,
+   "abs_max": 1.0733428001403809
+  },
+  "lift": {
+   "mean": 1.3342157999674478,
+   "abs_max": 3.0
+  },
+  "hold": {
+   "mean": 0.13922138015429178,
+   "abs_max": 0.7753121852874756
+  },
+  "transport": {
+   "mean": 1.0220967332522073,
+   "abs_max": 2.4951019287109375
+  },
+  "align": {
+   "mean": 0.18400192260742188,
+   "abs_max": 1.217332363128662
+  },
+  "settle": {
+   "mean": 0.004761473838395128,
+   "abs_max": 0.3252466320991516
+  },
+  "placed": {
+   "mean": 0.5180180072784424,
+   "abs_max": 2.5
+  },
+  "release": {
+   "mean": 0.3904783725738526,
+   "abs_max": 3.0
+  },
+  "trigger": {
+   "mean": 0.1621621660888195,
+   "abs_max": 2.0
+  },
+  "stable": {
+   "mean": 0.21621621400117874,
+   "abs_max": 4.0
+  },
+  "success": {
+   "mean": 88.3509750366211,
+   "abs_max": 4177.51708984375
+  },
+  "penalty": {
+   "mean": -0.1233010192712148,
+   "abs_max": 0.6051127910614014
+  },
+  "action_reg": {
+   "mean": -0.033992369969685875,
+   "abs_max": 0.059981413185596466
+  }
+ },
+ "total_stats": {
+  "mean": 92.57269175847372,
+  "abs_max": 4187.287109375
+ },
+ "fields_used": [
+  "actions",
+  "arm_qd",
+  "carried",
+  "dz_free",
+  "episode_progress",
+  "episode_steps",
+  "hand_z_min",
+  "held",
+  "hold_radius",
+  "hold_slip_speed",
+  "home",
+  "keypoint_dist",
+  "keypoint_err",
+  "lift_height",
+  "link_pos",
+  "link_shoe_force",
+  "link_shoe_gap",
+  "open_frac",
+  "palm_gap",
+  "palm_normal",
+  "palm_pos",
+  "palm_shoe_dist",
+  "palm_shoe_force",
+  "place_tolerance",
+  "placed",
+  "prev_actions",
+  "rack_top_z",
+  "rack_x_max",
+  "rack_x_min",
+  "rack_y_max",
+  "rack_y_min",
+  "released",
+  "resting",
+  "resting_tol",
+  "retract_open_min",
+  "retracting",
+  "shoe_bottom_z",
+  "shoe_lin_vel",
+  "shoe_pos",
+  "shoe_shift_xy",
+  "shoe_surface",
+  "slip_speed",
+  "start_held",
+  "still",
+  "still_speed",
+  "success",
+  "table_top_z",
+  "thumb_curl"
+ ]
+}
