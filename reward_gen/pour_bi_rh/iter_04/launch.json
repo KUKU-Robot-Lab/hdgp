@@ -1,0 +1,12 @@
+{
+ "label": "t2r_rh2_i04",
+ "num_envs": 1024,
+ "started": 1789842339,
+ "commit": "528b8d1c",
+ "host": "vision-3090",
+ "iter": "reward_gen/pour_bi_rh/iter_04",
+ "round": 4,
+ "fresh": false,
+ "checkpoint": "log/rl_games/open-rh/both/pour-fab-mimic/t2r_rh2_i03/nn/last_open-rh_b_pour_fab_mimic_ep_2000_rew_1848.5571.pth",
+ "note": "09.20 round 4 LLM 재생성(iter_04). i03 ep_2000 가중치만 로드(epoch 0 리셋). env 는 i01 과 동일(마찰 2.0·동결 1.0 N)."
+}
