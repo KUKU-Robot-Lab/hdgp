@@ -611,6 +611,26 @@
      "converge_streak": 1
     }
    ]
+  },
+  "final_check": {
+   "ckpt": "t2r_i16/nn/last_open-short_b_pour_fab_ep_5600_rew_30620.121.pth",
+   "adr_level": 30,
+   "video": [
+    "our_source/pour_videos/i16_ep5600_adr30_left_top.mp4",
+    "our_source/pour_videos/i16_ep5600_adr30_right.mp4"
+   ],
+   "video_verdict": "real pour: source tilts over upright receiver, beads stream in (not nesting)",
+   "trace": "log/server_mirror/pour-fab/t2r_i16/trace_i16_ep5600_adr30_64env.npz",
+   "deterministic_64env": {
+    "success": 0.922,
+    "in_target": 0.915,
+    "spill": 0.063,
+    "premature": 0.078,
+    "first_success_step_median": 276,
+    "rcv_tilt_step90_median": 31.6,
+    "rcv_tilt_during_pour_median": 4.7
+   },
+   "report": "https://claude.ai/artifact/P1E1wfThfUQQCrBhQ1aJry"
   }
  }
 }
