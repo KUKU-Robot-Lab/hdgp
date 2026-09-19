@@ -495,5 +495,7 @@
    1284222
   ],
   "warm_start": "log/rl_games/open-short/both/pour-fab/t2r_i16/nn/last_open-short_b_pour_fab_ep_5700_rew_31460.018.pth"
- }
+ },
+ "fresh": true,
+ "fresh_note": "09.20 user: behaviour definition changed (wrap grasp, pour direction, receiver side) -> FRESH; warm-start from t2r_i16 ep_5700 aborted before first epoch"
 }
