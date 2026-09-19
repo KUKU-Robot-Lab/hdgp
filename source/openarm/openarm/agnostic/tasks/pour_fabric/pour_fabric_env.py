@@ -30,7 +30,7 @@ from openarm.agnostic.modules.perception_delay import noisy_pose
 from openarm.agnostic.modules.t2r.context import RewardContext
 from openarm.agnostic.modules.t2r.loader import call_reward_fn, load_reward_fn
 from .pour_rules import (bead_layout_in_cup, fill_level_from_local_z, park_offsets, pour_dir_update, pour_lip,
-                         premature_tilt_limit_rad, premature_tilt_now,
+                         premature_tilt_limit_rad, premature_tilt_now, cup_hit_now, pour_dir_ok, rcv_side_ok, wrap_count,
                          sample_active_mask)
 
 from . import bimanual as _bm
@@ -147,6 +147,7 @@ class PourFabricEnv(DirectRLEnv):
         self._fill_level = torch.zeros(N, device=dev)
         # ★09.16 조준 전 틸트 래치(성공 무효) · 리시버 손바닥 이동 속도 지표용 이전 위치
         self._premature = torch.zeros(N, dtype=torch.bool, device=dev)
+        self._cup_hit = torch.zeros(N, dtype=torch.bool, device=dev)
         # ★09.18 붓는 방향 d̂(자세 무관)·붓는 쪽 림 점·리시버 쪽 부호 기울기·채움별 틸트 상한 — _get_rewards 가 매 스텝 갱신
         self._pour_dir = torch.zeros(N, 2, device=dev)
         self._pour_lip = torch.zeros(N, 3, device=dev)
@@ -471,6 +472,10 @@ class PourFabricEnv(DirectRLEnv):
         return {"policy": torch.nan_to_num(obs), "critic": torch.nan_to_num(state)}
 
     # ==================================================================
+    def _wrap(self, rig) -> torch.Tensor:
+        mid, dist, _tip = rig.finger_link_forces()
+        return wrap_count(mid, dist, thr=float(self.cfg.wrap_force_n))
+
     def _build_context(self, flags, d_in_target, d_spill) -> RewardContext:
         cfg = self.cfg
         src_f, rcv_f = self.src.finger_forces(), self.rcv.finger_forces()
@@ -510,6 +515,8 @@ class PourFabricEnv(DirectRLEnv):
             src_hand_foreign_force=self.src.foreign_force(),
             rcv_hand_foreign_force=self.rcv.foreign_force(),
             cups_nested=self._cups_nested, premature_tilt=self._premature,
+            cup_hit=self._cup_hit, pour_dir_xy=self._pour_dir, rcv_side_margin=self._rcv_side_margin,
+            src_wrap_count=self._wrap(self.src), rcv_wrap_count=self._wrap(self.rcv),
             src_pour_lip_pos=self._pour_lip, src_tilt_toward_rcv=self._pour_theta,
             premature_tilt_limit=self._tilt_limit,
             bead_fill_level=self._fill_level, success=self._success_now,
@@ -566,11 +573,17 @@ class PourFabricEnv(DirectRLEnv):
         self._premature |= premature_tilt_now(
             src_tilt, self._tilt_limit, self._lip_dist, src_grasped_now,
             lip_max_m=float(cfg.cup_inner_radius) + float(cfg.premature_lip_tol_m)) & (~self._hold_mask())
+        cup_cup = self._cup_cup_sensor.data.force_matrix_w.view(self.num_envs, -1, 3).sum(dim=1).norm(dim=-1)
+        self._cup_hit |= cup_hit_now(cup_cup, self._hold_mask(), thr=float(cfg.cup_hit_force_n))
+        self._rcv_side_margin = float(cfg.rcv_side_sign) * self._local(self.receiver_cup.data.root_pos_w)[:, 1]
         self._success_now = ((flags.in_target_frac >= float(cfg.success_fill_ratio))
                              & (flags.spill_frac <= float(cfg.success_spill_max))
                              & (xy < float(cfg.success_xy_thresh))
                              & (~self._cups_nested)
                              & (~self._premature)
+                             & (~self._cup_hit)
+                             & pour_dir_ok(self._pour_dir, max_outward=float(cfg.pour_dir_max_outward))
+                             & rcv_side_ok(self._rcv_side_margin, side_sign=1.0, min_side_m=float(cfg.rcv_side_min_m))
                              & (rcv_tilt <= math.radians(float(cfg.success_rcv_tilt_max_deg))))
         self._success_streak = torch.where(self._success_now, self._success_streak + 1,
                                            torch.zeros_like(self._success_streak))
@@ -675,6 +688,11 @@ class PourFabricEnv(DirectRLEnv):
         self.extras["task/nested_rate"] = self._cups_nested.float().mean()
         # ★09.16 조준 전 틸트·리시버 정지 대기·부피 DR 지표(피드백 표용, 보상 아님)
         self.extras["task/premature_tilt_rate"] = self._premature.float().mean()
+        self.extras["task/cup_hit_rate"] = self._cup_hit.float().mean()
+        self.extras["task/pour_dir_outward"] = self._pour_dir[:, 0].mean()
+        self.extras["task/rcv_side_margin"] = self._rcv_side_margin.mean()
+        self.extras["task/src_wrap_count"] = self._wrap(self.src).mean()
+        self.extras["task/rcv_wrap_count"] = self._wrap(self.rcv).mean()
         far = (self._lip_dist > float(cfg.cup_inner_radius) + float(cfg.premature_lip_tol_m)) & (~self._hold_mask())
         zero = torch.zeros((), device=self.device)
         self.extras["task/tilt_limit_deg"] = torch.rad2deg(self._tilt_limit).mean()
@@ -784,6 +802,7 @@ class PourFabricEnv(DirectRLEnv):
         # 채움 정도는 정착(hold) 끝에 실측으로 덮어쓴다 — 그때까지는 개수 비율(hold 중 액션은 무시된다)
         self._fill_level[env_ids] = active.float().sum(dim=1) / float(k)
         self._premature[env_ids] = False
+        self._cup_hit[env_ids] = False
 
         self._perc_flush[env_ids] = True
         for w in self._wrench.values():

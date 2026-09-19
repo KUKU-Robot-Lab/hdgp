@@ -94,7 +94,15 @@ the receiver's mouth centre (a cup knocked over without being grasped does not l
 latched episode can never succeed). Below that limit the source cup may be tilted anywhere, \
 including while it is still approaching the receiver. You may add a bonus on it but you cannot redefine it. Beads only count as "in the receiver" once they have LEFT the source cup — pushing \
 the source cup into the receiver cup (`ctx.cups_nested`) transfers nothing and is never a success; \
-the beads must fall out of the tilted source cup through the air.
+the beads must fall out of the tilted source cup through the air. Three more conditions void success: \
+`ctx.cup_hit` (episode latch: the two cups touched each other with more than 0.5 N at any time after the \
+settle phase — keep the cups apart on the table, while lifting and while pouring), the pouring direction \
+`ctx.pour_dir_xy[:, 0] > 0.3` (the robot body is at -x; the source cup must pour sideways or toward the body, \
+not away from it, so the receiver mouth must NOT be placed further from the body than the source cup), and \
+`ctx.rcv_side_margin < 0.03` (the receiver cup must stay on its own arm's side of the centre line, about where \
+it spawned at +0.16; the SOURCE arm brings its cup over). `ctx.src_wrap_count` / `ctx.rcv_wrap_count` count the \
+fingers whose middle or distal link touches the cup (fingertip-only contact counts 0): an enveloping grasp has \
+3 or more, a fingertip pinch has 0-1 and collapses when the cup is tilted.
 8. Height above the table: `ctx.src_cup_pos[:, 2] - ctx.src_cup_spawn_pos[:, 2]` is how far \
 the source cup has been lifted (0 while it rests on the table).
 9. Do not keep any state between calls (no globals, no attributes); the function must be pure.

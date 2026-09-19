@@ -296,6 +296,12 @@ class PourFabricEnvCfg(DirectRLEnvCfg):
     premature_release_span_deg: float = 34.0   # 빈 컵 쪽으로 + (1 − fill)·span (보상 RELEASE_SPAN 0.60 rad)
     premature_margin_deg: float = 20.0
     premature_lip_tol_m: float = 0.04          # 림 점 허용 = cup_inner_radius + tol = 0.081 m(정밀도는 spill 판정이 맡는다)
+    # ★09.20 사용자 영상 지적 4종(i16 trace 64 env 계측) — 성공 무효 조건
+    cup_hit_force_n: float = 0.5        # hold 이후 컵-컵 접촉 래치 [N]
+    pour_dir_max_outward: float = 0.3   # d̂.x 상한(i16 평균 0.90 = 몸 바깥으로 부음)
+    rcv_side_sign: float = 1.0          # 리시버=좌팔 → +y 가 자기 쪽
+    rcv_side_min_m: float = 0.03        # 리시버 컵 y 하한(i16 붓는 동안 −0.13)
+    wrap_force_n: float = 0.5           # 중간/원위 마디 접촉 판정 [N]
     pour_dir_min_sep_m: float = 0.04           # 컵 원점–리시버 입구 수평거리가 이보다 짧으면 d̂ 직전 값 유지
     # ★09.13 hacking 차단: 소스 컵을 리시버 입구에 끼워 넣으면 소스 안 비드가 리시버 원통 안에 들어와
     #   in_target 로 세어졌다(ep 600 영상: 붓기 없이 성공 0.73). 원점 거리가 이보다 짧으면 성공 무효.

@@ -132,3 +132,33 @@ def test_park_offsets_are_spread_not_piled():
     assert float(dist.min()) >= d + 0.005                                # 한 점에 모으면 브로드페이즈 폭발
     assert bool((pts[:, 0] <= -0.5).all())                               # 로봇·테이블(+x) 뒤쪽
     assert bool((pts[:, 2] == -0.083).all())
+
+
+# ---------------------------------------------------------------- 09.20 i16 영상 지적 4종(사용자) 판정
+def test_pour_dir_ok_rejects_outward_pour():
+    # i16 계측: 기울인 구간 d̂ 평균 (0.90, 0.35) — 몸 바깥(+x)으로 부었다. 허용 = 바깥 성분 ≤ sin 30°.
+    d = torch.tensor([[0.90, 0.35], [0.0, 1.0], [-0.6, 0.8], [0.49, 0.87], [0.51, 0.86]])
+    ok = R.pour_dir_ok(d, max_outward=0.5)
+    assert ok.tolist() == [False, True, True, True, False]
+
+
+def test_rcv_side_ok_keeps_receiver_on_its_own_side():
+    # i16 계측: 붓는 동안 리시버 컵 y 중앙값 −0.13(스폰 +0.16) — 왼팔이 중심선을 13 cm 넘었다.
+    y = torch.tensor([-0.13, -0.03, 0.0, 0.16])
+    assert R.rcv_side_ok(y, side_sign=1.0, min_side_m=-0.03).tolist() == [False, True, True, True]
+    # 좌우가 바뀐 배치(리시버가 −y 쪽)에서도 같은 규칙
+    assert R.rcv_side_ok(-y, side_sign=-1.0, min_side_m=-0.03).tolist() == [False, True, True, True]
+
+
+def test_wrap_count_ignores_tip_only_contact():
+    # i16 계측: 리시버 손 4지는 팁만 닿았다(중간·원위 0 N) — 팁만 닿은 손가락은 감싼 것으로 세지 않는다.
+    mid = torch.tensor([[8.7, 0.0, 0.0, 0.0, 0.0], [4.6, 0.0, 0.0, 0.0, 0.0]])
+    dist = torch.tensor([[0.9, 0.0, 0.0, 0.3, 0.0], [3.0, 0.0, 3.8, 2.9, 0.0]])
+    n = R.wrap_count(mid, dist, thr=1.0)
+    assert n.tolist() == [1.0, 3.0]
+
+
+def test_cup_hit_now_is_off_during_hold():
+    f = torch.tensor([0.0, 0.9, 1.1, 5.0])
+    hold = torch.tensor([False, False, False, True])
+    assert R.cup_hit_now(f, hold, thr=1.0).tolist() == [False, False, True, False]

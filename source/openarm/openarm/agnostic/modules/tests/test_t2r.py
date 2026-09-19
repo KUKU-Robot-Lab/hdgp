@@ -37,7 +37,7 @@ def test_context_fields_split_and_stub_has_every_field():
     assert "@property" not in stub
     # 09.16 +2: bead_fill_level(채움 정도 0~1) · premature_tilt(조준 전 틸트 래치)
     # 09.18 +3: src_pour_lip_pos(붓는 쪽 림 점) · src_tilt_toward_rcv(리시버 쪽 부호 각) · premature_tilt_limit(채움별 상한)
-    assert len(C.TENSOR_FIELDS) == 51 and len(C.SCALAR_FIELDS) == 5
+    assert len(C.TENSOR_FIELDS) == 56 and len(C.SCALAR_FIELDS) == 5
     for f in ("src_pour_lip_pos", "src_tilt_toward_rcv", "premature_tilt_limit"):
         assert f in C.TENSOR_FIELDS, f
 

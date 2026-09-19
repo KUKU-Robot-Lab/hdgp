@@ -83,6 +83,40 @@ def premature_tilt_now(src_tilt: torch.Tensor, tilt_limit: torch.Tensor, lip_dis
     return (src_tilt > tilt_limit) & (lip_dist_xy > float(lip_max_m)) & grasped.to(torch.bool)
 
 
+def pour_dir_ok(pour_dir_xy: torch.Tensor, *, max_outward: float) -> torch.Tensor:
+    """붓는 방향 d̂(소스 컵 원점→리시버 입구, 수평 단위벡터)의 몸 바깥(+x) 성분이 허용치 이하인가 (N,) bool.
+
+    ★09.20 사용자 영상 지적 "컵 입구가 몸통 쪽을 향해야 하는데 바깥을 향한다": i16 은 기울인 구간 d̂ 평균 (0.90, 0.35),
+    전 스텝이 +x 였다(리시버를 소스보다 10 cm 앞에 두고 앞으로 부음). 로봇 몸통은 −x 쪽이다.
+    """
+    return pour_dir_xy[:, 0] <= float(max_outward)
+
+
+def rcv_side_ok(rcv_cup_y: torch.Tensor, *, side_sign: float, min_side_m: float) -> torch.Tensor:
+    """리시버 컵이 자기 쪽(side_sign·y ≥ min_side_m)에 있는가 (N,) bool — 중심선을 넘어 상대 팔 쪽으로 가면 False.
+
+    ★09.20 사용자 영상 지적 "왼팔이 오른팔 쪽으로 과하게 넘어감": i16 붓는 동안 리시버 y 중앙값 −0.13(스폰 +0.16).
+    """
+    return float(side_sign) * rcv_cup_y >= float(min_side_m)
+
+
+def wrap_count(f_mid: torch.Tensor, f_dist: torch.Tensor, *, thr: float) -> torch.Tensor:
+    """중간 또는 원위 마디가 컵에 닿은 손가락 수 (N,) float — 팁만 닿은 손가락은 세지 않는다(손끝 집기 ≠ 감싸 쥐기).
+
+    ★09.20 사용자 영상 지적 "인벨롭 그립이 아님": i16 리시버 손은 엄지 1개만 마디 접촉, 4지는 팁만(1~4 N).
+    """
+    return ((f_mid > float(thr)) | (f_dist > float(thr))).float().sum(dim=1)
+
+
+def cup_hit_now(cup_cup_force: torch.Tensor, hold: torch.Tensor, *, thr: float) -> torch.Tensor:
+    """이 스텝에 두 컵이 부딪혔는가 (N,) bool — hold 구간 제외. 래치(에피소드 누적)는 env 가 한다.
+
+    ★09.20 사용자 영상 지적 "파지하고 나서 컵을 서로 부딪힘": i16 은 step ~98 에 두 컵 원점 거리 0.082~0.099 m
+    (64 env 전부)까지 테이블 위에서 밀어 붙인 뒤 들었다.
+    """
+    return (cup_cup_force > float(thr)) & (~hold.to(torch.bool))
+
+
 def fill_level_from_local_z(z_local: torch.Tensor, active: torch.Tensor, *,
                             bottom_z: float, top_z: float) -> torch.Tensor:
     """활성 비드 평균 높이의 2배를 컵 내부 높이로 나눈 [0,1] (N,).
