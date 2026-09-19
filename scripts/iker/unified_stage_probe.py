@@ -93,6 +93,9 @@ class Recorder:
         # where `placed` holds, record which of the other three fail
         self.gate_rows: list[torch.Tensor] = []
         self.ever_retract = torch.zeros(n, dtype=torch.bool, device=dev)
+        # the WHOLE task's success (placement predicate); `succeeded` above is the stage-1 grasp predicate the parent
+        # still evaluates, which is not the unified task's success
+        self.task_success = torch.zeros(n, dtype=torch.bool, device=dev)
         self.slip_at_hold: list[float] = []
         self._get_rewards, self._log_episode_end = u._get_rewards, u._log_episode_end
         u._get_rewards, u._log_episode_end = self.get_rewards, self.log_episode_end
@@ -128,6 +131,7 @@ class Recorder:
         last = u._unified_last
         self.ever_placed |= last["placed"] & live
         self.ever_retract |= last["retracting"] & live
+        self.task_success |= last["success"] & live
         on = last["placed"] & live
         if bool(on.any()):
             self.gate_rows.append(torch.stack([last["resting"][on].float(), last["still"][on].float(),
@@ -187,6 +191,9 @@ def classify(rec: Recorder, touch_gap: float, deadband: float) -> dict:
         "retract_open_min": open_min,
     }
     out["ever_retract_frac"] = round(float(rec.ever_retract.float().mean()), 4)
+    out["task_success_frac"] = round(float(rec.task_success.float().mean()), 4)
+    out["task_success_given_retract"] = (round(float(rec.task_success[rec.ever_retract].float().mean()), 4)
+                                         if bool(rec.ever_retract.any()) else None)
     return out
 
 
