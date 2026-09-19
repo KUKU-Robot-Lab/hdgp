@@ -586,6 +586,18 @@
      "cup_collision_rate": 0.131,
      "adr": 0.367,
      "bead_active_hi": 14.9
+    },
+    {
+     "epoch": 5177,
+     "episode_success": 0.611,
+     "src_tilt_deg": 76.2,
+     "in_target": 0.607,
+     "spill": 0.043,
+     "premature_tilt_rate": 0.049,
+     "cup_collision_rate": 0.053,
+     "adr": 1.0,
+     "bead_active_hi": 20.0,
+     "note": "ticks between epoch 1382 and 5177 were not processed (session idle)"
     }
    ]
   }
