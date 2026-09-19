@@ -1,7 +1,7 @@
 {
- "iter": 16,
- "label": "t2r_i16",
- "round": 17,
+ "iter": 17,
+ "label": "t2r_i17",
+ "round": 18,
  "round10_note": "env 수정 b3a07d0e(래치를 접촉 기반 소스 파지 성립 시에만) 뒤 재학습. 보상 iter_09(37항, raise_src 추가). 그 외 env 는 라운드 9 와 동일. 틱 예약 은 아래 launch_i09.cron",
  "launch_i09": {
   "label": "t2r_i09",
@@ -441,7 +441,7 @@
   3958129
  ],
  "commit": "8c9c350b",
- "note": "iter_13 42 terms; i12 stopped by user at epoch 332 (env tilt-latch change)",
+ "note": "t2r_i16 ep_5700 웜스타트, env 1ef50870 (성공 무효: 컵 충돌 래치·바깥쪽 붓기·리시버 넘어감), iter_17 보상: 컵 접촉 벌점·리시버 제자리·wrap 게이트·붓는 방향",
  "round13_note": "iter_12 42항(ingest PASS), t2r_i11 ep_550 체크포인트 웜스타트, 4096 env GPU1, MAX_ROUNDS 20",
  "ended_i12": {
   "epoch": 332,
@@ -483,5 +483,17 @@
   "reward_tilt": 3.75
  },
  "round17_note": "env 048c5669 unchanged. iter_16 reward: height allowance grows with lip drop r*sin(theta), lip_above soft (floor 0.35), tilt income split 6 up to theta_pre / 20 to release / 2 overshoot, carry plateau halved, pour_pose 3->8, transferred level term 5, pour_delta 120, success 20, latch 1.0, safe 5.0/7.5 cm. warm start i15 ep_800. tick 2h.",
- "hold": null
+ "hold": null,
+ "launch": {
+  "label": "t2r_i17",
+  "num_envs": 4096,
+  "started": 1789841293,
+  "commit": "a241a255",
+  "gpu": 1,
+  "server_pids": [
+   1284215,
+   1284222
+  ],
+  "warm_start": "log/rl_games/open-short/both/pour-fab/t2r_i16/nn/last_open-short_b_pour_fab_ep_5700_rew_31460.018.pth"
+ }
 }
